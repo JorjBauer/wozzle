@@ -67,30 +67,30 @@ uint8_t de44(uint8_t nibs[2])
   return denib(nibs[0], nibs[1]);
 }
 
-static void packBit(uint8_t *output, bitPtr *ptr, uint8_t isOn)
+static void _packBit(uint8_t *output, bitPtr *ptr, uint8_t isOn)
 {
   if (isOn)
     output[ptr->idx] |= ptr->bitIdx;
   INCIDX(ptr);
 }
 
-static void packGap(uint8_t *output, bitPtr *ptr)
+static void _packGap(uint8_t *output, bitPtr *ptr)
 {
   for (int i=0; i<8; i++) 
-    packBit(output, ptr, 1);
-  packBit(output, ptr, 0);
-  packBit(output, ptr, 0);
+    _packBit(output, ptr, 1);
+  _packBit(output, ptr, 0);
+  _packBit(output, ptr, 0);
 }
 
-static void packByte(uint8_t *output, bitPtr *ptr, uint8_t v)
+static void _packByte(uint8_t *output, bitPtr *ptr, uint8_t v)
 {
   for (int i=0; i<8; i++) {
-    packBit(output, ptr, v & (1 << (7-i)));
+    _packBit(output, ptr, v & (1 << (7-i)));
   }
 }
 
 // Take 256 bytes of input and turn it in to 343 bytes of nibblized output
-void encodeData(uint8_t *outputBuffer, bitPtr *ptr, const uint8_t input[256])
+static void _encodeData(uint8_t *outputBuffer, bitPtr *ptr, const uint8_t input[256])
 {
   int ptr2 = 0;
   int ptr6 = 0x56;
@@ -129,13 +129,13 @@ void encodeData(uint8_t *outputBuffer, bitPtr *ptr, const uint8_t input[256])
   int lastv = 0;
   for (int idx = 0; idx < 0x156; idx++) {
     int val = nibbles[idx];
-    packByte(outputBuffer, ptr, _trans[lastv ^ val]);
+    _packByte(outputBuffer, ptr, _trans[lastv ^ val]);
     lastv = val;
   }
-  packByte(outputBuffer, ptr, _trans[lastv]);
+  _packByte(outputBuffer, ptr, _trans[lastv]);
 }
 
-uint8_t whichBit(uint8_t bitIdx)
+static uint8_t _whichBit(uint8_t bitIdx)
 {
   switch (bitIdx) {
   case 0x80:
@@ -172,51 +172,51 @@ uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrac
   for (uint8_t sector=0; sector<16; sector++) {
 
     for (uint8_t i=0; i<16; i++) {
-      packGap(outputBuffer, &ptr);
+      _packGap(outputBuffer, &ptr);
     }
 
-    packByte(outputBuffer, &ptr, 0xD5); // prolog
-    packByte(outputBuffer, &ptr, 0xAA);
-    packByte(outputBuffer, &ptr, 0x96);
+    _packByte(outputBuffer, &ptr, 0xD5); // prolog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0x96);
     
-    packByte(outputBuffer, &ptr, nib1(DISK_VOLUME));
-    packByte(outputBuffer, &ptr, nib2(DISK_VOLUME));
+    _packByte(outputBuffer, &ptr, nib1(DISK_VOLUME));
+    _packByte(outputBuffer, &ptr, nib2(DISK_VOLUME));
 
-    packByte(outputBuffer, &ptr, nib1(track));
-    packByte(outputBuffer, &ptr, nib2(track));
+    _packByte(outputBuffer, &ptr, nib1(track));
+    _packByte(outputBuffer, &ptr, nib2(track));
     
-    packByte(outputBuffer, &ptr, nib1(sector));
-    packByte(outputBuffer, &ptr, nib2(sector));
+    _packByte(outputBuffer, &ptr, nib1(sector));
+    _packByte(outputBuffer, &ptr, nib2(sector));
     
     checksum = DISK_VOLUME ^ track ^ sector;
-    packByte(outputBuffer, &ptr, nib1(checksum));
-    packByte(outputBuffer, &ptr, nib2(checksum));
+    _packByte(outputBuffer, &ptr, nib1(checksum));
+    _packByte(outputBuffer, &ptr, nib2(checksum));
 
-    packByte(outputBuffer, &ptr, 0xDE); // epilog
-    packByte(outputBuffer, &ptr, 0xAA);
-    packByte(outputBuffer, &ptr, 0xEB);
+    _packByte(outputBuffer, &ptr, 0xDE); // epilog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xEB);
     
     for (uint8_t i=0; i<5; i++) {
-      packGap(outputBuffer, &ptr);
+      _packGap(outputBuffer, &ptr);
     }
     
-    packByte(outputBuffer, &ptr, 0xD5); // data prolog
-    packByte(outputBuffer, &ptr, 0xAA);
-    packByte(outputBuffer, &ptr, 0xAD);
+    _packByte(outputBuffer, &ptr, 0xD5); // data prolog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xAD);
     
     uint8_t physicalSector = (diskType == T_PO ? deProdosPhys[sector] : dephys[sector]);
-    encodeData(outputBuffer, &ptr, &rawTrackBuffer[physicalSector * 256]);
+    _encodeData(outputBuffer, &ptr, &rawTrackBuffer[physicalSector * 256]);
 
-    packByte(outputBuffer, &ptr, 0xDE); // data epilog
-    packByte(outputBuffer, &ptr, 0xAA);
-    packByte(outputBuffer, &ptr, 0xEB);
+    _packByte(outputBuffer, &ptr, 0xDE); // data epilog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xEB);
 
     for (uint8_t i=0; i<16; i++) {
-      packGap(outputBuffer, &ptr);
+      _packGap(outputBuffer, &ptr);
     }
   }
 
-  return (ptr.idx*8 + whichBit(ptr.bitIdx));
+  return (ptr.idx*8 + _whichBit(ptr.bitIdx));
 }
 
 // Pop the next 343 bytes off of trackBuffer, which should be 342
@@ -225,7 +225,7 @@ uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrac
 //
 // Return true if we've successfully consumed 343 bytes from
 // trackBuf.
-bool decodeData(const uint8_t trackBuffer[343], uint8_t output[256])
+static bool _decodeData(const uint8_t trackBuffer[343], uint8_t output[256])
 {
   static uint8_t workbuf[342];
 
@@ -342,7 +342,7 @@ nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer
     for (int j=0; j<343; j++) {
       nibData[j] = input[(i+j)%NIBTRACKSIZE];
     }
-    if (!decodeData(nibData, output)) {
+    if (!_decodeData(nibData, output)) {
       continue;
     }
     i += 343;
