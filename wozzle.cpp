@@ -4,6 +4,7 @@
 
 #include "woz.h"
 #include "crc32.h"
+#include "nibutil.h"
 
 void usage(char *name)
 {
@@ -119,7 +120,7 @@ int main(int argc, char *argv[]) {
 	printf("Failed to decode track %d; aborting\n", track);
 	exit(1);
       }
-      fwrite(nibData, 1, 416*16, out);
+      fwrite(nibData, 1, NIBTRACKSIZE, out);
     }
     fclose(out);
     
