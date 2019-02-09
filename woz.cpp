@@ -2,6 +2,7 @@
 #include <string.h>
 #include "crc32.h"
 #include "nibutil.h"
+#include "version.h"
 
 // Block number we start packing data bits after (Woz 2.0 images)
 #define STARTBLOCK 3
@@ -287,7 +288,7 @@ void Woz::_initInfo()
   di.writeProtected = 0;
   di.synchronized = 0;
   di.cleaned = 0;
-  strcpy(di.creator, "Wozzle v1.0                     ");
+  sprintf(di.creator, "%.32s", VERSION_STRING);
   di.diskSides = 1;
   di.bootSectorFormat = 0;
   di.optimalBitTiming = 32;
