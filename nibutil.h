@@ -5,6 +5,7 @@
 #include <time.h>
 
 #define NIBTRACKSIZE 0x1A00
+#define NIBSECTORSIZE 416
 
 #define         nib1(a) (((a & 0xAA) >> 1) | 0xAA)
 #define         nib2(b) (((b & 0x55)     ) | 0xAA)

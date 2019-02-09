@@ -273,8 +273,8 @@ bool Woz::writeFile(uint8_t version, const char *filename)
   retval = true;
 
  done:
-if (crcData)
-  free(crcData);
+  if (crcData)
+    free(crcData);
   if (f)
     fclose(f);
   return retval;
@@ -311,10 +311,12 @@ void Woz::_initInfo()
 
 bool Woz::readDskFile(const char *filename, uint8_t subtype)
 {
+  bool retval = false;
+
   FILE *f = fopen(filename, "r");
   if (!f) {
     perror("Unable to open input file");
-    return false;
+    goto done;
   }
 
   _initInfo();
@@ -324,25 +326,27 @@ bool Woz::readDskFile(const char *filename, uint8_t subtype)
   for (int track=0; track<35; track++) {
       uint32_t bytesRead = fread(sectorData, 1, 256*16, f);
       if (bytesRead != 256*16) {
-	printf("Failed to read DSK data; got %d bytes, wanted %d\n", bytesRead, 256);
-	return false;
+	fprintf(stderr, "Failed to read DSK data; got %d bytes, wanted %d\n", bytesRead, 256);
+	goto done;
       }
 
-      tracks[track].trackData = (uint8_t *)calloc(416*16, 1);
+      tracks[track].trackData = (uint8_t *)calloc(NIBTRACKSIZE, 1);
       if (!tracks[track].trackData) {
-	printf("Failed to malloc track data\n");
-	return false;
+	fprintf(stderr, "Failed to malloc track data\n");
+	goto done;
       }
       tracks[track].startingBlock = STARTBLOCK + 13*track;
       tracks[track].blockCount = 13;
-      tracks[track].bitCount = 416*16*8; // assumption...
-
       uint32_t sizeInBits = nibblizeTrack(tracks[track].trackData, sectorData, subtype, track);
       tracks[track].bitCount = sizeInBits; // ... reality.
   }
-  fclose(f);
 
-  return true;
+  retval = true;
+
+ done:
+  if (f)
+    fclose(f);
+  return retval;
 }
 
 bool Woz::readNibFile(const char *filename)
@@ -358,22 +362,22 @@ bool Woz::readNibFile(const char *filename)
   // Now read in the 35 tracks of data from the nib file
   nibSector nibData[16];
   for (int track=0; track<35; track++) {
-    uint32_t bytesRead = fread(nibData, 1, 416*16, f);
-    if (bytesRead != 416*16) {
-      printf("Failed to read NIB data; got %d bytes, wanted %d\n", bytesRead, 416*16);
+    uint32_t bytesRead = fread(nibData, 1, NIBTRACKSIZE, f);
+    if (bytesRead != NIBTRACKSIZE) {
+      printf("Failed to read NIB data; got %d bytes, wanted %d\n", bytesRead, NIBTRACKSIZE);
       return false;
     }
     
-    tracks[track].trackData = (uint8_t *)calloc(416*16, 1);
+    tracks[track].trackData = (uint8_t *)calloc(NIBTRACKSIZE, 1);
     if (!tracks[track].trackData) {
       printf("Failed to malloc track data\n");
       return false;
     }
     
-    memcpy(tracks[track].trackData, nibData, 416*16);
+    memcpy(tracks[track].trackData, nibData, NIBTRACKSIZE);
     tracks[track].startingBlock = STARTBLOCK + 13*track;
     tracks[track].blockCount = 13;
-    tracks[track].bitCount = 416*16*8;
+    tracks[track].bitCount = NIBTRACKSIZE*8;
   }
   fclose(f);
 
@@ -639,7 +643,7 @@ bool Woz::parseInfoChunk(FILE *f, uint32_t chunkSize)
 
 bool Woz::parseMetaChunk(FILE *f, uint32_t chunkSize)
 {
-  metaData = (char *)calloc(1, chunkSize+1);
+  metaData = (char *)calloc(chunkSize+1, 1);
   if (!metaData)
     return false;
 
