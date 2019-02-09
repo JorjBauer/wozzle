@@ -76,6 +76,8 @@ class Woz {
   bool readQuarterTrackData(FILE *f, uint8_t quartertrack);
   bool readSectorData(uint8_t track, uint8_t sector, nibSector *sectorData);
 
+  void _initInfo();
+
  private:
   uint8_t quarterTrackMap[40*4];
   diskInfo di;

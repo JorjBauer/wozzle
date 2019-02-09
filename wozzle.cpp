@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "woz.h"
+#include "crc32.h"
 
 void usage(char *name)
 {
@@ -20,6 +21,8 @@ int main(int argc, char *argv[]) {
   char inname[256] = {0};
   char outname[256] = {0};
   char infoname[256] = {0};
+
+  preload_crc();
 
   // Parse command-line arguments
   int c;

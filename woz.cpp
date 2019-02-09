@@ -164,66 +164,68 @@ static bool read32(FILE *f, uint32_t *toWhere)
 
 bool Woz::writeFile(uint8_t version, const char *filename)
 {
+  FILE *f = NULL;
+  bool retval = false;
+  uint32_t tmp32; // scratch 32-bit value
+  off_t crcPos, endPos;
+  off_t curpos; // used in macros to dynamically tell what size the chunks are
+  uint32_t crcDataSize;
+  uint8_t *crcData = NULL;
+
+
   if (version > 2 || !version) {
-    printf("ERROR: version must be 1 or 2\n");
-    return false;
+    fprintf(stderr, "ERROR: version must be 1 or 2\n");
+    goto done;
   }
-  FILE *f = fopen(filename, "w+");
+
+  f = fopen(filename, "w+");
   if (!f) {
-    perror("Unable to open output file");
-    return false;
+    perror("ERROR: Unable to open output file");
+    goto done;
   }
   
   // header
-  uint32_t h;
   if (version == 1) {
-    h = 0x315A4F57;
+    tmp32 = 0x315A4F57;
   } else {
-    h = 0x325A4F57;
+    tmp32 = 0x325A4F57;
   }
-  if (!write32(f, h)) {
-    printf("ERROR: failed to write\n");
-    fclose(f);
-    return false;
+  if (!write32(f, tmp32)) {
+    fprintf(stderr, "ERROR: failed to write\n");
+    goto done;
   }
-  h = 0x0A0D0AFF;
-  if (!write32(f, h)) {
-    printf("ERROR: failed to write\n");
-    fclose(f);
-    return false;
+  tmp32 = 0x0A0D0AFF;
+  if (!write32(f, tmp32)) {
+    fprintf(stderr, "ERROR: failed to write\n");
+    goto done;
   }
 
   // We'll come back and write the checksum later
-  long crcPos = ftello(f);
-  h = 0;
-  if (!write32(f, h)) {
-    printf("ERROR: failed to write\n");
-    fclose(f);
-    return false;
+  crcPos = ftello(f);
+  tmp32 = 0;
+  if (!write32(f, tmp32)) {
+    fprintf(stderr, "ERROR: failed to write\n");
+    goto done;
   }
 
-  long curpos; // used in macros to dynamically tell what size the chunks are
   PREP_SECTION(f, 0x4F464E49); // 'INFO'
   if (!writeInfoChunk(version, f)) {
-    printf("ERROR: failed to write INFO chunk\n");
-    fclose(f);
-    return false;
+    fprintf(stderr, "ERROR: failed to write INFO chunk\n");
+    goto done;
   }
   END_SECTION(f);
 
   PREP_SECTION(f, 0x50414D54); // 'TMAP'
   if (!writeTMAPChunk(version, f)) {
-    printf("ERROR: failed to write TMAP chunk\n");
-    fclose(f);
-    return false;
+    fprintf(stderr, "ERROR: failed to write TMAP chunk\n");
+    goto done;
   }
   END_SECTION(f);
 
   PREP_SECTION(f, 0x534B5254); // 'TRKS'
   if (!writeTRKSChunk(version, f)) {
-    printf("ERROR: failed to write TRKS chunk\n");
-    fclose(f);
-    return false;
+    fprintf(stderr, "ERROR: failed to write TRKS chunk\n");
+    goto done;
   }
   END_SECTION(f);
 
@@ -231,9 +233,8 @@ bool Woz::writeFile(uint8_t version, const char *filename)
   if (metaData) {
     PREP_SECTION(f, 0x4154454D); // 'META'
     if (fwrite(metaData, 1, strlen(metaData), f) != strlen(metaData)) {
-      printf("ERROR: failed to write META chunk\n");
-      fclose(f);
-      return false;
+      fprintf(stderr, "ERROR: failed to write META chunk\n");
+      goto done;
     }
     END_SECTION(f);
   }
@@ -241,52 +242,46 @@ bool Woz::writeFile(uint8_t version, const char *filename)
   // FIXME: missing the WRIT chunk, if it exists
 
   // Fix up the checksum
-  long endPos = ftello(f);
-  uint32_t crcDataSize = endPos-crcPos-4;
-  uint8_t *crcData = (uint8_t *)malloc(crcDataSize);
+  endPos = ftello(f);
+  crcDataSize = endPos-crcPos-4;
+  crcData = (uint8_t *)malloc(crcDataSize);
   if (!crcData) {
-    printf("ERROR: failed to malloc crc data chunk\n");
-    fclose(f);
-    return false;
+    fprintf(stderr, "ERROR: failed to malloc crc data chunk\n");
+    goto done;
   }
-
+    
   // Read the data in for checksumming
   if (fseeko(f, crcPos+4, SEEK_SET)) {
-    printf("ERROR: failed to fseek to crcPos+4 (0x%lX)\n", crcPos+4);
-    fclose(f);
-    return false;
+    fprintf(stderr, "ERROR: failed to fseek to crcPos+4 (0x%llX)\n", crcPos+4);
+    goto done;
   }
 
-  uint32_t numRead = fread(crcData, 1, crcDataSize, f);
-  if (numRead != crcDataSize) {
-    printf("ERROR: failed to read in data for checksum [read %d, wanted %d]\n",numRead , crcDataSize);
-    fclose(f);
-    return false;
+  tmp32 = fread(crcData, 1, crcDataSize, f);
+  if (tmp32 != crcDataSize) {
+    fprintf(stderr, "ERROR: failed to read in data for checksum [read %d, wanted %d]\n", tmp32, crcDataSize);
+    goto done;
   }
-
-  preload_crc(); // fixme move to start of program
-  uint32_t crc = compute_crc_32(crcData, crcDataSize);
+    
+  tmp32 = compute_crc_32(crcData, crcDataSize);
   // Write it back out
   fseeko(f, crcPos, SEEK_SET);
-
-  if (!write32(f, crc)) {
-    printf("ERROR: failed to write CRC\n");
-    fclose(f);
-    return false;
+  if (!write32(f, tmp32)) {
+    fprintf(stderr, "ERROR: failed to write CRC\n");
+    goto done;
   }
 
-  fclose(f);
-  return true;
+  retval = true;
+
+ done:
+if (crcData)
+  free(crcData);
+  if (f)
+    fclose(f);
+  return retval;
 }
 
-bool Woz::readDskFile(const char *filename, uint8_t subtype)
+void Woz::_initInfo()
 {
-  FILE *f = fopen(filename, "r");
-  if (!f) {
-    perror("Unable to open input file");
-    return false;
-  }
-
   di.version = 2;
   di.diskType = 1;
   di.writeProtected = 0;
@@ -312,6 +307,17 @@ bool Woz::readDskFile(const char *filename, uint8_t subtype)
       quarterTrackMap[i] = 0xFF;
     }
   }
+}
+
+bool Woz::readDskFile(const char *filename, uint8_t subtype)
+{
+  FILE *f = fopen(filename, "r");
+  if (!f) {
+    perror("Unable to open input file");
+    return false;
+  }
+
+  _initInfo();
 
   // Now read in the 35 tracks of data from the DSK file and convert them to NIB
   uint8_t sectorData[256*16];
@@ -346,32 +352,8 @@ bool Woz::readNibFile(const char *filename)
     perror("Unable to open input file");
     return false;
   }
-
-  di.version = 2;
-  di.diskType = 1;
-  di.writeProtected = 0;
-  di.synchronized = 0;
-  di.cleaned = 0;
-  strcpy(di.creator, "Wozzle v1.0                     ");
-  di.diskSides = 1;
-  di.bootSectorFormat = 0;
-  di.optimalBitTiming = 32;
-  di.compatHardware = 0;
-  di.requiredRam = 0;
-  di.largestTrack = 13;
-
-  // reset all the track data
-  for (int i=0; i<160; i++) {
-    memset(&tracks[i], 0, sizeof(trackInfo));
-  }
-  // Construct a default quarter-track mapping
-  for (int i=0; i<140; i++) {
-    if ((i+1)/4 < 35) {
-      quarterTrackMap[i] = ((i-2) % 4 == 0) ? 0xFF : ((i+1)/4);
-    } else {
-      quarterTrackMap[i] = 0xFF;
-    }
-  }
+  
+  _initInfo();
 
   // Now read in the 35 tracks of data from the nib file
   nibSector nibData[16];
