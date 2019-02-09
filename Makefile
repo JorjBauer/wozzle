@@ -1,14 +1,14 @@
 CFLAGS = -Wall -g
 
-SRCS=Makefile woz.cpp wozzle.cpp crc32.cpp nibutil.cpp
+SRCS=Makefile woz.cpp wozzle.cpp crc32.c nibutil.cpp
 
 OBJS=woz.o crc32.o nibutil.o wozzle.o
 
 all: $(OBJS)
-	g++ $(CFLAGS) -o wozzle $(OBJS)
+	$(CXX) $(CFLAGS) -o wozzle $(OBJS)
 
-%.o: %.cpp
-	g++ $(CFLAGS) -c -o $@ $<
+%.o: %.cpp %.c
+	$(CXX) $(CFLAGS) -c -o $@ $<
 
 clean:
 	rm -f $(OBJS) wozzle *~

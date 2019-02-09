@@ -735,8 +735,7 @@ bool Woz::readSectorData(uint8_t track, uint8_t sector, nibSector *sectorData)
 	  sectorData->sectorEpilog[1] == 0xaa &&
 	  sectorData->sectorEpilog[2] == 0xeb) {
 	// Header is integral. See if it's our sector:
-	uint8_t sectorNum = denib(sectorData->sector44[0],
-				  sectorData->sector44[1]);
+	uint8_t sectorNum = de44(sectorData->sector44);
 	if (sectorNum != sector) {
 	  continue;
 	}
@@ -1004,11 +1003,11 @@ void Woz::dumpInfo()
       nibSector sectorData;
       for (int sector=0; sector<16; sector++) {
 	if (readSectorData(i, sector, &sectorData)) {
-	  printf("    Volume ID: %d\n", denib(sectorData.volume44[0], sectorData.volume44[1]));
-	  printf("    Track ID: %d\n", denib(sectorData.track44[0], sectorData.track44[1]));
-	  uint8_t sector = denib(sectorData.sector44[0], sectorData.sector44[1]);
+	  printf("    Volume ID: %d\n", de44(sectorData.volume44));
+	  printf("    Track ID: %d\n", de44(sectorData.track44));
+	  uint8_t sector = de44(sectorData.sector44);
 	  printf("    Sector: %d\n", sector);
-	  printf("    Cksum: %d\n", denib(sectorData.checksum44[0], sectorData.checksum44[1]));
+	  printf("    Cksum: %d\n", de44(sectorData.checksum44));
 
 	  printf("    Sector Data:\n");
 	  for (int k=0; k<342; k+=16) {

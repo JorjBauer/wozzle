@@ -5,7 +5,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
-#include "nib.h"
+#include "nibutil.h"
+#include "disktypes.h"
 
 typedef struct _diskInfo {
   uint8_t version;          // Woz format version #
@@ -29,14 +30,6 @@ typedef struct _trackInfo {
   uint32_t bitCount;
   uint8_t *trackData;
 } trackInfo;
-
-enum { 
-  T_AUTO = 0,
-  T_WOZ = 1,
-  T_NIB = 2,
-  T_DSK = 3,
-  T_PO = 4
-};
 
 class Woz {
  public:
