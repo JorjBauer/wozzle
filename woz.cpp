@@ -995,24 +995,24 @@ void Woz::dumpInfo()
 	}
 	printf("\n");
       }
+#endif
 
-#else
-      // Sector parsing & dump
-#if 1
+#if 0
+      printf("    Sector dump:\n");
       // Look at the sectors in numerical order
       // FIXME: 13-sector support
       nibSector sectorData;
       for (int sector=0; sector<16; sector++) {
 	if (readSectorData(i, sector, &sectorData)) {
-	  printf("    Volume ID: %d\n", de44(sectorData.volume44));
-	  printf("    Track ID: %d\n", de44(sectorData.track44));
+	  printf("      Volume ID: %d\n", de44(sectorData.volume44));
+	  printf("      Track ID: %d\n", de44(sectorData.track44));
 	  uint8_t sector = de44(sectorData.sector44);
-	  printf("    Sector: %d\n", sector);
-	  printf("    Cksum: %d\n", de44(sectorData.checksum44));
+	  printf("      Sector: %d\n", sector);
+	  printf("      Cksum: %d\n", de44(sectorData.checksum44));
 
-	  printf("    Sector Data:\n");
+	  printf("      Sector Data:\n");
 	  for (int k=0; k<342; k+=16) {
-	    printf("    0x%.4X :", k);
+	    printf("      0x%.4X :", k);
 	    for (int j=0; j<16; j++) {
 	      if (k+j < 342) {
 		printf(" %.2X", sectorData.data62[k+j]);
@@ -1022,7 +1022,11 @@ void Woz::dumpInfo()
 	  }
 	}
       }
-#else
+#endif
+
+#if 1
+#define denib(a, b) ((((a) & ~0xAA) << 1) | ((b) & ~0xAA))
+      printf("    Track-ordered sector dump:\n");
       // Look at the sectors found in order on the track
       trackBitIdx = 0x80; trackPointer = 0; trackLoopCounter = 0;
       uint16_t sectorsFound = 0;
@@ -1030,12 +1034,12 @@ void Woz::dumpInfo()
 	if (nextDiskByte(i) == 0xD5 &&
 	    nextDiskByte(i) == 0xAA &&
 	    nextDiskByte(i) == 0x96) {
-	  printf("    Volume ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
-	  printf("    Track ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	  printf("      Volume ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	  printf("      Track ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
 	  uint8_t sector = denib(nextDiskByte(i), nextDiskByte(i));
-	  printf("    Sector: %d\n", sector);
+	  printf("      Sector: %d\n", sector);
 	  sectorsFound |= (1 << sector);
-	  printf("    Cksum: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	  printf("      Cksum: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
 
 	  nextDiskByte(i); // skip epilog
 	  nextDiskByte(i);
@@ -1048,9 +1052,9 @@ void Woz::dumpInfo()
 	    nextDiskByte(i);
 	    nextDiskByte(i);
 	    // Dump the 6-and-2 data
-	    printf("    Sector Data:\n");
+	    printf("      Sector Data:\n");
 	    for (int k=0; k<342; k+=16) {
-	      printf("    0x%.4X :", k);
+	      printf("      0x%.4X :", k);
 	      for (int j=0; j<16; j++) {
 		if (k+j < 342) {
 		  printf(" %.2X", nextDiskByte(i));
@@ -1062,7 +1066,6 @@ void Woz::dumpInfo()
 	}
 
       } while (sectorsFound != 0xFFFF && trackLoopCounter < 2);
-#endif
 #endif
     }
   }
