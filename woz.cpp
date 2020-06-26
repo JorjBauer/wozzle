@@ -461,18 +461,30 @@ bool Woz::readWozFile(const char *filename)
 
     switch (chunkType) {
     case 0x4F464E49: // 'INFO'
+      if (verbose) {
+	printf("Reading INFO chunk\n");
+      }
       isOk = parseInfoChunk(f, chunkDataSize);
       haveData |= cINFO;
       break;
     case 0x50414D54: // 'TMAP'
+      if (verbose) {
+	printf("Reading TMAP chunk\n");
+      }
       isOk = parseTMAPChunk(f, chunkDataSize);
       haveData |= cTMAP;
       break;
     case 0x534B5254: // 'TRKS'
+      if (verbose) {
+	printf("Reading TRKS chunk\n");
+      }
       isOk = parseTRKSChunk(f, chunkDataSize);
       haveData |= cTRKS;
       break;
     case 0x4154454D: // 'META'
+      if (verbose) {
+	printf("Reading META chunk\n");
+      }	  
       isOk = parseMetaChunk(f, chunkDataSize);
       break;
     default:
@@ -495,9 +507,12 @@ bool Woz::readWozFile(const char *filename)
     return false;
   }
 
-  for (int i=0; i<35; i++) {
-    if (!readQuarterTrackData(f, i*4)) {
-      printf("Failed to read QTD for track %d\n", i);
+  // For a Woz file, we need to read *every* quarter-track; and if we've
+  // already got the target track's data, we don't need to re-read it.
+
+  for (int i=0; i<160; i++) {
+    if (!readQuarterTrackData(f, i)) {
+      printf("Failed to read QTD for quartertrack %d\n", i);
       fclose(f);
       return false;
     }
@@ -572,6 +587,12 @@ bool Woz::parseTRKSChunk(FILE *f, uint32_t chunkSize)
     if (!read16(f, &numBits)) {
       return false;
     }
+    if (verbose) {
+      printf("Track %d: read %d bits\n", trackNumber, numBits);
+    }
+    if (numBits > 6656 * 8) {
+      fprintf(stderr, "WARNING: track %d looks like it's too long (%d bits > 6656 bytes)?\n", trackNumber, numBits);
+    }
     tracks[trackNumber].bitCount = numBits;
     ptr += 6656;
     trackNumber++;
@@ -592,6 +613,17 @@ bool Woz::parseTMAPChunk(FILE *f, uint32_t chunkSize)
       return false;
     chunkSize--;
   }
+  if (verbose){
+    printf("Read quarter-track map:\n");
+    for (int i=0; i<140; i+=4) {
+      printf("%2d     %3d => %3d     %3d => %3d     %3d => %3d     %3d => %3d\n",
+	     i/4,
+	     i, quarterTrackMap[i],
+	     i+1, quarterTrackMap[i+1],
+	     i+2, quarterTrackMap[i+2],
+	     i+3, quarterTrackMap[i+3]);
+    }
+  }
 
   return true;
 }
@@ -600,21 +632,21 @@ bool Woz::parseTMAPChunk(FILE *f, uint32_t chunkSize)
 bool Woz::parseInfoChunk(FILE *f, uint32_t chunkSize)
 {
   if (chunkSize != 60) {
-    printf("INFO chunk size is not 60; aborting\n");
+    fprintf(stderr, "INFO chunk size is not 60; aborting\n");
     return false;
   }
 
   if (!read8(f, &di.version))
     return false;
   if (di.version > 2) {
-    printf("Incorrect version header; aborting\n");
+    fprintf(stderr, "Incorrect version header; aborting\n");
     return false;
   }
 
   if (!read8(f, &di.diskType))
     return false;
   if (di.diskType != 1) {
-    printf("Not a 5.25\" disk image; aborting\n");
+    fprintf(stderr, "Not a 5.25\" disk image; aborting\n");
     return false;
   }
 
@@ -652,7 +684,8 @@ bool Woz::parseInfoChunk(FILE *f, uint32_t chunkSize)
     di.compatHardware = 0;
     di.requiredRam = 0;
     di.largestTrack = 13; // 13 * 512 bytes = 6656. All tracks are
-			  // padded to 6646 bytes in the v1 image.
+			  // padded to 6646 (yes, 6646, not 6656)bytes
+			  // in the v1 image.
     di.optimalBitTiming = 32; // "standard" disk bit timing for a 5.25" disk (4us per bit)
   }
 
@@ -689,6 +722,9 @@ bool Woz::readQuarterTrackData(FILE *f, uint8_t quartertrack)
   // Allocate a new buffer for this track
   uint32_t count = tracks[targetImageTrack].blockCount * 512;
   if (di.version == 1) count = (tracks[targetImageTrack].bitCount / 8) + ((tracks[targetImageTrack].bitCount % 8) ? 1 : 0);
+  if (tracks[targetImageTrack].trackData) {
+    return true; // We've already read this track's data; don't re-read it
+  }
   tracks[targetImageTrack].trackData = (uint8_t *)calloc(count, 1);
   if (!tracks[targetImageTrack].trackData) {
     perror("Failed to alloc buf to read track magnetic data");
@@ -707,6 +743,10 @@ bool Woz::readQuarterTrackData(FILE *f, uint8_t quartertrack)
     }
   }
   uint32_t didRead = fread(tracks[targetImageTrack].trackData, 1, count, f);
+  if (verbose) {
+    printf("Read %u bytes of data for track %d\n",
+	   didRead, targetImageTrack);
+  }
   if (didRead != count) {
     printf("Failed to read all track data for track [read %d, wanted %d]\n", didRead, count);
     return false;
@@ -917,6 +957,11 @@ bool Woz::checksumWozTrack(uint8_t track, uint32_t *retCRC)
   if (!retCRC)
     return false;
 
+  if (!tracks[track].trackData) {
+    *retCRC = 0;
+    return false;
+  }
+  
   *retCRC = compute_crc_32(tracks[track].trackData, tracks[track].bitCount/8);
   return true;
 }
