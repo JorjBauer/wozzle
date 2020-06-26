@@ -25,12 +25,14 @@
   fseeko(f, 0, SEEK_END);                   \
   }
 
-Woz::Woz()
+Woz::Woz(bool verbose, uint8_t dumpflags)
 {
   trackPointer = 0;
   trackBitIdx = 0x80;
   trackLoopCounter = 0;
   metaData = NULL;
+  this->verbose = verbose;
+  this->dumpflags = dumpflags;
 
   memset(&quarterTrackMap, 255, sizeof(quarterTrackMap));
   memset(&di, 0, sizeof(diskInfo));
@@ -47,10 +49,15 @@ uint8_t Woz::getNextWozBit(uint8_t track)
 {
   if (trackBitIdx == 0x80) {
     // need another byte out of the track stream
-    trackByte = tracks[track].trackData[trackPointer++];
-    if (trackPointer >= tracks[track].bitCount / 8) {
-      trackPointer = 0;
-      trackLoopCounter++;
+    if (tracks[track].trackData) {
+      trackByte = tracks[track].trackData[trackPointer++];
+      if (trackPointer >= tracks[track].bitCount / 8) {
+	trackPointer = 0;
+	trackLoopCounter++;
+      }
+    } else {
+	trackPointer = 0;
+	trackLoopCounter++;
     }
   }
 
@@ -397,7 +404,9 @@ bool Woz::readWozFile(const char *filename)
   uint32_t h;
   read32(f, &h);
   if (h == 0x325A4F57 || h == 0x315A4F57) {
-    //printf("WOZ%c disk image\n", (h & 0xFF000000)>>24);
+    if (verbose) {
+      printf("WOZ%c disk image\n", (h & 0xFF000000)>>24);
+    }
   } else {
     printf("Unknown disk image type; can't continue\n");
     fclose(f);
@@ -417,8 +426,13 @@ bool Woz::readWozFile(const char *filename)
   }
   uint32_t crc32;
   read32(f, &crc32);
-  //  printf("Disk crc32 should be 0x%X\n", crc32);
-  // FIXME: check CRC. Remember that 0x00 means "don't check CRC"
+  // If CRC is set, then check it
+  if (crc32) {
+    // FIXME: check CRC
+    if (verbose) {
+      printf("Disk crc32 should be 0x%X\n", crc32);
+    }
+  }
   
   uint32_t fpos = 12;
   uint8_t haveData = 0;
@@ -438,6 +452,10 @@ bool Woz::readWozFile(const char *filename)
     }
     uint32_t chunkDataSize;
     read32(f, &chunkDataSize);
+    if ((int32_t)chunkDataSize < 0) {
+      printf("ERROR: data size < 0?\n");
+      exit(1);
+    }
 
     bool isOk;
 
@@ -469,7 +487,6 @@ bool Woz::readWozFile(const char *filename)
       fclose(f);
       return false;
     }
-    
     fpos += chunkDataSize + 8; // 8 bytes for the ChunkID and the ChunkSize
   }
 
@@ -895,6 +912,17 @@ bool Woz::decodeWozTrackToDsk(uint8_t track, uint8_t subtype, uint8_t sectorData
   return true;
 }
 
+bool Woz::checksumWozTrack(uint8_t track, uint32_t *retCRC)
+{
+  if (!retCRC)
+    return false;
+
+  *retCRC = compute_crc_32(tracks[track].trackData, tracks[track].bitCount/8);
+  return true;
+}
+
+
+
 void Woz::dumpInfo()
 {
   printf("WOZ image version %d\n", di.version);
@@ -963,110 +991,140 @@ void Woz::dumpInfo()
     printf("\n");
   }
 
-  printf("Quarter-track map:\n");
-  for (int i=0; i<140; i+=4) {
-    printf("%2d     %3d => %3d     %3d => %3d     %3d => %3d     %3d => %3d\n",
-	   i/4,
-	   i, quarterTrackMap[i],
-	   i+1, quarterTrackMap[i+1],
-	   i+2, quarterTrackMap[i+2],
-	   i+3, quarterTrackMap[i+3]);
+  if (dumpflags & DUMP_QTMAP) {
+    printf("Quarter-track map:\n");
+    for (int i=0; i<140; i+=4) {
+      printf("%2d     %3d => %3d     %3d => %3d     %3d => %3d     %3d => %3d\n",
+	     i/4,
+	     i, quarterTrackMap[i],
+	     i+1, quarterTrackMap[i+1],
+	     i+2, quarterTrackMap[i+2],
+	     i+3, quarterTrackMap[i+3]);
+    }
+  }
+  
+  if (dumpflags & DUMP_QTCRC) {
+    printf("Woz internal quarter-track CRCs:\n");
+    // Dump the CRC32 for each Woz quarter-track
+    for (int i=0 ;i<160; i++) {
+      uint32_t crc=0;
+      checksumWozTrack(i, &crc);
+      printf("Woz track %d CRC32: 0x%X\n", i, crc);
+    }
   }
 
-  for (int i=0; i<40; i++) {
-    printf("Track %d:\n", i);
-    if (di.version == 1) {
-      printf("  Starts at byte %d\n", tracks[i].startingByte);
-    } else {
-      printf("  Starts at block %d\n", tracks[i].startingBlock);
-    }
-    printf("  Number of blocks: %d\n", tracks[i].blockCount);
-    printf("  Number of bits: %d\n", tracks[i].bitCount);
-    if (tracks[i].bitCount && tracks[i].trackData) {
-#if 1
-      // Raw track dump
-      printf("    Raw track data:\n");
-      for (int k=0; k<(tracks[i].bitCount/8)+((tracks[i].bitCount%8)?1:0); k+=16) {
-	printf("    0x%.4X :", k);
-	for (int j=0; j<16; j++) {
-	  if (k+j < (tracks[i].bitCount/8)+((tracks[i].bitCount%8)?1:0)) {
-	    printf(" %.2X", tracks[i].trackData[k+j]);
-	  }
-	}
-	printf("\n");
+  if (dumpflags & DUMP_TRACK) {
+    for (int i=0; i<40; i++) {
+      printf("Track %d:\n", i);
+      if (di.version == 1) {
+	printf("  Starts at byte %d\n", tracks[i].startingByte);
+      } else {
+	printf("  Starts at block %d\n", tracks[i].startingBlock);
       }
-#endif
-
-#if 0
-      printf("    Sector dump:\n");
-      // Look at the sectors in numerical order
-      // FIXME: 13-sector support
-      nibSector sectorData;
-      for (int sector=0; sector<16; sector++) {
-	if (readSectorData(i, sector, &sectorData)) {
-	  printf("      Volume ID: %d\n", de44(sectorData.volume44));
-	  printf("      Track ID: %d\n", de44(sectorData.track44));
-	  uint8_t sector = de44(sectorData.sector44);
-	  printf("      Sector: %d\n", sector);
-	  printf("      Cksum: %d\n", de44(sectorData.checksum44));
-
-	  printf("      Sector Data:\n");
-	  for (int k=0; k<342; k+=16) {
-	    printf("      0x%.4X :", k);
+      printf("  Number of blocks: %d\n", tracks[i].blockCount);
+      printf("  Number of bits: %d\n", tracks[i].bitCount);
+      if (tracks[i].bitCount && tracks[i].trackData) {
+	if (dumpflags & DUMP_RAWTRACK) {
+	  // Raw track dump
+	  printf("    Raw track data:\n");
+	  for (int k=0; k<(tracks[i].bitCount/8)+((tracks[i].bitCount%8)?1:0); k+=16) {
+	    printf("    0x%.4X :", k);
 	    for (int j=0; j<16; j++) {
-	      if (k+j < 342) {
-		printf(" %.2X", sectorData.data62[k+j]);
+	      if (k+j < (tracks[i].bitCount/8)+((tracks[i].bitCount%8)?1:0)) {
+		printf(" %.2X", tracks[i].trackData[k+j]);
 	      }
 	    }
 	    printf("\n");
 	  }
 	}
-      }
-#endif
-
-#if 1
-#define denib(a, b) ((((a) & ~0xAA) << 1) | ((b) & ~0xAA))
-      printf("    Track-ordered sector dump:\n");
-      // Look at the sectors found in order on the track
-      trackBitIdx = 0x80; trackPointer = 0; trackLoopCounter = 0;
-      uint16_t sectorsFound = 0;
-      do {
-	if (nextDiskByte(i) == 0xD5 &&
-	    nextDiskByte(i) == 0xAA &&
-	    nextDiskByte(i) == 0x96) {
-	  printf("      Volume ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
-	  printf("      Track ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
-	  uint8_t sector = denib(nextDiskByte(i), nextDiskByte(i));
-	  printf("      Sector: %d\n", sector);
-	  sectorsFound |= (1 << sector);
-	  printf("      Cksum: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
-
-	  nextDiskByte(i); // skip epilog
-	  nextDiskByte(i);
-	  nextDiskByte(i);
-	  // look for data prolog d5 aa ad
-	  while (nextDiskByte(i) != 0xD5 && trackLoopCounter < 2)
-	    ;
-	  if (trackLoopCounter < 2) {
-	    // Hope that's it and skip two bytes
-	    nextDiskByte(i);
-	    nextDiskByte(i);
-	    // Dump the 6-and-2 data
-	    printf("      Sector Data:\n");
-	    for (int k=0; k<342; k+=16) {
-	      printf("      0x%.4X :", k);
-	      for (int j=0; j<16; j++) {
-		if (k+j < 342) {
-		  printf(" %.2X", nextDiskByte(i));
+	
+	if (dumpflags & DUMP_SECTOR)  {
+	  printf("    Sector dump:\n");
+	  // Look at the sectors in numerical order
+	  // FIXME: 13-sector support
+	  nibSector sectorData;
+	  for (int sector=0; sector<16; sector++) {
+	    if (readSectorData(i, sector, &sectorData)) {
+	      printf("      Volume ID: %d\n", de44(sectorData.volume44));
+	      printf("      Track ID: %d\n", de44(sectorData.track44));
+	      uint8_t sector = de44(sectorData.sector44);
+	      printf("      Sector: %d\n", sector);
+	      printf("      Cksum: %d\n", de44(sectorData.checksum44));
+	      
+	      printf("      Sector Data:\n");
+	      for (int k=0; k<342; k+=16) {
+		printf("      0x%.4X :", k);
+		for (int j=0; j<16; j++) {
+		  if (k+j < 342) {
+		    printf(" %.2X", sectorData.data62[k+j]);
+		  }
 		}
+		printf("\n");
 	      }
-	      printf("\n");
 	    }
 	  }
 	}
+      }
+      
+      if (dumpflags & DUMP_TOFILE) {
+	// Dump each sector to a file for analysis
+	uint8_t sectorData[256*16];
+	// fixme use track map
+	for (int i=0; i<35; i++) {
+	  decodeWozTrackToDsk(i, T_AUTO, sectorData);
+	  for (int j=0; j<16; j++) {
+	    char buf[25];
+	    sprintf(buf, "t%ds%d", i, j);
+	    FILE *f = fopen(buf, "w");
+	    fwrite(&sectorData[256*j], 1, 256, f);
+	    fclose(f);
+	  }
+	}
+      }
 
-      } while (sectorsFound != 0xFFFF && trackLoopCounter < 2);
-#endif
+      if (dumpflags & DUMP_ORDEREDSECTOR) {
+#define denib(a, b) ((((a) & ~0xAA) << 1) | ((b) & ~0xAA))
+	printf("    Track-ordered sector dump:\n");
+	// Look at the sectors found in order on the track
+	trackBitIdx = 0x80; trackPointer = 0; trackLoopCounter = 0;
+	uint16_t sectorsFound = 0;
+	do {
+	  if (nextDiskByte(i) == 0xD5 &&
+	      nextDiskByte(i) == 0xAA &&
+	      nextDiskByte(i) == 0x96) {
+	    printf("      Volume ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	    printf("      Track ID: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	    uint8_t sector = denib(nextDiskByte(i), nextDiskByte(i));
+	    printf("      Sector: %d\n", sector);
+	    sectorsFound |= (1 << sector);
+	    printf("      Cksum: %d\n", denib(nextDiskByte(i), nextDiskByte(i)));
+	    
+	    nextDiskByte(i); // skip epilog
+	    nextDiskByte(i);
+	    nextDiskByte(i);
+	    // look for data prolog d5 aa ad
+	    while (nextDiskByte(i) != 0xD5 && trackLoopCounter < 2)
+	      ;
+	    if (trackLoopCounter < 2) {
+	      // Hope that's it and skip two bytes
+	      nextDiskByte(i);
+	      nextDiskByte(i);
+	      // Dump the 6-and-2 data
+	      printf("      Sector Data:\n");
+	      for (int k=0; k<342; k+=16) {
+		printf("      0x%.4X :", k);
+		for (int j=0; j<16; j++) {
+		  if (k+j < 342) {
+		    printf(" %.2X", nextDiskByte(i));
+		  }
+		}
+		printf("\n");
+	      }
+	    }
+	  }
+	  
+	} while (sectorsFound != 0xFFFF && trackLoopCounter < 2);
+      }
     }
   }
 }

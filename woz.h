@@ -8,6 +8,16 @@
 #include "nibutil.h"
 #include "disktypes.h"
 
+#define DUMP_TOFILE        0x01
+#define DUMP_QTMAP         0x02
+#define DUMP_QTCRC         0x04
+
+#define DUMP_TRACK         0x10
+#define DUMP_SECTOR        0x20
+#define DUMP_RAWTRACK      0x40
+#define DUMP_ORDEREDSECTOR 0x80
+
+
 typedef struct _diskInfo {
   uint8_t version;          // Woz format version #
   uint8_t diskType;         // 1 = 5.25"; 2 = 3.5"
@@ -33,7 +43,7 @@ typedef struct _trackInfo {
 
 class Woz {
  public:
-  Woz();
+  Woz(bool verbose, uint8_t dumpflags);
   ~Woz();
 
   bool readFile(const char *filename, uint8_t forceType = T_AUTO);
@@ -43,6 +53,7 @@ class Woz {
 
   bool decodeWozTrackToNib(uint8_t track, nibSector sectorData[16]);
   bool decodeWozTrackToDsk(uint8_t track, uint8_t subtype, uint8_t sectorData[256*16]);
+  bool checksumWozTrack(uint8_t track, uint32_t *retCRC);
 
   void dumpInfo();
 
@@ -72,6 +83,9 @@ class Woz {
   void _initInfo();
 
  private:
+  bool verbose;
+  uint8_t dumpflags;
+  
   uint8_t quarterTrackMap[40*4];
   diskInfo di;
   trackInfo tracks[160];
