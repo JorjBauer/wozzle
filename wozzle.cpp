@@ -8,13 +8,14 @@
 
 void usage(char *name)
 {
-  printf("Usage: %s { -I <input file> [-D <flags>] [-v] | { -i <input file> -o <output file> [-v] } }\n", name);
+  printf("Usage: %s { -I <input file> [-D <flags>] [-s] [-v] | { -i <input file> -o <output file> [-s] [-v] } }\n", name);
   printf("\n");
   printf("\t-h\t\t\tThis help text\n");
   printf("\t-I <input filename>\tDump information about disk image\n");
   printf("\t-D <flags>\t\tEnable specific dump flags (bitwise uint8_t)\n");
   printf("\t-i <input filename>\tName of input disk image\n");
   printf("\t-o <output filename>\tName of output (WOZ2) disk image\n");
+  printf("\t-s\t\t\tSmaller memory footprint (don't preread tracks)\n");
   printf("\t-v\t\t\tVerbose output\n");
 }
 
@@ -24,13 +25,14 @@ int main(int argc, char *argv[]) {
   char outname[256] = {0};
   char infoname[256] = {0};
   bool verbose = false;
+  bool preloadTracks = true;
   uint32_t dumpflags = 0; // DUMP_RAWTRACK usw., cf. woz.h
 
   preload_crc();
 
   // Parse command-line arguments
   int c;
-  while ( (c=getopt(argc, argv, "D:I:i:o:vh?")) != -1 ) {
+  while ( (c=getopt(argc, argv, "D:I:i:o:svh?")) != -1 ) {
     switch (c) {
     case 'D':
       // FIXME set endptr and check that the whole arg was consumed
@@ -44,6 +46,9 @@ int main(int argc, char *argv[]) {
       break;
     case 'o':
       strncpy(outname, optarg, sizeof(outname));
+      break;
+    case 's':
+      preloadTracks = false;
       break;
     case 'v':
       verbose = true;
@@ -75,7 +80,7 @@ int main(int argc, char *argv[]) {
 
   Woz w(verbose, dumpflags & 0xFF);
 
-  bool r = w.readFile(inname[0] ? inname : infoname);
+  bool r = w.readFile(inname[0] ? inname : infoname, preloadTracks);
   if (!r) {
     printf("Failed to read file; aborting\n");
     exit(1);

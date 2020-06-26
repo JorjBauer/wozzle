@@ -46,7 +46,7 @@ class Woz {
   Woz(bool verbose, uint8_t dumpflags);
   ~Woz();
 
-  bool readFile(const char *filename, uint8_t forceType = T_AUTO);
+  bool readFile(const char *filename, bool preloadTracks, uint8_t forceType = T_AUTO);
   bool writeFile(uint8_t version, const char *filename);
 
   uint8_t getNextWozBit(uint8_t track);
@@ -59,32 +59,47 @@ class Woz {
 
   bool isSynchronized();
 
+  uint8_t trackNumberForQuarterTrack(uint16_t qt);
+  
+  bool flush();
+  
  private:
-  bool readWozFile(const char *filename);
-  bool readDskFile(const char *filename, uint8_t subtype);
-  bool readNibFile(const char *filename);
+  bool readWozFile(const char *filename, bool preloadTracks);
+  bool readDskFile(const char *filename, bool preloadTracks, uint8_t subtype);
+  bool readNibFile(const char *filename, bool preloadTracks);
 
   uint8_t fakeBit();
   uint8_t nextDiskBit(uint8_t track);
   uint8_t nextDiskByte(uint8_t track);
 
-  bool parseTRKSChunk(FILE *f, uint32_t chunkSize);
-  bool parseTMAPChunk(FILE *f, uint32_t chunkSize);
-  bool parseInfoChunk(FILE *f, uint32_t chunkSize);
-  bool parseMetaChunk(FILE *f, uint32_t chunkSize);
+  bool writeNextWozBit(int fd, uint8_t track, uint8_t bit);
+  bool writeNextWozByte(int fd, uint8_t track, uint8_t b);
+  
+  bool parseTRKSChunk(int fd, uint32_t chunkSize);
+  bool parseTMAPChunk(int fd, uint32_t chunkSize);
+  bool parseInfoChunk(int fd, uint32_t chunkSize);
+  bool parseMetaChunk(int fd, uint32_t chunkSize);
 
-  bool writeInfoChunk(uint8_t version, FILE *f);
-  bool writeTMAPChunk(uint8_t version, FILE *f);
-  bool writeTRKSChunk(uint8_t version, FILE *f);
+  bool writeInfoChunk(uint8_t version, int fd);
+  bool writeTMAPChunk(uint8_t version, int fd);
+  bool writeTRKSChunk(uint8_t version, int fd);
 
-  bool readQuarterTrackData(FILE *f, uint8_t quartertrack);
+  bool readQuarterTrackData(int fd, uint8_t quartertrack);
+  bool readWozTrackData(int8_t fh, uint8_t wt);
   bool readSectorData(uint8_t track, uint8_t sector, nibSector *sectorData);
 
+  bool readAndDecodeTrack(uint8_t track, int8_t fh);
+  
   void _initInfo();
 
  private:
+  uint8_t imageType;
+  
   bool verbose;
   uint8_t dumpflags;
+
+  bool autoFlushTrackData;
+  bool trackDirty;
   
   uint8_t quarterTrackMap[40*4];
   diskInfo di;
@@ -92,10 +107,12 @@ class Woz {
 
   // cursor for track enumeration
   uint32_t trackPointer;
+  uint32_t trackBitCounter;
   uint8_t trackByte;
   uint8_t trackBitIdx;
   uint8_t trackLoopCounter;
   char *metaData;
+  uint8_t randData, randPtr;
 };
 
 #endif
