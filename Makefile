@@ -23,9 +23,9 @@ clean:
 
 test: all
 	if [ -d "woz test images" ]; then \
-		./tests/1-basic.sh; \
-		./tests/2-halftrack.sh; \
-		./tests/3-small-basic.sh; \
+		./tests/1-basic.sh && \
+		./tests/2-halftrack.sh && \
+		./tests/3-small-basic.sh && \
 		./tests/4-small-halftrack.sh; \
 	else \
 		echo "You'll need to download the WOZ reference images to run tests." ; \

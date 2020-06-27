@@ -15,7 +15,7 @@ void usage(char *name)
   printf("\t-D <flags>\t\tEnable specific dump flags (bitwise uint8_t)\n");
   printf("\t-i <input filename>\tName of input disk image\n");
   printf("\t-o <output filename>\tName of output (WOZ2) disk image\n");
-  printf("\t-s\t\t\tSmaller memory footprint (WARNING UNSTABLE)\n");
+  printf("\t-s\t\t\tSmaller memory footprint\n");
   printf("\t-v\t\t\tVerbose output\n");
 }
 

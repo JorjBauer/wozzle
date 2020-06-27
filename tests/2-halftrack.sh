@@ -1,8 +1,7 @@
 #!/bin/bash
 
 runcmd() {
-    #    open -a ~/Applications/Virtual\ \]\[/Virtual\ \]\[.app $1
-    echo 'hi'
+    open -a ~/Applications/Virtual\ \]\[/Virtual\ \]\[.app $1
 }
 
 # Start of tests

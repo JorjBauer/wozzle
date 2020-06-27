@@ -1276,16 +1276,28 @@ bool Woz::writeTRKSChunk(uint8_t version, int fdout)
 
   // All the track data
   for (int i=0; i<160; i++) {
+    // If we didn't preload, and the track isn't loaded, then load it now
+    if (autoFlushTrackData && !tracks[i].trackData) {
+      loadMissingTrackFromImage(i);
+    }
+    
     if (tracks[i].startingBlock &&
 	tracks[i].blockCount) {
-      lseek(fdout, tracks[i].startingBlock * 512, SEEK_SET);
+      if (lseek(fdout, tracks[i].startingBlock * 512, SEEK_SET) == -1) {
+	fprintf(stderr, "Failed to seek before writing track\n");
+	return false;
+      }
       // Technically, we only have this many bytes to write:
       // uint32_t writeSize = (tracks[i].bitCount / 8) + ((tracks[i].bitCount % 8) ? 1 : 0);
       // ... but in practice, the tracks are all padded to NIBTRACKSIZE bytes;
       // and we alloc'd a buffer of that size, too; so write the whole thing,
       // since it would have been calloc'd initially.
-      if (write(fdout, tracks[i].trackData, NIBTRACKSIZE) != NIBTRACKSIZE)
+      ssize_t numWritten = write(fdout, tracks[i].trackData, NIBTRACKSIZE);
+      if (numWritten != NIBTRACKSIZE) {
+	fprintf(stderr, "Failed to write track [%ld]\n", numWritten);
+	perror("error writing");
 	return false;
+      }
 #if 0      
       uint8_t c = 0;
       while (writeSize < tracks[i].blockCount * 512) {
