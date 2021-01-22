@@ -167,7 +167,7 @@ void Woz::advanceBitStream(uint8_t datatrack)
     // bounds here, so unless we always set trackByte after the bit
     // range check below I'm not sure we can get rid of this one
     if ((di.version == 2 && trackPointer < tracks[datatrack].blockCount*512) ||
-	(di.version == 1 && trackPointer < 831) // FIXME doublecheck 831 (6636/8)
+	(di.version == 1 && trackPointer < NIBTRACKSIZE)
 	) {
       trackByte = tracks[datatrack].trackData[trackPointer];
       trackByteFromDataTrack = datatrack;
