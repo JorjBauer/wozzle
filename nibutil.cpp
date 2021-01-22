@@ -285,12 +285,10 @@ nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer
 
   // loop through the data twice, so we make sure we read anything 
   // that crosses the end/start boundary
-  uint16_t startOfSector;
   for (uint16_t i=0; i<2*416*16; i++) {
     // Find the prolog
     if (input[i % NIBTRACKSIZE] != 0xD5)
       continue;
-    startOfSector = i;
     i++;
     if (input[i % NIBTRACKSIZE] != 0xAA)
       continue;
@@ -349,7 +347,7 @@ nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer
       nibData[j] = input[(i+j)%NIBTRACKSIZE];
     }
     if (!_decodeData(nibData, output)) {
-      continue;
+      return errorBadData;
     }
     i += 343;
 
