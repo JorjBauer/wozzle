@@ -1628,14 +1628,14 @@ uint8_t Woz::dataTrackNumberForQuarterTrack(uint16_t qt)
   return quarterTrackMap[qt];
 }
 
-#if 0
 bool Woz::flush()
 {
+#if 0
   if (trackDirty) {
     printf("Hackily writing /tmp/auto.woz\n");
     trackDirty = false;
     return writeFile(2, "/tmp/auto.woz"); // FIXME: debugging
   }
   return true;
-}
 #endif
+}
