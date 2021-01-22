@@ -76,16 +76,9 @@ bool Woz::writeNextWozBit(uint8_t datatrack, uint8_t bit)
     return false;
   }
 
-  // FIXME can this just rely on advanceBitStream?
-  if (trackBitCounter >= tracks[datatrack].bitCount) {
-    printf("WRITE counter reset [%u > %u]\n", trackBitCounter, tracks[datatrack].bitCount);
-    trackPointer = 0;
-    trackBitIdx = 0x80;
-    trackBitCounter = 0;
-  }
-  
-  if (trackBitIdx == 0x80) {
-    trackByte = tracks[datatrack].trackData[trackPointer++];
+  if (trackByteFromDataTrack != datatrack) {
+    // FIXME what if trackpointer is out of bounds for this track
+    trackByte = tracks[datatrack].trackData[trackPointer];
     trackByteFromDataTrack = datatrack;
   }
   
@@ -94,9 +87,9 @@ bool Woz::writeNextWozBit(uint8_t datatrack, uint8_t bit)
   else
     trackByte &= ~trackBitIdx;
   
-  tracks[datatrack].trackData[trackPointer-1] = trackByte;
+  tracks[datatrack].trackData[trackPointer] = trackByte;
 
-  //  advanceBitStream(datatrack);
+  advanceBitStream(datatrack);
   trackDirty = true;
   
   return true;
