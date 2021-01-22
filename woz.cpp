@@ -142,6 +142,7 @@ uint8_t Woz::getNextWozBit(uint8_t datatrack)
   if (trackByteFromDataTrack != datatrack) {
     // FIXME what if trackPointer is out of bounds for this track
     trackByte = tracks[datatrack].trackData[trackPointer];
+    trackByteFromDataTrack = datatrack;
   }
   
   // It's assumed that trackByte is set properly when we get here. It
