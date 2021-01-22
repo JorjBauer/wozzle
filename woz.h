@@ -61,6 +61,17 @@ class Woz {
   bool flush();
 
   bool decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16]);
+ protected:
+  bool writeWozFile(const char *filename, uint8_t subtype);
+  bool writeWozFile(int fdout, uint8_t subtype);
+  bool writeDskFile(const char *filename, uint8_t subtype);
+  bool writeDskFile(int fdout, uint8_t subtype);
+  bool writeNibFile(const char *filename);
+  bool writeNibFile(int fdout);
+  
+  uint8_t nextDiskBit(uint8_t datatrack);
+  uint8_t nextDiskByte(uint8_t datatrack);
+  
  private:
   bool readWozFile(const char *filename, bool preloadTracks);
   bool readDskFile(const char *filename, bool preloadTracks, uint8_t subtype);
@@ -68,13 +79,7 @@ class Woz {
 
   bool decodeWozTrackToNibFromDataTrack(uint8_t dataTrack, nibSector sectorData[16]);
 
-  bool writeWozFile(const char *filename, uint8_t subtype);
-  bool writeDskFile(const char *filename, uint8_t subtype);
-  bool writeNibFile(const char *filename);
-
   uint8_t fakeBit();
-  uint8_t nextDiskBit(uint8_t datatrack);
-  uint8_t nextDiskByte(uint8_t datatrack);
 
   bool writeNextWozBit(uint8_t datatrack, uint8_t bit);
   bool writeNextWozByte(uint8_t datatrack, uint8_t b);
@@ -97,8 +102,10 @@ class Woz {
 
   void _initInfo();
 
- private:
+ protected:
   int fd;
+  
+ private:
   uint8_t imageType;
   
   bool verbose;
