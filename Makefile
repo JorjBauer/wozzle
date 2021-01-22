@@ -1,9 +1,9 @@
 CFLAGS = -Wall -g
 CXXFLAGS = $(CFLAGS)
 
-SRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp
+SRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp
 
-OBJS=woz.o crc32.o nibutil.o wozzle.o
+OBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o
 
 .PHONY: test clean
 

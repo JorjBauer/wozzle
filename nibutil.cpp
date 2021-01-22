@@ -277,7 +277,7 @@ static bool _decodeData(const uint8_t trackBuffer[343], uint8_t output[256])
 
 // trackBuffer is input NIB data; rawTrackBuffer is output DSK/PO data
 nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer[256*16],
-		       uint8_t diskType, int8_t track)
+		       uint8_t diskType)
 {
   // bitmask of the sectors that we've found while decoding. We should
   // find all 16.

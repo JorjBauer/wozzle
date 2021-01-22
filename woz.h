@@ -49,6 +49,7 @@ class Woz {
   bool readFile(const char *filename, bool preloadTracks, uint8_t forceType = T_AUTO);
   bool writeFile(const char *filename, uint8_t forceType = T_AUTO);
 
+  void advanceBitStream(uint8_t datatrack);
   uint8_t getNextWozBit(uint8_t datatrack);
 
   void dumpInfo();
@@ -58,14 +59,14 @@ class Woz {
   uint8_t dataTrackNumberForQuarterTrack(uint16_t qt);
   
   bool flush();
-  
+
+  bool decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16]);
  private:
   bool readWozFile(const char *filename, bool preloadTracks);
   bool readDskFile(const char *filename, bool preloadTracks, uint8_t subtype);
   bool readNibFile(const char *filename, bool preloadTracks);
 
-  bool decodeWozTrackToNib(uint8_t phystrack, nibSector sectorData[16]);
-  bool decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16]);
+  bool decodeWozTrackToNibFromDataTrack(uint8_t dataTrack, nibSector sectorData[16]);
 
   bool writeWozFile(const char *filename, uint8_t subtype);
   bool writeDskFile(const char *filename, uint8_t subtype);
@@ -88,7 +89,7 @@ class Woz {
   bool writeTRKSChunk(uint8_t version, int fdout);
 
   bool readWozDataTrack(uint8_t datatrack);
-  bool readNibSectorData(uint8_t phystrack, uint8_t sector, nibSector *sectorData);
+  bool readNibSectorDataFromDataTrack(uint8_t dataTrack, uint8_t sector, nibSector *sectorData);
 
   bool loadMissingTrackFromImage(uint8_t datatrack);
   
@@ -114,6 +115,7 @@ class Woz {
   uint32_t trackPointer;
   uint32_t trackBitCounter;
   uint8_t trackByte;
+  uint8_t trackByteFromDataTrack;
   uint8_t trackBitIdx;
   uint8_t trackLoopCounter;
   char *metaData;

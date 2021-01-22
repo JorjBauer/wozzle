@@ -5,13 +5,15 @@
 #include "woz.h"
 #include "crc32.h"
 #include "nibutil.h"
+#include "vtoc.h"
 
 void usage(char *name)
 {
-  printf("Usage: %s { -I <input file> [-D <flags>] [-s] [-v] | { -i <input file> -o <output file> [-s] [-v] } }\n", name);
+  printf("Usage: %s { -I <input file> [-D <flags>] [-d] [-s] [-v] | { -i <input file> -o <output file> [-s] [-v] } }\n", name);
   printf("\n");
   printf("\t-h\t\t\tThis help text\n");
   printf("\t-I <input filename>\tDump information about disk image\n");
+  printf("\t-d\t\t\tDecode DOS 3.3 information\n");
   printf("\t-D <flags>\t\tEnable specific dump flags (bitwise uint8_t)\n");
   printf("\t-i <input filename>\tName of input disk image\n");
   printf("\t-o <output filename>\tName of output (WOZ2) disk image\n");
@@ -26,14 +28,18 @@ int main(int argc, char *argv[]) {
   char infoname[256] = {0};
   bool verbose = false;
   bool preloadTracks = true;
+  bool dumpDosInfo = false;
   uint32_t dumpflags = 0; // DUMP_RAWTRACK usw., cf. woz.h
 
   preload_crc();
 
   // Parse command-line arguments
   int c;
-  while ( (c=getopt(argc, argv, "D:I:i:o:svh?")) != -1 ) {
+  while ( (c=getopt(argc, argv, "dD:I:i:o:svh?")) != -1 ) {
     switch (c) {
+    case 'd':
+      dumpDosInfo = true;
+      break;
     case 'D':
       // FIXME set endptr and check that the whole arg was consumed
       dumpflags = strtoul(optarg, NULL, 10);
@@ -87,6 +93,18 @@ int main(int argc, char *argv[]) {
 
   if (infoname[0]) {
     w.dumpInfo();
+
+    if (dumpDosInfo) {
+      uint8_t trackData[256*16];
+      if (!w.decodeWozTrackToDsk(17, /* The catalog and VToC are on track 17 */
+				 T_DSK,
+				 trackData)) {
+	printf("Failed to read track 17; can't dump VToC\n");
+	exit(1);
+      }
+      VToC vtoc;
+      vtoc.DecodeVToC(&trackData[0] /* start of sector 0 */);
+    }
     exit(0);
   }
 
