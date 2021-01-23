@@ -7,11 +7,14 @@
 // Block number we start packing data bits after (Woz 2.0 images)
 #define STARTBLOCK 3
 
+#if defined(AIIE) || defined(TEENSYDUINO)
+#define LAZYFD
+#include "fscompat.h"
+#endif
+
 #ifdef TEENSYDUINO
 // This junk is for my AiiE project. I need to abstract it out better.
-#include "fscompat.h"
 #define SKIPCHECKSUM
-#define LAZYFD
 #define malloc extmem_malloc
 #define free extmem_free
 #define calloc extmem_calloc
@@ -1119,6 +1122,10 @@ bool Woz::readWozDataTrack(uint8_t datatrack)
   if (di.version == 1) count = (tracks[datatrack].bitCount / 8) + ((tracks[datatrack].bitCount % 8) ? 1 : 0);
   if (tracks[datatrack].trackData) {
     return true; // We've already read this track's data; don't re-read it
+  }
+  if (!count) {
+    // This track has no data; do nothing, and we'll be successful at it
+    return true;
   }
   tracks[datatrack].trackData = (uint8_t *)calloc(count, 1);
   if (!tracks[datatrack].trackData) {
