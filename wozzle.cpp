@@ -6,6 +6,7 @@
 #include "crc32.h"
 #include "nibutil.h"
 #include "vtoc.h"
+#include "vmap.h"
 
 void usage(char *name)
 {
@@ -17,6 +18,7 @@ void usage(char *name)
   printf("\t-D <flags>\t\tEnable specific dump flags (bitwise uint8_t)\n");
   printf("\t-i <input filename>\tName of input disk image\n");
   printf("\t-o <output filename>\tName of output (WOZ2) disk image\n");
+  printf("\t-p\t\t\tDecode ProDOS information\n");
   printf("\t-s\t\t\tSmaller memory footprint\n");
   printf("\t-v\t\t\tVerbose output\n");
 }
@@ -29,16 +31,20 @@ int main(int argc, char *argv[]) {
   bool verbose = false;
   bool preloadTracks = true;
   bool dumpDosInfo = false;
+  bool dumpProdosInfo = false;
   uint32_t dumpflags = 0; // DUMP_RAWTRACK usw., cf. woz.h
 
   preload_crc();
 
   // Parse command-line arguments
   int c;
-  while ( (c=getopt(argc, argv, "dD:I:i:o:svh?")) != -1 ) {
+  while ( (c=getopt(argc, argv, "dD:I:i:o:psvh?")) != -1 ) {
     switch (c) {
     case 'd':
       dumpDosInfo = true;
+      break;
+    case 'p':
+      dumpProdosInfo = true;
       break;
     case 'D':
       // FIXME set endptr and check that the whole arg was consumed
@@ -104,6 +110,16 @@ int main(int argc, char *argv[]) {
       }
       VToC vtoc;
       vtoc.DecodeVToC(&trackData[0] /* start of sector 0 */);
+    }
+
+    if (dumpProdosInfo) {
+      uint8_t trackData[256*16];
+      if (!w.decodeWozTrackToDsk(0, T_PO, trackData)) {
+	printf("Failed to read track 0; can't dump VMap\n");
+	exit(1);
+      }
+      VMap vmap;
+      vmap.DecodeVMap(trackData);
     }
     exit(0);
   }
