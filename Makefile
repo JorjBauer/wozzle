@@ -27,6 +27,7 @@ test: all
 		./tests/2-halftrack.sh && \
 		./tests/3-small-basic.sh && \
 		./tests/4-small-halftrack.sh; \
+		./tests/5-dos.sh; \
 	else \
 		echo "You'll need to download the WOZ reference images to run tests." ; \
 	fi
