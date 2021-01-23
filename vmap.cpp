@@ -71,6 +71,7 @@ static void printDate(uint8_t dateData[4])
 //    0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15
 // expect track 0 has been passed in
 // FIXME: this only does the first block of the directory; there are more
+// FIXME: do the subtype stuff
 void VMap::DecodeVMap(uint8_t trackData[256*16])
 {
   uint8_t block[512];
@@ -124,6 +125,7 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	  printf(" ");
 	  j++;
 	};
+	char auxData[16] = "";
 	switch (ve->file.fileType) {
 	case 0:
 	  printf("TYP"); // typeless
@@ -133,9 +135,11 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	  break;
 	case 4:
 	  printf("TXT"); // 7-bit
+	  snprintf(auxData, sizeof(auxData), "R=%5d", ve->file.typeData[1] * 256 + ve->file.typeData[0]);
 	  break;
 	case 6:
 	  printf("BIN"); // 8-bit
+	  snprintf(auxData, sizeof(auxData), "A=$%.4X", ve->file.typeData[1] * 256 + ve->file.typeData[0]);
 	  break;
 	case 0x0F:
 	  printf("DIR");
@@ -167,6 +171,7 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	  break;
 	case 0xFC:
 	  printf("BAS"); // applesoft basic
+	  snprintf(auxData, sizeof(auxData), "[$%.4X]", ve->file.typeData[1] * 256 + ve->file.typeData[0]);
 	  break;
 	case 0xFD:
 	  printf("VAR"); // saved applesoft variables
@@ -176,6 +181,7 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	  break;
 	case 0xFF:
 	  printf("SYS"); // system
+	  snprintf(auxData, sizeof(auxData), "[$%.4X]", ve->file.typeData[1] * 256 + ve->file.typeData[0]);
 	  break;
 	default:
 	  printf("UNK"); // dunno, see appendix E of "Beneath ProDOS"?
@@ -186,6 +192,7 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	printf("   ");
 	printDate(ve->file.creationDate);
 	printf("  %5d ", (ve->file.eofLength[2] << 16) | (ve->file.eofLength[1] << 8) | ve->file.eofLength[0]);
+	printf("%s", auxData);
 	printf("\n");
 	if (0) {
 	  printf("  keyPointer: %.2X %.2X\n", ve->file.keyPointer[0], ve->file.keyPointer[1]);
