@@ -114,7 +114,7 @@ int main(int argc, char *argv[]) {
 
     if (dumpProdosInfo) {
       uint8_t trackData[256*16];
-      if (!w.decodeWozTrackToDsk(0, T_PO, trackData)) {
+      if (!w.decodeWozTrackToDsk(0, T_PO, trackData)) { // Dumping sectors in ProDOS (block) order
 	printf("Failed to read track 0; can't dump VMap\n");
 	exit(1);
       }
