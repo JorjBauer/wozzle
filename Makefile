@@ -1,14 +1,14 @@
-CFLAGS = -Wall -g
+CFLAGS = -Wall -g -I/usr/local/include/osxfuse -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
-SRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp
+SRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp
 
-OBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o vmap.o
+OBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o vmap.o vent.o
 
 .PHONY: test clean
 
 all: $(OBJS)
-	$(CXX) $(CFLAGS) -o wozzle $(OBJS)
+	$(CXX) $(CFLAGS) -l osxfuse -mmacosx-version-min=10.15 -o wozzle $(OBJS) 
 
 depend: .depend
 
