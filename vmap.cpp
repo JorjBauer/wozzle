@@ -2,25 +2,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #include "vent.h"
 
-struct _dirhdr {
-  uint8_t typelen; // high nybble: type; low nybble: length of name
-  char name[15];
-  uint8_t reserved1[8];
-  uint8_t creationDate[4];
-  uint8_t creatorVersion;
-  uint8_t minRequiredVersion;
-  uint8_t accessFlags;
-  uint8_t entryLength;
-  uint8_t entriesPerBlock;
-  uint8_t numEntries[2];
-  uint8_t bitmapPtr[2];
-  uint8_t totalBlocks[2];
+struct _idxHeader {
+  uint8_t prevBlock[2];
+  uint8_t nextBlock[2];
 };
-
-Vent *volumeTree = NULL;
 
 VMap::VMap()
 {
@@ -94,64 +83,35 @@ static void printFreeBlocks(uint8_t block[512])
 }
 
 // This expects trackData to be in ProDos (block) order
-void VMap::DecodeVMap(uint8_t trackData[256*16])
+Vent *VMap::createTree(uint8_t *trackData, int masterBlock)
 {
   uint8_t *block;
+  uint16_t currentBlock = masterBlock;
 
-  bool nextIsDirhdr = true;
-  uint32_t totalBlocks = 0;
-  uint16_t calculatedBlocksFree = 0;
-  uint16_t volumeBitmapBlock = 6; // assumption
+  Vent *ret = NULL;
 
-  uint16_t currentBlock = 2;
-
-  while (currentBlock <= 5) {
+  while (currentBlock) {
     block = &trackData[512 * currentBlock];
-    uint8_t *p = (uint8_t *)&block[4];
+
+    struct _idxHeader *ih = (struct _idxHeader *)block;
+    struct _subdirent *md = (struct _subdirent *)(block+4);
+
     for (int i=0; i<13; i++) {
-      if (nextIsDirhdr) {
-	struct _dirhdr *ve = (struct _dirhdr *)(p);
-	// Print the volume directory header data
-	if (((ve->typelen >> 4) & 0x0F) != 0x0F) {
-	  printf("ERROR: type of dir header should be $0F. Aborting.\n");
-	  exit(1);
-	}
-	if (ve->entryLength != sizeof(struct _dirhdr)) {
-	  printf("ERROR: expected directory entry size does not match. Aborting.\n");
-	  exit(1);
-	}
-	if (ve->entriesPerBlock != 13) {
-	  printf("ERROR: expected 13 entries per block. Aborting.\n");
-	  exit(1);
-	}
-	printf("/");
-	for (int j=0; j<(ve->typelen & 0x0F); j++) {
-	  printf("%c", ve->name[j] & 0x7F);
-	}
-	printf("\n\n NAME            TYPE  BLOCKS  MODIFIED      	 CREATED     	ENDFILE SUBTYPE\n");
-	totalBlocks = ve->totalBlocks[1] * 256 + ve->totalBlocks[0];
-	volumeBitmapBlock = ve->bitmapPtr[1] * 256 + ve->bitmapPtr[0];
-	if (volumeBitmapBlock < 8) {
-	  uint8_t *bitmapBlock;
-	  bitmapBlock = &trackData[512 * volumeBitmapBlock];
-	  calculatedBlocksFree = calculateBlocksFree(bitmapBlock, totalBlocks);
-	}
-	
-	if (0) {
-	  printf("Num active entries: %d\n", ve->numEntries[1] * 256 + ve->numEntries[0]);
-	  printf("Bitmap pointer block: %d\n", ve->bitmapPtr[1] * 256 + ve->bitmapPtr[0]);
-	  printf("Total blocks: %d\n", totalBlocks);
-	}
-	
-	nextIsDirhdr = false;
+      if (i==0 && currentBlock == masterBlock) {
+	// The first entry of the first block is header data
+	struct _subdirent *md = (struct _subdirent *)(block+4);
+	Vent *sde = new Vent(md);
+	assert(ret == NULL); // shouldn't have been initialized yet?
+	ret = sde;
       } else {
-	struct _fent *p2 = (struct _fent *)(p);
-	if (p2->typelen & 0xF0) {
-	  Vent *ve = new Vent(p2);
-	  if (!volumeTree) {
-	    volumeTree = ve;
+	struct _fent *fe = (struct _fent *)&trackData[512 * currentBlock + i*0x27 + 4];
+	// if (fe->typen & 0xF0) == 0, then it's an empty directory entry.
+	if (fe->typelen & 0xF0) {
+	  Vent *ve = new Vent(fe);
+	  if (!ret) {
+	    ret = ve;
 	  } else {
-	    Vent *p3 = volumeTree;
+	    Vent *p3 = ret;
 	    while (p3->nextEnt()) {
 	      p3 = p3->nextEnt();
 	    }
@@ -159,20 +119,29 @@ void VMap::DecodeVMap(uint8_t trackData[256*16])
 	  }
 	}
       }
-      p += sizeof(struct _dirhdr);
     }
-    currentBlock++;
+
+    currentBlock = ih->nextBlock[1] * 256 + ih->nextBlock[0];
   }
 
-  while (volumeTree) {
-    volumeTree->Dump();
-    Vent *tmp = volumeTree->nextEnt();
-    delete volumeTree;
-    volumeTree = tmp;
-  }
+  return ret;
+}
+
+void VMap::freeTree(Vent *tree)
+{
+  if (!tree) return;
   
-  printf("\nBLOCKS FREE: %4d      BLOCKS USED: %4d     TOTAL BLOCKS: %4d\n",
-	 calculatedBlocksFree, totalBlocks - calculatedBlocksFree, totalBlocks);
+  do {
+    Vent *t = tree;
+    tree = tree->nextEnt();
+    delete t;
+  } while (tree);
+}
 
-  printFreeBlocks(&trackData[512 * volumeBitmapBlock]);
+void VMap::displayTree(Vent *tree)
+{
+  while (tree) {
+    tree->Dump();
+    tree = tree->nextEnt();
+  }
 }

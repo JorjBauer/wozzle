@@ -29,14 +29,27 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
 
 Vent::Vent(struct _subdirent *di)
 {
+  isDirectoryHeader = true;
+  
+  this->entryType = (di->typelen & 0xF0) >> 4;
+  memcpy(this->name, di->name, 15);
+  this->name[15] = '\0';
+  this->name[di->typelen & 0x0F] = '\0';
+
+  this->creatorVersion = di->creatorVersion;
+  this->minRequiredVersion = di->minRequiredVersion;
+  this->accessFlags = di->accessFlags;
   assert(di->entryLength == 0x27);
   assert(di->entriesPerBlock == 0x0D);
-
+  this->activeFileCount = di->fileCount[1] * 256 + di->fileCount[0];
+  
   //  ...
 }
 
 Vent::Vent(struct _fent *fi)
 {
+  isDirectoryHeader = false;
+  
   this->entryType = (fi->typelen & 0xF0) >> 4;
   memcpy(this->name, fi->name, 15);
   this->name[15] = '\0';
@@ -58,6 +71,8 @@ Vent::Vent(struct _fent *fi)
 
 Vent::Vent(const Vent &vi)
 {
+  this->isDirectoryHeader = vi.isDirectoryHeader;
+				      
   this->entryType = vi.entryType;
   memcpy(this->name, vi.name, 16);
   this->fileType = vi.fileType;
@@ -73,6 +88,8 @@ Vent::Vent(const Vent &vi)
   this->headerPointer = vi.headerPointer;
   this->children = vi.children;
   this->next = vi.next;
+
+  this->activeFileCount = vi.activeFileCount;
 }
 
 Vent::~Vent()
@@ -81,89 +98,94 @@ Vent::~Vent()
 
 void Vent::Dump()
 {
-  if (accessFlags & 0x02) {
-    printf(" ");
+  if (isDirectoryHeader) {
+    printf("\n  %s\n\n", name);
   } else {
-    // locked
-    printf("*");
+    if (accessFlags & 0x02) {
+      printf(" ");
+    } else {
+      // locked
+      printf("*");
+    }
+    
+    printf("%15s  ", name);
+    
+    char auxData[16] = "";
+    switch (fileType) {
+    case 0:
+      printf("TYP");
+      break;
+    case 1:
+      printf("BAD");
+      break;
+    case 4:
+      printf("TXT");
+      snprintf(auxData, sizeof(auxData), "R=%5d", typeData);
+      break;
+    case 6:
+      printf("BIN");
+      snprintf(auxData, sizeof(auxData), "A=$%.4X", typeData);
+      break;
+    case 0x0F:
+      printf("DIR");
+      snprintf(auxData, sizeof(auxData), "[$%.4X]", keyPointer); // pointer to first block
+      break;
+    case 0x19:
+      printf("ADB"); // appleworks database
+      break;
+    case 0x1A:
+      printf("AWP"); // appleworks word processing
+      break;
+    case 0x1B:
+      printf("ASP"); // appleworks spreadsheet
+      break;
+    case 0xEF:
+      printf("PAS"); // pascal
+      break;
+    case 0xF0:
+      printf("CMD");
+      break;
+    case 0xF1:
+    case 0xF2:
+    case 0xF3:
+    case 0xF4:
+    case 0xF5:
+    case 0xF6:
+    case 0xF7:
+    case 0xF8:
+      printf("US%d", fileType & 0x0F);
+      break;
+    case 0xFC:
+      printf("BAS");
+      snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
+      break;
+    case 0xFD:
+      printf("VAR"); // saved applesoft variables
+      break;
+    case 0xFE:
+      printf("REL"); // relocatable EDASM object
+      break;
+    case 0xFF:
+      printf("SYS");
+      snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
+      break;
+    default:
+      printf("???"); // check appendix E of "Beneath ProDOS" to see what we missed
+      break;
+    }
+    
+    printf("  %6d  ", blocksUsed);
+    struct tm ts;
+    ts = *localtime(&lastModified);
+    char buf[255];
+    strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
+    // FIXME uc() that 
+    printf("%s   ", buf);
+    ts = *localtime(&creationDate);
+    strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
+    // FIXME uc() that 
+    printf("%s  %5d %s\n", buf, eofLength, auxData);
   }
-
-  printf("%15s  ", name);
-  
-  char auxData[16] = "";
-  switch (fileType) {
-  case 0:
-    printf("TYP");
-    break;
-  case 1:
-    printf("BAD");
-    break;
-  case 4:
-    printf("TXT");
-    snprintf(auxData, sizeof(auxData), "R=%5d", typeData);
-    break;
-  case 6:
-    printf("BIN");
-    snprintf(auxData, sizeof(auxData), "A=$%.4X", typeData);
-    break;
-  case 0x0F:
-    printf("DIR");
-    break;
-  case 0x19:
-    printf("ADB"); // appleworks database
-    break;
-  case 0x1A:
-    printf("AWP"); // appleworks word processing
-    break;
-  case 0x1B:
-    printf("ASP"); // appleworks spreadsheet
-    break;
-  case 0xEF:
-    printf("PAS"); // pascal
-    break;
-  case 0xF0:
-    printf("CMD");
-    break;
-  case 0xF1:
-  case 0xF2:
-  case 0xF3:
-  case 0xF4:
-  case 0xF5:
-  case 0xF6:
-  case 0xF7:
-  case 0xF8:
-    printf("US%d", fileType & 0x0F);
-    break;
-  case 0xFC:
-    printf("BAS");
-    snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
-    break;
-  case 0xFD:
-    printf("VAR"); // saved applesoft variables
-    break;
-  case 0xFE:
-    printf("REL"); // relocatable EDASM object
-    break;
-  case 0xFF:
-    printf("SYS");
-    snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
-    break;
-  default:
-    printf("???"); // check appendix E of "Beneath ProDOS" to see what we missed
-    break;
-  }
-
-  printf("  %6d  ", blocksUsed);
-  struct tm ts;
-  ts = *localtime(&lastModified);
-  char buf[255];
-  strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-  // FIXME uc() that 
-  printf("%s   ", buf);
-  ts = *localtime(&creationDate);
-  strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-  // FIXME uc() that 
-  printf("%s  %5d %s\n", buf, eofLength, auxData);
 }
 
 Vent *Vent::nextEnt()
@@ -184,5 +206,20 @@ Vent *Vent::childrenEnt()
 void Vent::childrenEnt(Vent *c)
 {
   children = c;
+}
+
+bool Vent::isDirectory()
+{
+  return (fileType == 0x0F);
+}
+
+uint16_t Vent::keyPointerVal()
+{
+  return keyPointer;
+}
+
+const char *Vent::getName()
+{
+  return name;
 }
 

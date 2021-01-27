@@ -7,8 +7,6 @@
 #include <time.h>
 
 struct _subdirent {
-  uint8_t prevBlock[2];
-  uint8_t nextBlock[2];
   uint8_t typelen;
   char name[15];
   union {
@@ -27,11 +25,14 @@ struct _subdirent {
   uint8_t entryLength; // == 0x27
   uint8_t entriesPerBlock; // == 0x0D
   uint8_t fileCount[2]; // active entries (files and dirs) in this subdir
-  uint8_t bitmapOrparentPointer[2]; // for the volume header, this is
-				    // a pointer to the bitmap
-				    // block. For subdirs, it's a
-				    // pointer to the parent
-				    // directory's block.
+  union {
+    struct {
+      uint8_t pointer[2]; // pointer to directory's parent dir block
+    } subdirParent;
+    struct {
+      uint8_t pointer[2]; // pointer to volume bitmap block
+    } volBitmap;
+  };
   union {
     struct {
       uint8_t entry; // entry # of this subdir in the parent dir
@@ -75,10 +76,15 @@ class Vent {
   Vent *childrenEnt();
   void childrenEnt(Vent *);
 
-  // For unpacking directories...
-  Vent *getNextDirEnt();
+  bool isDirectory();
+  uint16_t keyPointerVal();
+
+  const char *getName();
 
  private:
+  bool isDirectoryHeader;
+  
+  // General and file-related data
   uint8_t entryType;
   char name[16];
   uint8_t fileType;
@@ -95,6 +101,8 @@ class Vent {
   class Vent *children;
   class Vent *next;
 
+  // directory-related data
+  uint16_t activeFileCount;
 };
 
 #endif

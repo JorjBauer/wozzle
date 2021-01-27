@@ -1,93 +1,16 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <string.h>
-#define FUSE_USE_VERSION 26
-#include <fuse.h>
+
+#include <stack>
+using namespace std;
 
 #include "woz.h"
 #include "crc32.h"
 #include "nibutil.h"
 #include "vtoc.h"
 #include "vmap.h"
-
-uint8_t trackData[256*16];
-bool fuseInitialized = false;
-
-static bool initFuse(Woz *w)
-{
-  if (!w->decodeWozTrackToDsk(0, T_PO, trackData)) {
-    printf("Failed to read track 0; can't dump VMap\n");
-    exit(1);
-  }
-  VMap vmap;
-  vmap.DecodeVMap(trackData);
-  fuseInitialized = true;
-}
-
-static int getattr_callback(const char *path, struct stat *stbuf) {
-  printf("getattr_callback for '%s'\n", path);
-  memset(stbuf, 0, sizeof(struct stat));
-  // FIXME actually read the mode from the directory
-
-  if (strcmp(path, "/") == 0) {
-    stbuf->st_mode = S_IFDIR|0755;
-    stbuf->st_nlink=2;
-    return 0;
-  }
-  
-  //  stbuf->st_mode = S_IFDIR | 0755;
-  stbuf->st_mode = S_IFREG | 0666;
-  stbuf->st_nlink = 1;
-  stbuf->st_size = 6; // FIXME actual length
-  return 0;
-}
-
-static int open_callback(const char *path, struct fuse_file_info *fi) {
-  printf("open_callback\n");
-  return 0;
-}
-
-static const char *filecontent = "I'm the content of the only file available there\n";
-size_t len = strlen(filecontent);
-
-static int read_callback(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-
-  printf("read_callback\n");fflush(stdout);
-  // FIXME: if it's not a file we can find, then return -ENOENT;
-  
-  if (offset >= len) {
-    return 0;
-  }
-
-  if (offset + size > len) {
-    memcpy(buf, filecontent + offset, len - offset);
-    return len - offset;
-  }
-
-  memcpy(buf, filecontent + offset, size);
-  return size;
-}
-
-static int readdir_callback(const char *path, void *buf, fuse_fill_dir_t filler,
-    off_t offset, struct fuse_file_info *fi) {
-  printf("readdir_callback\n");fflush(stdout);
-  (void) offset;
-  (void) fi;
-  filler(buf, ".", NULL, 0);
-  filler(buf, "..", NULL, 0);
-
-  filler(buf, "FILEname", NULL, 0);
-
-  return 0;
-}
-
-
-static struct fuse_operations fuseops = {
-  .getattr = getattr_callback,
-  .open = open_callback,
-  .read = read_callback,
-  .readdir = readdir_callback,
-};
+#include "vent.h"
 
 void usage(char *name)
 {
@@ -109,7 +32,6 @@ int main(int argc, char *argv[]) {
   char inname[256] = {0};
   char outname[256] = {0};
   char infoname[256] = {0};
-  char mntpath[256] = {0};
   bool verbose = false;
   bool preloadTracks = true;
   bool dumpDosInfo = false;
@@ -120,7 +42,7 @@ int main(int argc, char *argv[]) {
 
   // Parse command-line arguments
   int c;
-  while ( (c=getopt(argc, argv, "dD:I:i:o:psvhF:?")) != -1 ) {
+  while ( (c=getopt(argc, argv, "dD:I:i:o:psvh?")) != -1 ) {
     switch (c) {
     case 'd':
       dumpDosInfo = true;
@@ -131,9 +53,6 @@ int main(int argc, char *argv[]) {
     case 'D':
       // FIXME set endptr and check that the whole arg was consumed
       dumpflags = strtoul(optarg, NULL, 10);
-      break;
-    case 'F':
-      strncpy(mntpath, optarg, sizeof(mntpath));
       break;
     case 'I':
       strncpy(infoname, optarg, sizeof(infoname));
@@ -174,18 +93,6 @@ int main(int argc, char *argv[]) {
     usage(argv[0]);
     exit(1);
   }
-
-  if (mntpath[0] &&  (inname[0] || outname[0])) {
-    printf("Invalid usage\n");
-    usage(argv[0]);
-    exit(1);
-  }
-
-  if (mntpath[0] && !infoname[0]) {
-    printf("Must supply -I with -F\n");
-    usage(argv[0]);
-    exit(1);
-  }
   
   Woz w(verbose, dumpflags & 0xFF);
 
@@ -198,6 +105,7 @@ int main(int argc, char *argv[]) {
     w.dumpInfo();
 
     if (dumpDosInfo) {
+      uint8_t trackData[256*16];
       if (!w.decodeWozTrackToDsk(17, /* The catalog and VToC are on track 17 */
 				 T_DSK,
 				 trackData)) {
@@ -209,28 +117,33 @@ int main(int argc, char *argv[]) {
     }
 
     if (dumpProdosInfo) {
-      uint8_t trackData[256*16];
-      if (!w.decodeWozTrackToDsk(0, T_PO, trackData)) { // Dumping sectors in ProDOS (block) order
-	printf("Failed to read track 0; can't dump VMap\n");
-	exit(1);
+      // We need the whole disk so we can descend directories and whatnot
+      uint8_t trackData[35*256*16];
+      for (int i=0; i<35; i++) {
+	if (!w.decodeWozTrackToDsk(i, T_PO, &trackData[i*256*16])) { // Dumping sectors in ProDOS (block) order
+	  fprintf(stderr, "Failed to read track %d; can't dump VMap\n", i);
+	  exit(1);
+	}
       }
       VMap vmap;
-      vmap.DecodeVMap(trackData);
-    }
+      stack <int> s; // blocks to investigate
+      s.push(2); // master directory starts on block 2
 
-    if (mntpath[0]) {
-      // Use FUSE to mount the image. We need to fake fuse's command line
-      // arguments though.
-      printf("Trying to fuse-mount at %s\n", mntpath);
-      char *newargv[4] = { "",
-	"-f",
-	"-s",
-	"" };
-      newargv[0] = argv[0];
-      newargv[3] = mntpath;
-      int ret = fuse_main(4, newargv, &fuseops, NULL);
-      printf("ret: %d\n", ret);
-      return ret;
+      while (!s.empty()) {
+	int nextBlock = s.top(); s.pop();
+	Vent *tree = vmap.createTree(trackData, nextBlock); 
+	Vent *p = tree;
+
+	while (p) {
+	  if (p->isDirectory()) {
+	    s.push(p->keyPointerVal());
+	  }	  
+	  p = p->nextEnt();
+	}
+      
+	vmap.displayTree(tree);
+	vmap.freeTree(tree);
+      }
     }
     exit(0);
   }
