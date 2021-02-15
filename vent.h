@@ -45,7 +45,7 @@ struct _subdirent {
 };
 
 // Struct of how the data rests on-disk
-struct _fent {
+struct _prodosFent {
   uint8_t typelen; // high nybble: type; low nybble: length of name
   char name[15];
   uint8_t fileType;
@@ -61,10 +61,35 @@ struct _fent {
   uint8_t headerPointer[2];
 };
 
+struct _dosFdEntry {
+  uint8_t firstTrack;
+  uint8_t firstSector;
+  uint8_t fileTypeAndFlags;
+  char fileName[30];
+  uint8_t fileLength[2]; // low first                                           
+};
+
+struct _tsPair {
+  uint8_t track;
+  uint8_t sector;
+};
+
+struct _dosTsList {
+  uint8_t unused;
+  uint8_t nextTrack;
+  uint8_t nextSector;
+  uint8_t unused2[2];
+  uint8_t sectorOffset[2]; // low first?                                        
+  uint8_t unused3[5];
+  struct _tsPair tsPair[122];
+};
+
+
 class Vent {
  public:
   Vent();
-  Vent(struct _fent *fi);
+  Vent(struct _prodosFent *fi);
+  Vent(struct _dosFdEntry *fe);
   Vent(struct _subdirent *fi);
   Vent(const Vent &vi);
   ~Vent();
@@ -81,12 +106,16 @@ class Vent {
 
   const char *getName();
 
+  uint8_t getFirstTrack();
+  uint8_t getFirstSector();
+
  private:
   bool isDirectoryHeader;
+  bool isDos33;
   
   // General and file-related data
   uint8_t entryType;
-  char name[16];
+  char name[31]; // dos are 30; prodos are 15
   uint8_t fileType;
   uint16_t keyPointer;
   uint16_t blocksUsed;
@@ -103,6 +132,10 @@ class Vent {
 
   // directory-related data
   uint16_t activeFileCount;
+
+  // dos33 pointers
+  uint8_t firstTrack;
+  uint8_t firstSector;
 };
 
 #endif

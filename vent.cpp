@@ -4,8 +4,36 @@
 #include <string.h>
 #include <assert.h>
 
+enum {
+ FT_TYP = 0,
+ FT_BAD = 1,
+ FT_TXT = 4,
+ FT_BIN = 6,
+ FT_DIR = 0x0F,
+ FT_ADB = 0x19,
+ FT_AWP = 0x1A,
+ FT_ASP = 0x1B,
+ FT_PAS = 0xEF,
+ FT_CMD = 0xF0,
+ FT_US1 = 0xF1,
+ FT_US2 = 0xF2,
+ FT_US3 = 0xF3,
+ FT_US4 = 0xF4,
+ FT_US5 = 0xF5,
+ FT_US6 = 0xF6,
+ FT_US7 = 0xF7,
+ FT_US8 = 0xF8,
+ FT_INT = 0xFA,
+ FT_IVR = 0xFB,
+ FT_BAS = 0xFC,
+ FT_VAR = 0xFD,
+ FT_REL = 0xFE,
+ FT_SYS = 0xFF,
+};
+
 Vent::Vent()
 {
+  isDos33 = false;
 }
 
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
@@ -30,6 +58,7 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
 Vent::Vent(struct _subdirent *di)
 {
   isDirectoryHeader = true;
+  isDos33 = false;
   
   this->entryType = (di->typelen & 0xF0) >> 4;
   memcpy(this->name, di->name, 15);
@@ -46,9 +75,10 @@ Vent::Vent(struct _subdirent *di)
   //  ...
 }
 
-Vent::Vent(struct _fent *fi)
+Vent::Vent(struct _prodosFent *fi)
 {
   isDirectoryHeader = false;
+  isDos33 = false;
   
   this->entryType = (fi->typelen & 0xF0) >> 4;
   memcpy(this->name, fi->name, 15);
@@ -67,6 +97,49 @@ Vent::Vent(struct _fent *fi)
   this->headerPointer = fi->headerPointer[1] * 256 + fi->headerPointer[0];
   this->children = NULL;
   this->next = NULL;
+}
+
+Vent::Vent(struct _dosFdEntry *fe)
+{
+  isDirectoryHeader = false;
+  isDos33 = true;
+  for (int i=0; i<30; i++) {
+    name[i] = fe->fileName[i] ^ 0x80;
+    if (name[i] == ' ') {
+      name[i] = '\0';
+    }
+  }
+  name[30] = '\0';
+  switch (fe->fileTypeAndFlags & 0x7F) {
+  case 0:
+    fileType = FT_TXT;
+    break;
+  case 1:
+    fileType = FT_INT;
+    break;
+  case 2:
+    fileType = FT_BAS;
+    break;
+  case 4:
+    fileType = FT_BIN;
+    break;
+  case 8:
+    // Not sure how to represent this here. SYS?
+    fileType = FT_SYS;
+    break;
+  case 16:
+    fileType = FT_REL;
+    break;
+  case 32: // 'A'
+  case 64: // 'B'
+  default:
+    fileType = FT_TYP;
+    printf("Unhandled file type %d\n", fe->fileTypeAndFlags & 0x7F);
+  }
+  blocksUsed = fe->fileLength[0] + fe->fileLength[1] * 256;
+  firstTrack = fe->firstTrack;
+  firstSector = fe->firstSector;
+  // FIXME: what about file flags? Locked, at least? in fileTypeAndFlags
 }
 
 Vent::Vent(const Vent &vi)
@@ -98,93 +171,124 @@ Vent::~Vent()
 
 void Vent::Dump()
 {
-  if (isDirectoryHeader) {
-    printf("\n  %s\n\n", name);
-  } else {
-    if (accessFlags & 0x02) {
-      printf(" ");
-    } else {
-      // locked
-      printf("*");
-    }
-    
-    printf("%15s  ", name);
-    
-    char auxData[16] = "";
+  if (isDos33) {
     switch (fileType) {
-    case 0:
-      printf("TYP");
+    case FT_TXT:
+      printf(" T ");
       break;
-    case 1:
-      printf("BAD");
+    case FT_BAS:
+      printf(" A ");
       break;
-    case 4:
-      printf("TXT");
-      snprintf(auxData, sizeof(auxData), "R=%5d", typeData);
+    case FT_INT:
+      printf(" I ");
       break;
-    case 6:
-      printf("BIN");
-      snprintf(auxData, sizeof(auxData), "A=$%.4X", typeData);
+    case FT_BIN:
+      printf(" B ");
       break;
-    case 0x0F:
-      printf("DIR");
-      snprintf(auxData, sizeof(auxData), "[$%.4X]", keyPointer); // pointer to first block
-      break;
-    case 0x19:
-      printf("ADB"); // appleworks database
-      break;
-    case 0x1A:
-      printf("AWP"); // appleworks word processing
-      break;
-    case 0x1B:
-      printf("ASP"); // appleworks spreadsheet
-      break;
-    case 0xEF:
-      printf("PAS"); // pascal
-      break;
-    case 0xF0:
-      printf("CMD");
-      break;
-    case 0xF1:
-    case 0xF2:
-    case 0xF3:
-    case 0xF4:
-    case 0xF5:
-    case 0xF6:
-    case 0xF7:
-    case 0xF8:
-      printf("US%d", fileType & 0x0F);
-      break;
-    case 0xFC:
-      printf("BAS");
-      snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
-      break;
-    case 0xFD:
-      printf("VAR"); // saved applesoft variables
-      break;
-    case 0xFE:
-      printf("REL"); // relocatable EDASM object
-      break;
-    case 0xFF:
-      printf("SYS");
-      snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
+    case FT_SYS:
+      printf(" S ");
       break;
     default:
-      printf("???"); // check appendix E of "Beneath ProDOS" to see what we missed
+      printf(" ? ");
       break;
     }
-    
-    printf("  %6d  ", blocksUsed);
-    struct tm ts;
-    ts = *localtime(&lastModified);
-    char buf[255];
-    strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-    // FIXME uc() that 
-    printf("%s   ", buf);
-    ts = *localtime(&creationDate);
-    strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-    // FIXME uc() that 
-    printf("%s  %5d %s\n", buf, eofLength, auxData);
+    printf("%.3d ", blocksUsed);
+    printf("%s\n", name);
+  } else {
+    if (isDirectoryHeader) {
+      printf("\n  %s\n\n", name);
+    } else {
+      if (accessFlags & 0x02) {
+	printf(" ");
+      } else {
+	// locked
+	printf("*");
+      }
+      
+      printf("%15s  ", name);
+      
+      char auxData[16] = "";
+      switch (fileType) {
+      case FT_TYP:
+	printf("TYP");
+	break;
+      case FT_BAD:
+	printf("BAD");
+	break;
+      case FT_TXT:
+	printf("TXT");
+	snprintf(auxData, sizeof(auxData), "R=%5d", typeData);
+	break;
+      case FT_BIN:
+	printf("BIN");
+	snprintf(auxData, sizeof(auxData), "A=$%.4X", typeData);
+	break;
+      case FT_DIR:
+	printf("DIR");
+	snprintf(auxData, sizeof(auxData), "[$%.4X]", keyPointer); // pointer to first block
+	break;
+      case FT_ADB:
+	printf("ADB"); // appleworks database
+	break;
+      case FT_AWP:
+	printf("AWP"); // appleworks word processing
+	break;
+      case FT_ASP:
+	printf("ASP"); // appleworks spreadsheet
+	break;
+      case FT_PAS:
+	printf("PAS"); // pascal
+	break;
+      case FT_CMD:
+	printf("CMD");
+	break;
+      case FT_US1:
+      case FT_US2:
+      case FT_US3:
+      case FT_US4:
+      case FT_US5:
+      case FT_US6:
+      case FT_US7:
+      case FT_US8:
+	printf("US%d", fileType & 0x0F);
+	break;
+      case FT_INT:
+	printf("INT");
+	break;
+      case FT_IVR:
+	printf("IVR"); // saved integer basic variables
+	break;
+      case FT_BAS:
+	printf("BAS");
+	snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
+	break;
+      case FT_VAR:
+	printf("VAR"); // saved applesoft variables
+	break;
+      case FT_REL:
+	printf("REL"); // relocatable EDASM object
+	break;
+      case FT_SYS:
+	printf("SYS");
+	snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
+	break;
+      default:
+	printf("???"); // check appendix E of "Beneath ProDOS" to see what we missed
+	break;
+      }
+      
+      printf("  %6d  ", blocksUsed);
+      struct tm ts;
+      ts = *localtime(&lastModified);
+      char buf[255];
+      strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
+      // FIXME uc() that 
+      printf("%s   ", buf);
+      ts = *localtime(&creationDate);
+      strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
+      // FIXME uc() that 
+      printf("%s  %5d %s\n", buf, eofLength, auxData);
+    }
   }
 }
 
@@ -223,3 +327,13 @@ const char *Vent::getName()
   return name;
 }
 
+uint8_t Vent::getFirstTrack()
+{
+  // For DOS 3.3 images
+  return firstTrack;
+}
+
+uint8_t Vent::getFirstSector()
+{
+  return firstSector;
+}

@@ -4,6 +4,8 @@
 #include <string.h>
 #include <assert.h>
 
+// Prodos disk map parser
+
 #include "vent.h"
 
 struct _idxHeader {
@@ -104,7 +106,7 @@ Vent *VMap::createTree(uint8_t *trackData, int masterBlock)
 	assert(ret == NULL); // shouldn't have been initialized yet?
 	ret = sde;
       } else {
-	struct _fent *fe = (struct _fent *)&trackData[512 * currentBlock + i*0x27 + 4];
+	struct _prodosFent *fe = (struct _prodosFent *)&trackData[512 * currentBlock + i*0x27 + 4];
 	// if (fe->typen & 0xF0) == 0, then it's an empty directory entry.
 	if (fe->typelen & 0xF0) {
 	  Vent *ve = new Vent(fe);
@@ -145,3 +147,12 @@ void VMap::displayTree(Vent *tree)
     tree = tree->nextEnt();
   }
 }
+
+uint32_t VMap::getFileContents(Vent *e, char **toWhere)
+{
+  ///  ...
+  printf("Unimplemented\n");
+  *toWhere = NULL;
+  return 0;
+}
+

@@ -113,7 +113,9 @@ int main(int argc, char *argv[]) {
 	exit(1);
       }
       VToC vtoc;
-      vtoc.DecodeVToC(&trackData[0] /* start of sector 0 */);
+      Vent *tree = vtoc.createTree(&trackData[0] /* start of sector 0, track 17 */);
+      vtoc.displayTree(tree);
+      vtoc.freeTree(tree);
     }
 
     if (dumpProdosInfo) {

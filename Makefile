@@ -1,18 +1,34 @@
+FUSELIBS=-losxfuse
+MACFLAGS=-mmacosx-version-min=10.15
+
 CFLAGS = -Wall -g -I/usr/local/include/osxfuse -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
-SRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp
+WOZSRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp
+WOZOBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o vmap.o vent.o
 
-OBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o vmap.o vent.o
+FUSESRCS=woz.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp wozfuse.cpp
+FUSEOBJS=woz.o crc32.o nibutil.o vtoc.o vmap.o vent.o wozfuse.o
+
+WOZITSRCS=woz.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp wozit.cpp
+WOZITOBJS=woz.o crc32.o nibutil.o vtoc.o vmap.o vent.o wozit.o
 
 .PHONY: test clean
 
-all: $(OBJS)
-	$(CXX) $(CFLAGS) -l osxfuse -mmacosx-version-min=10.15 -o wozzle $(OBJS) 
+all: wozzle
+
+wozzle: $(WOZOBJS)
+	$(CXX) $(CFLAGS) -o wozzle $(WOZOBJS) 
+
+wozfuse: $(FUSEOBJS)
+	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) 
+
+wozit: $(WOZITOBJS)
+	$(CXX) $(CFLAGS) -lreadline -o wozit $(WOZITOBJS)
 
 depend: .depend
 
-.depend: $(SRCS)
+.depend: $(WOZSRCS) $(FUSESRCS) $(WOZITSRCS)
 	rm -f ./.depend
 	$(CC) $(CFLAGS) -MM $^ >  ./.depend;
 

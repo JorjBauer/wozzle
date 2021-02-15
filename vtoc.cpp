@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "vent.h"
+
 struct _bmTrack {
   uint8_t sectorsUsed[2];
   uint8_t unused[2];
@@ -28,35 +30,12 @@ struct _vtoc {
   struct _bmTrack trackState[50];
 };
 
-struct _fdEntry {
-  uint8_t firstTrack;
-  uint8_t firstSector;
-  uint8_t fileTypeAndFlags;
-  char fileName[30];
-  uint8_t fileLength[2]; // low first
-};
-
 struct _catalogInfo {
   uint8_t unused;
   uint8_t nextCatalogTrack;
   uint8_t nextCatalogSector;
   uint8_t unused2[8];
-  struct _fdEntry fileEntries[7];
-};
-
-struct _tsPair {
-  uint8_t track;
-  uint8_t sector;
-};
-
-struct _tsList {
-  uint8_t unused;
-  uint8_t nextTrack;
-  uint8_t nextSector;
-  uint8_t unused2[2];
-  uint8_t sectorOffset[2]; // low first?
-  uint8_t unused3[5];
-  struct _tsPair tsPair[122];
+  struct _dosFdEntry fileEntries[7];
 };
 
 VToC::VToC()
@@ -67,6 +46,7 @@ VToC::~VToC()
 {
 }
 
+/*
 void VToC::DecodeVToC(unsigned char track[256*16])
 {
   struct _vtoc *vt = (struct _vtoc *)track;
@@ -163,5 +143,73 @@ void VToC::DecodeVToC(unsigned char track[256*16])
   }
 
 }
+*/
+
+Vent *VToC::createTree(uint8_t *track)
+{
+  Vent *ret = NULL;
+  
+  struct _vtoc *vt = (struct _vtoc *)track;
+  // FIXME sanity checking: vt->dosVersion and whatnot?
+  // FIXME assert vt->bytesPerSectorHigh/Low == 256
+
+  // FIXME this needs to be stored somewhere
+  bool trackSectorUsedMap[35][16];
+  memset(&trackSectorUsedMap, 0, sizeof(trackSectorUsedMap));
+
+  for (int i=0; i<vt->tracksPerDisk; i++) {
+    printf("Track %.2d: ", i);
+    uint16_t state = (vt->trackState[i].sectorsUsed[0] << 8) |
+      vt->trackState[i].sectorsUsed[1];
+    for (int j=0; j<16; j++) {
+      // *** I think this may be backwards?                                     
+      printf("%c ", state & (1 << (16-j)) ? 'f' : 'U');
+    }
+    printf("\n");
+  }
+  printf("[Legend: 'U' is used; 'f' is free]\n");
+
+  // FIXME check vt->catalogTrack == 17? Or pass in the whole disk?
+  uint8_t catalogTrack = vt->catalogTrack;
+  uint8_t catalogSector = vt->catalogSector;
+  while (catalogTrack == 17 && catalogSector < 16) {
+    struct _catalogInfo *ci = (struct _catalogInfo *)&track[256*catalogSector];
+    for (int i=0; i<7; i++) {
+      if (ci->fileEntries[i].fileName[0]) {
+	Vent *newEnt = new Vent(&ci->fileEntries[i]);
+	if (!ret) {
+	  ret = newEnt;
+	} else {
+	  Vent *p3 = ret;
+	  while (p3->nextEnt()) {
+	    p3 = p3->nextEnt();
+	  }
+	  p3->nextEnt(newEnt);
+	}
+      }
+    }
+    catalogTrack = ci->nextCatalogTrack;
+    catalogSector = ci->nextCatalogSector;
+  }
+
+  return ret;
+}
 
 
+void VToC::freeTree(Vent *tree)
+{
+  if (!tree) return;
+  do {
+    Vent *t = tree;
+    tree = tree->nextEnt();
+    delete t;
+  } while (tree);
+}
+
+void VToC::displayTree(Vent *tree)
+{
+  while (tree) {
+    tree->Dump();
+    tree = tree->nextEnt();
+  }
+}
