@@ -1643,6 +1643,6 @@ bool Woz::flush()
     trackDirty = false;
     return writeFile(2, "/tmp/auto.woz"); // FIXME: debugging
   }
-  return true;
 #endif
+  return true;
 }
