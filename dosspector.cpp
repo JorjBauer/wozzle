@@ -1,4 +1,4 @@
-#include "vtoc.h"
+#include "dosspector.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,11 +38,11 @@ struct _catalogInfo {
   struct _dosFdEntry fileEntries[7];
 };
 
-VToC::VToC()
+DosSpector::DosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
 {
 }
 
-VToC::~VToC()
+DosSpector::~DosSpector()
 {
 }
 
@@ -145,9 +145,12 @@ void VToC::DecodeVToC(unsigned char track[256*16])
 }
 */
 
-Vent *VToC::createTree(uint8_t *track)
+Vent *DosSpector::createTree()
 {
   Vent *ret = NULL;
+
+  uint8_t track[256*16];
+  decodeWozTrackToDsk(17, T_DSK, track);
   
   struct _vtoc *vt = (struct _vtoc *)track;
   // FIXME sanity checking: vt->dosVersion and whatnot?
@@ -195,21 +198,10 @@ Vent *VToC::createTree(uint8_t *track)
   return ret;
 }
 
-
-void VToC::freeTree(Vent *tree)
+uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 {
-  if (!tree) return;
-  do {
-    Vent *t = tree;
-    tree = tree->nextEnt();
-    delete t;
-  } while (tree);
-}
-
-void VToC::displayTree(Vent *tree)
-{
-  while (tree) {
-    tree->Dump();
-    tree = tree->nextEnt();
-  }
+  ///  ...                                                                      
+  printf("Unimplemented\n");
+  *toWhere = NULL;
+  return 0;
 }

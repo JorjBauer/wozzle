@@ -4,14 +4,14 @@ MACFLAGS=-mmacosx-version-min=10.15
 CFLAGS = -Wall -g -I/usr/local/include/osxfuse -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
-WOZSRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp
-WOZOBJS=woz.o crc32.o nibutil.o wozzle.o vtoc.o vmap.o vent.o
+WOZSRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp
+WOZOBJS=woz.o crc32.o nibutil.o wozzle.o
 
-FUSESRCS=woz.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp wozfuse.cpp
-FUSEOBJS=woz.o crc32.o nibutil.o vtoc.o vmap.o vent.o wozfuse.o
+FUSESRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozfuse.cpp
+FUSEOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozfuse.o
 
-WOZITSRCS=woz.cpp crc32.c nibutil.cpp vtoc.cpp vmap.cpp vent.cpp wozit.cpp
-WOZITOBJS=woz.o crc32.o nibutil.o vtoc.o vmap.o vent.o wozit.o
+WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp
+WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o
 
 .PHONY: test clean
 

@@ -1,4 +1,4 @@
-#include "vmap.h"
+#include "prodosspector.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,16 +8,20 @@
 
 #include "vent.h"
 
+#include <stack>
+using namespace std;
+
 struct _idxHeader {
   uint8_t prevBlock[2];
   uint8_t nextBlock[2];
 };
 
-VMap::VMap()
+ProdosSpector::ProdosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
 {
+  cwdMasterBlock = 2; // The master directory starts @ block 2
 }
 
-VMap::~VMap()
+ProdosSpector::~ProdosSpector()
 {
 }
 
@@ -84,22 +88,21 @@ static void printFreeBlocks(uint8_t block[512])
   printf("\n");
 }
 
-// This expects trackData to be in ProDos (block) order
-Vent *VMap::createTree(uint8_t *trackData, int masterBlock)
+Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 {
-  uint8_t *block;
-  uint16_t currentBlock = masterBlock;
-
   Vent *ret = NULL;
 
+  uint16_t currentBlock = fromBlock;
+  
   while (currentBlock) {
+    uint8_t *block;
     block = &trackData[512 * currentBlock];
-
+    
     struct _idxHeader *ih = (struct _idxHeader *)block;
     struct _subdirent *md = (struct _subdirent *)(block+4);
-
+    
     for (int i=0; i<13; i++) {
-      if (i==0 && currentBlock == masterBlock) {
+      if (i==0 && currentBlock == 2) {
 	// The first entry of the first block is header data
 	struct _subdirent *md = (struct _subdirent *)(block+4);
 	Vent *sde = new Vent(md);
@@ -126,29 +129,23 @@ Vent *VMap::createTree(uint8_t *trackData, int masterBlock)
     currentBlock = ih->nextBlock[1] * 256 + ih->nextBlock[0];
   }
 
-  return ret;
+  return ret;  
 }
 
-void VMap::freeTree(Vent *tree)
+// FIXME: this only looks at CWD. How do we change that?
+Vent *ProdosSpector::createTree()
 {
-  if (!tree) return;
-  
-  do {
-    Vent *t = tree;
-    tree = tree->nextEnt();
-    delete t;
-  } while (tree);
-}
-
-void VMap::displayTree(Vent *tree)
-{
-  while (tree) {
-    tree->Dump();
-    tree = tree->nextEnt();
+  for (int i=0; i<35; i++) {
+    if (!decodeWozTrackToDsk(i, T_PO, &trackData[i*256*16])) {
+      fprintf(stderr, "Failed to read track %d\n", i);
+      exit(1);
+    }
   }
+
+  return descendTree(cwdMasterBlock);
 }
 
-uint32_t VMap::getFileContents(Vent *e, char **toWhere)
+uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
 {
   ///  ...
   printf("Unimplemented\n");
