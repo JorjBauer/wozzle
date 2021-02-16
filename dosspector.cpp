@@ -147,7 +147,10 @@ void VToC::DecodeVToC(unsigned char track[256*16])
 
 Vent *DosSpector::createTree()
 {
-  Vent *ret = NULL;
+  if (tree) {
+    freeTree(tree);
+    tree = NULL;
+  }
 
   uint8_t track[256*16];
   decodeWozTrackToDsk(17, T_DSK, track);
@@ -159,7 +162,7 @@ Vent *DosSpector::createTree()
   // FIXME this needs to be stored somewhere
   bool trackSectorUsedMap[35][16];
   memset(&trackSectorUsedMap, 0, sizeof(trackSectorUsedMap));
-
+#if 0
   for (int i=0; i<vt->tracksPerDisk; i++) {
     printf("Track %.2d: ", i);
     uint16_t state = (vt->trackState[i].sectorsUsed[0] << 8) |
@@ -171,7 +174,8 @@ Vent *DosSpector::createTree()
     printf("\n");
   }
   printf("[Legend: 'U' is used; 'f' is free]\n");
-
+#endif
+  
   // FIXME check vt->catalogTrack == 17? Or pass in the whole disk?
   uint8_t catalogTrack = vt->catalogTrack;
   uint8_t catalogSector = vt->catalogSector;
@@ -180,10 +184,10 @@ Vent *DosSpector::createTree()
     for (int i=0; i<7; i++) {
       if (ci->fileEntries[i].fileName[0]) {
 	Vent *newEnt = new Vent(&ci->fileEntries[i]);
-	if (!ret) {
-	  ret = newEnt;
+	if (!tree) {
+	  tree = newEnt;
 	} else {
-	  Vent *p3 = ret;
+	  Vent *p3 = tree;
 	  while (p3->nextEnt()) {
 	    p3 = p3->nextEnt();
 	  }
@@ -195,7 +199,7 @@ Vent *DosSpector::createTree()
     catalogSector = ci->nextCatalogSector;
   }
 
-  return ret;
+  return tree;
 }
 
 uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
