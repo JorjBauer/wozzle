@@ -9,14 +9,22 @@ public:
   Wozspector(bool verbose, uint8_t dumpflags);
   ~Wozspector();
 
-  virtual Vent *createTree() = 0;
-  virtual void displayTree(Vent *tree);
-  virtual void freeTree(Vent *tree);
+  Vent *getTree();
+  void displayTree();
   
   // getFileContents will will malloc(); caller must call free()
   // return value is the length
   virtual uint32_t getFileContents(Vent *e, char **toWhere) = 0;
 
+protected:
+  virtual Vent *createTree() = 0;
+  virtual void displayTree(Vent *tree);
+  virtual void freeTree(Vent *tree);
+  
+  void appendTree(Vent *a);
+
+protected:
+  Vent *tree;
 };
 
 #endif

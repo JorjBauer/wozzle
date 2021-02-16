@@ -10,16 +10,16 @@ class ProdosSpector : public Wozspector {
   ProdosSpector(bool verbose, uint8_t dumpflags);
   ~ProdosSpector();
 
-  virtual Vent *createTree();
-  
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+
+protected:
+  virtual Vent *createTree();
 
 private:
   Vent *descendTree(uint16_t fromBlock);
 
 private:
   uint8_t trackData[35*256*16];
-  uint16_t cwdMasterBlock;
 };
 
 #endif

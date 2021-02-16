@@ -9,8 +9,10 @@ class DosSpector : public Wozspector {
   DosSpector(bool verbose, uint8_t dumpflags);
   ~DosSpector();
 
-  virtual Vent *createTree();
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+
+protected:
+  virtual Vent *createTree();
 };
 
 #endif

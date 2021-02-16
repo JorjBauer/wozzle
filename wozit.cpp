@@ -21,6 +21,7 @@ uint8_t trackData[256*16];
 char infoname[256] = {0};
 bool verbose = false;
 bool dosMode = true; // otherwise, prodos mode
+bool striphi = false;
 
 Wozspector *inspector = NULL;
 
@@ -44,52 +45,106 @@ void lsHandler(char *cmd)
     return;
   }
 
-  Vent *tree = inspector->createTree();
-  inspector->displayTree(tree);
-  inspector->freeTree(tree);
+  inspector->displayTree();
+}
+
+Vent *findFileByName(const char *name)
+{
+  Vent *tree = inspector->getTree();
+  Vent *p = tree;
+  while (p) {
+    if (!strcmp(name, p->getName())) {
+      return p;
+    }
+    p = p->nextEnt();
+  }
+  return NULL;
 }
 
 void catHandler(char *cmd)
 {
-  Vent *tree = inspector->createTree();
-  
-  Vent *p = tree;
-  while (p) {
-    if (!strcmp(cmd, p->getName())) {
-      char *dat = NULL;
-      uint32_t s = inspector->getFileContents(p, &dat);
-      if (s && dat) {
-	for (int i=0; i<s; i++) {
-	  printf("%c", dat[i]);
+  Vent *fp = findFileByName(cmd);
+  if (fp) {
+    char *dat = NULL;
+    uint32_t s = inspector->getFileContents(fp, &dat);
+    if (s && dat) {
+      for (int i=0; i<s; i++) {
+	char c = striphi ? (dat[i] & 0x7F) : dat[i];
+	if (c == 10 || c == 13) {
+	  printf("\n");
+	} else {
+	  printf("%c", c);
 	}
-	printf("\n");
-	free(dat);
       }
-      break;
+      printf("\n");
+      free(dat);
     }
-    p = p->nextEnt();
+  } else {
+    printf("File not found\n");
+  }
+}
+
+void cpoutHandler(char *cmd)
+{
+  // cpout: copy from a file in the image to a file outside the image
+  // cpout <image filename> <output filename>
+  char buf[16];
+  char *p = strstr(cmd, " ");
+  if (!p) {
+    printf("Error parsing arguments\n");
+    return;
+  }
+  uint32_t len = p-cmd;
+  if (len > 15) {
+    printf("Invalid filename\n");
+    return;
+  }
+  strncpy(buf, cmd, p-cmd);
+  buf[p-cmd] = '\0';
+  p++; // pass the space
+    
+  Vent *fp = findFileByName(buf);
+  if (!fp) {
+    printf("File '%s' not found\n", buf);
+    return;
   }
 
-  inspector->freeTree(tree);
+  if (!*p) {
+    printf("Error: output filename is blank\n");
+    return;
+  }
+  
+  char *dat = NULL;
+  uint32_t s = inspector->getFileContents(fp, &dat);
+  if (s && dat) {
+    FILE *out = fopen(p, "w");
+    fwrite(dat, 1, s, out);
+    fclose(out);
+  } else {
+    printf("Empty file\n");
+    return;
+  }
 }
 
-
-void cpHandler(char *cmd)
+void stripHandler(char *cmd)
 {
-  printf("in cp handler\n");
-  /*
-    
-    if (firstTrack != 255) {
-      printf("Found file at track %d sector %d\n", firstTrack, firstSector);
-    }
-
-   */
+  if (!strcmp(cmd, "on")) {
+    striphi = true;
+    printf("Strip high bit: true\n");
+  } else if (!strcmp(cmd, "off")) {
+    striphi = false;
+    printf("Strip high bit: false\n");
+  } else {
+    printf("Bad arguments\n");
+  }
 }
+
 
 struct _cmdInfo commands[] = {
   {"ls", lsHandler},
   {"cat", catHandler},
-  {"cp", cpHandler},
+  {"cpout", cpoutHandler},
+  {"strip", stripHandler},
   {"", 0} };
 
 void performCommand(char *cmd)
@@ -182,7 +237,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  inspector->freeTree(tree);
 #endif
   /*
   if (!w.writeFile(outname)) {

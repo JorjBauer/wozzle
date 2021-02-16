@@ -18,7 +18,6 @@ struct _idxHeader {
 
 ProdosSpector::ProdosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
 {
-  cwdMasterBlock = 2; // The master directory starts @ block 2
 }
 
 ProdosSpector::~ProdosSpector()
@@ -99,10 +98,9 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
     block = &trackData[512 * currentBlock];
     
     struct _idxHeader *ih = (struct _idxHeader *)block;
-    struct _subdirent *md = (struct _subdirent *)(block+4);
     
     for (int i=0; i<13; i++) {
-      if (i==0 && currentBlock == 2) {
+      if (i==0 && currentBlock == fromBlock) {
 	// The first entry of the first block is header data
 	struct _subdirent *md = (struct _subdirent *)(block+4);
 	Vent *sde = new Vent(md);
@@ -113,15 +111,12 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 	// if (fe->typen & 0xF0) == 0, then it's an empty directory entry.
 	if (fe->typelen & 0xF0) {
 	  Vent *ve = new Vent(fe);
-	  if (!ret) {
-	    ret = ve;
-	  } else {
-	    Vent *p3 = ret;
-	    while (p3->nextEnt()) {
-	      p3 = p3->nextEnt();
-	    }
-	    p3->nextEnt(ve);
+	  assert(ret); // should have been initialized already?
+	  Vent *p3 = ret;
+	  while (p3->nextEnt()) {
+	    p3 = p3->nextEnt();
 	  }
+	  p3->nextEnt(ve);
 	}
       }
     }
@@ -132,9 +127,13 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
   return ret;  
 }
 
-// FIXME: this only looks at CWD. How do we change that?
 Vent *ProdosSpector::createTree()
 {
+  if (tree) {
+    freeTree(tree);
+    tree = NULL;
+  }
+  
   for (int i=0; i<35; i++) {
     if (!decodeWozTrackToDsk(i, T_PO, &trackData[i*256*16])) {
       fprintf(stderr, "Failed to read track %d\n", i);
@@ -142,12 +141,96 @@ Vent *ProdosSpector::createTree()
     }
   }
 
-  return descendTree(cwdMasterBlock);
+  stack <int> s;
+  s.push(2); // directory starts on block 2
+
+  while (!s.empty()) {
+    int nextBlock = s.top(); s.pop();
+    Vent *nextDir = descendTree(nextBlock);
+    Vent *p = nextDir;
+    while (p) {
+      if (p->isDirectory()) {
+	s.push(p->keyPointerVal());
+      }
+      p = p->nextEnt();
+    }
+    appendTree(nextDir);
+  }
+
+  return tree;
 }
 
 uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
 {
-  ///  ...
+  // Given the virtual entry 'e', find the file's contents and return
+  //them in *toWhere. We malloc() that result, and the caller will
+  //free it.
+    
+  uint8_t indexType = e->getStorageType();
+  uint16_t kp = e->keyPointerVal();
+  uint32_t l = 0; // length varies based on type of file -
+  switch (e->getFileType()) {
+  case FT_BIN:
+    l = e->getEofLength();
+    break;
+  case FT_TXT:
+    l = e->getEofLength();
+    break;
+  case FT_BAS:
+    l = e->getEofLength();
+    break;
+  default:
+    printf("unhandled type %d\n", e->getFileType());
+  }
+
+  if (!l) {
+      // handle zero-length files
+      *toWhere = NULL;
+      return 0;
+  }
+  
+  switch (indexType) {
+  case 1:
+    // Seedling file: we point right to the data
+    *toWhere = (char *)malloc(l); // FIXME check for error
+    memcpy(*toWhere, &trackData[512 * kp], l);
+    return l;
+  case 2:
+    // sapling file: 2-256 data blocks. The index block has the low bytes in the
+    // first 256, and the high bytes in the second 256.
+    {
+      uint32_t sizeRemaining = l;
+      uint32_t bytesCopied = 0;
+      *toWhere = (char *)malloc(l); // FIXME check for error
+      uint8_t idx = 0;
+      while (sizeRemaining) {
+        uint32_t nextBlockOfData = trackData[512*kp + 256 + idx] * 256 + trackData[512*kp + idx];
+        if (sizeRemaining >= 512) {
+          memcpy((*toWhere) + bytesCopied, &trackData[512*nextBlockOfData], 512);
+          sizeRemaining -= 512;
+          bytesCopied += 512;
+        } else {
+          memcpy((*toWhere) + bytesCopied, &trackData[512*nextBlockOfData], sizeRemaining);
+          bytesCopied += sizeRemaining;
+          sizeRemaining = 0;
+        }
+        idx++;
+      }
+    }
+    return l;
+                 
+  case 3:
+    // tree file: 257 - 32768 data blocks
+    printf("UNIMPLEMENTED\n");
+    break;
+  default:
+    // deleted or reserved or something; skip it
+    printf("Unimplemented file type '%d'\n", indexType);
+    *toWhere = NULL;
+    return 0;
+  }
+  
+  
   printf("Unimplemented\n");
   *toWhere = NULL;
   return 0;

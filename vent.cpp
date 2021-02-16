@@ -4,33 +4,6 @@
 #include <string.h>
 #include <assert.h>
 
-enum {
- FT_TYP = 0,
- FT_BAD = 1,
- FT_TXT = 4,
- FT_BIN = 6,
- FT_DIR = 0x0F,
- FT_ADB = 0x19,
- FT_AWP = 0x1A,
- FT_ASP = 0x1B,
- FT_PAS = 0xEF,
- FT_CMD = 0xF0,
- FT_US1 = 0xF1,
- FT_US2 = 0xF2,
- FT_US3 = 0xF3,
- FT_US4 = 0xF4,
- FT_US5 = 0xF5,
- FT_US6 = 0xF6,
- FT_US7 = 0xF7,
- FT_US8 = 0xF8,
- FT_INT = 0xFA,
- FT_IVR = 0xFB,
- FT_BAS = 0xFC,
- FT_VAR = 0xFD,
- FT_REL = 0xFE,
- FT_SYS = 0xFF,
-};
-
 Vent::Vent()
 {
   isDos33 = false;
@@ -337,3 +310,19 @@ uint8_t Vent::getFirstSector()
 {
   return firstSector;
 }
+
+uint8_t Vent::getStorageType()
+{
+  return entryType;
+}
+
+uint32_t Vent::getEofLength()
+{
+  return eofLength;
+}
+
+uint8_t Vent::getFileType()
+{
+  return fileType;
+}
+
