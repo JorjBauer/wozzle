@@ -49,6 +49,8 @@ nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer
 
 uint8_t de44(uint8_t nibs[2]);
 
+nibErr denibblizeSector(nibSector input, uint8_t dataOut[256]);
+
 #ifdef __cplusplus
 };
 #endif

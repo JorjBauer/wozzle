@@ -391,3 +391,12 @@ nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer
   return errorNone;
 }
 
+
+nibErr denibblizeSector(nibSector input, uint8_t dataOut[256])
+{
+  if (_decodeData((const uint8_t *)&(input.data62[0]), dataOut)) {
+    return errorNone;
+  }
+
+  return errorBadData;
+}
