@@ -13,6 +13,9 @@ class DosSpector : public Wozspector {
 
 protected:
   virtual Vent *createTree();
+
+protected:
+  bool trackSectorUsedMap[35][16];
 };
 
 #endif

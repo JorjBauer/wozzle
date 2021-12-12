@@ -159,17 +159,14 @@ Vent *DosSpector::createTree()
   // FIXME sanity checking: vt->dosVersion and whatnot?
   // FIXME assert vt->bytesPerSectorHigh/Low == 256
 
-  // FIXME this needs to be stored somewhere
-  bool trackSectorUsedMap[35][16];
   memset(&trackSectorUsedMap, 0, sizeof(trackSectorUsedMap));
-#if 0
+#if 1
   for (int i=0; i<vt->tracksPerDisk; i++) {
     printf("Track %.2d: ", i);
     uint16_t state = (vt->trackState[i].sectorsUsed[0] << 8) |
       vt->trackState[i].sectorsUsed[1];
     for (int j=0; j<16; j++) {
-      // *** I think this may be backwards?                                     
-      printf("%c ", state & (1 << (16-j)) ? 'f' : 'U');
+      printf("%c ", state & (1 << (j)) ? 'f' : 'U');
     }
     printf("\n");
   }
@@ -204,8 +201,116 @@ Vent *DosSpector::createTree()
 
 uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 {
-  ///  ...                                                                      
-  printf("Unimplemented\n");
+  // Find the T/S list so we can find the first block of the file, so we can find its length
+  uint8_t tsTrack = e->getFirstTrack();
+  uint8_t tsSector = e->getFirstSector();
+  
+  if (!tsTrack && !tsSector) {
+    printf("ERROR: no T/S first entry?\n");
+    *toWhere = NULL;
+    return 0;
+  }
+  
+  struct _dosTsList *tsList = NULL;
+  uint8_t sectorData[256];
+  if (!decodeWozTrackSector(tsTrack, tsSector, sectorData)) {
+    printf("Unable to decode track %d sector %d\n", tsTrack, tsSector);
+    *toWhere = NULL;
+    return 0;
+  }
+  tsList = (struct _dosTsList *)sectorData;
+  
+#if 0
+  printf("first track: %d; first sector: %d\n", tsTrack, tsSector);
+  for (int i=0; i<256; i++) {
+    printf("%.2X ", trackData[16*tsSector + i]);
+  }
+  printf("\n");
+  
+  printf("T/S list dump\n");
+  printf("next Track: %d\n", tsList->nextTrack);
+  printf("next Sector: %d\n", tsList->nextSector);
+  printf("sector offset: %d\n", tsList->sectorOffset[0] + tsList->sectorOffset[1]*256);
+  printf("t/s pair dump:\n");
+  for (int i=0; i<122; i++) {
+    printf(" %d: track %d sector %d\n", i, tsList->tsPair[i].track, tsList->tsPair[i].sector);
+  }
+#endif
+  
+  // Find the length of the file from its first block
+  if (!tsList->tsPair[0].track && !tsList->tsPair[0].sector) {
+    printf("ERROR: T/S entry has no data sectors?\n");
+    *toWhere = NULL;
+    return 0;
+  }
+  uint8_t dataTrackData[256*16];
+  if (!decodeWozTrackToDsk(tsList->tsPair[0].track, T_DSK, dataTrackData)) {
+    printf("Unable to decode track %d\n", tsList->tsPair[0].track);
+    *toWhere = NULL;
+    return 0;
+  }
+  
+  uint8_t *dataPtr = &dataTrackData[256*tsList->tsPair[0].sector];
+  uint32_t fileLength = 0;
+  switch (e->getFileType()) {
+    case FT_BIN:
+      fileLength = dataPtr[2] + 256*dataPtr[3];
+      break;
+    case FT_BAS:
+    case FT_INT:
+      fileLength = dataPtr[0] + 256*dataPtr[1];
+      printf("BAS/INT file length %d\n", fileLength);
+      break;
+    case FT_SYS: // 'S' type
+    case FT_REL: // 'R' type
+      // Don't know what SYS/REL do for length; skip for now
+    case FT_TXT:
+      // There's no way to tell the length of this beforehand - we have to
+      // go through the full T/S list. It may be sparse (have 00/00 entries
+      // in the T/S list), so it really is a full scan...
+    default:
+      printf("Unimplemented: don't know how to tell file length of this file type\n");
+      *toWhere = NULL;
+      return 0;
+      break;
+  }
+  
+  *toWhere = (char *)malloc(fileLength); // FIXME: error checking
+  
+  // FIXME: this method won't work for sparse TXT Files
+  uint8_t ptr = 0; // pointer in to the tsList->tsPair: which pair are we looking at?
+  
+  uint32_t dptr = 0; // pointer in to the return data
+  uint32_t dataLeft = fileLength;
+  
+  while (ptr < 122 && (tsList->tsPair[ptr].track != 0 || tsList->tsPair[ptr].sector != 0)) {
+    // FIXME this could decode a single sector, instead of a track that we repeat
+    if (!decodeWozTrackToDsk(tsList->tsPair[ptr].track, T_DSK, dataTrackData)) {
+      printf("Unable to decode track %d\n", tsList->tsPair[ptr].track);
+      free(*toWhere);
+      *toWhere = NULL;
+      return 0;
+    }
+    dataPtr = &dataTrackData[256*tsList->tsPair[ptr].sector];
+    
+    if (dataLeft >= 256) {
+      memcpy((*toWhere) + dptr, dataPtr, 256);
+      dataLeft -= 256;
+      dptr += 256;
+    } else {
+      memcpy((*toWhere) + dptr, dataPtr, dataLeft);
+      
+      dataLeft = 0;
+      // We've got all the data
+      return fileLength;
+    }
+    ptr++;
+  }
+  
+  // If we reach here, then we need more data than was in the first T/S list.
+  // FIXME: implement
+  printf("Unimplemented: don't know how to follow second track/sector list\n");
+  free (*toWhere);
   *toWhere = NULL;
   return 0;
 }
