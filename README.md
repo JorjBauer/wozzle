@@ -120,6 +120,10 @@ Turns on or off high-bit stripping when using *cat* on a file. Useful for inspec
 
 Copies a file from inside the image to a file outside the image.
 
+*list <filename>*
+
+De-tokenize and show the given Applesoft BASIC program.
+
 
 Limitations
 -----------
