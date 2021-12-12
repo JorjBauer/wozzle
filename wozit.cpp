@@ -27,7 +27,10 @@ Wozspector *inspector = NULL;
 
 void usage(char *name)
 {
-  printf("Usage: %s -I <input image> { -d | -p }\n", name);
+  printf("Usage: %s -I <input image> { -d | -p }\n\n", name);
+  printf("  -I [input filename]     input disk image to inspect/modify\n");
+  printf("  -d                      DOS mode\n");
+  printf("  -p                      ProDOS mode\n");
   printf("\n");
 }
 

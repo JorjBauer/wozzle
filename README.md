@@ -1,4 +1,4 @@
-Wozzle v1.0
+Wozzle v1.1-alpha
 ===========
 
 ©2019 Jorj Bauer. MIT license.
@@ -79,3 +79,55 @@ Limitations
 * The code still suffers from early development messiness.
 * The -I flag has three different compilable behaviors with respect to raw track data, but there's no way built in for users to select one or another.
 * The tests are fairly fragile; they expect to find the woz project's test disks and perform conversions on the DOS 3.3 system master.
+* Only supports 16-sector disks.
+
+
+Wozit v1.0
+===========
+
+©2021 Jorj Bauer. MIT license.
+
+Wozit ("What's it?") is a disk inspection/modification tool. It's
+built from the same make command as Wozzle.
+
+Usage
+-----
+
+*$ wozzle -h*
+```
+Usage: ./wozit -I <input image> { -d | -p }
+
+  -I [input filename]     input disk image to inspect/modify
+  -d                      DOS mode
+  -p                      ProDOS mode
+```
+
+Wozit is an interactive disk inspection tool. Once started, it expects one of these commands:
+
+*ls*
+
+Lists the directory of the disk image.
+
+*cat <filename>*
+
+Dumps the contents of the given file to stdout. Note that this is affected by the state of 'strip'.
+
+*strip <on|off>*
+
+Turns on or off high-bit stripping when using *cat* on a file. Useful for inspecting TXT files.
+
+*cpout <inputname> <outputname>*
+
+Copies a file from inside the image to a file outside the image.
+
+
+Limitations
+-----------
+
+* All of the limitations of Wozzle
+* Only supports normal RWTS disks
+* There's no way to differentiate between files of different types with the same name
+* In ProDOS mode, it only references files by filename - not by directory. So two files
+  with the same name in different directories won't be readable (it will pick the first
+  one it finds).
+  

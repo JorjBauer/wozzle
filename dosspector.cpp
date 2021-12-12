@@ -160,18 +160,16 @@ Vent *DosSpector::createTree()
   // FIXME assert vt->bytesPerSectorHigh/Low == 256
 
   memset(&trackSectorUsedMap, 0, sizeof(trackSectorUsedMap));
-#if 1
+
+  // FIXME: the trackSectorUsedMap is only set for 35 tracks - what if it's a bigger woz disk?
+  // (The rest of the Woz code has other hard-coded '35's so I'm leaving it for now)
   for (int i=0; i<vt->tracksPerDisk; i++) {
-    printf("Track %.2d: ", i);
     uint16_t state = (vt->trackState[i].sectorsUsed[0] << 8) |
       vt->trackState[i].sectorsUsed[1];
     for (int j=0; j<16; j++) {
-      printf("%c ", state & (1 << (j)) ? 'f' : 'U');
+      trackSectorUsedMap[i][j] = state & (1 << (j)) ? false : true;
     }
-    printf("\n");
   }
-  printf("[Legend: 'U' is used; 'f' is free]\n");
-#endif
   
   // FIXME check vt->catalogTrack == 17? Or pass in the whole disk?
   uint8_t catalogTrack = vt->catalogTrack;
