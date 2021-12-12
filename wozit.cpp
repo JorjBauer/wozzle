@@ -15,6 +15,7 @@ using namespace std;
 #include "nibutil.h"
 #include "prodosspector.h"
 #include "dosspector.h"
+#include "applesoft.h"
 //#include "vent.h"
 
 uint8_t trackData[256*16];
@@ -123,6 +124,7 @@ void cpoutHandler(char *cmd)
     FILE *out = fopen(p, "w");
     fwrite(dat, 1, s, out);
     fclose(out);
+    free(dat);
   } else {
     printf("Empty file; skipping\n");
     return;
@@ -142,12 +144,44 @@ void stripHandler(char *cmd)
   }
 }
 
+void listHandler(char *cmd)
+{
+  if (cmd[0] == 0) {
+    printf("Bad arguments. Usage: list <applesoft filename>\n");
+    return;
+  }
+
+  Vent *fp = findFileByName(cmd);
+  if (!fp) {
+    printf("File '%s' not found\n", cmd);
+    return;
+  }
+
+  if (fp->getFileType() != FT_BAS) {
+    printf("File is not Applesoft BASIC\n");
+    return;
+  }
+  
+  uint8_t *dat = NULL;
+  uint32_t s = inspector->getFileContents(fp, (char **)&dat);
+  if (!s || !dat) {
+    printf("File is empty\n");
+    return;
+  }
+  
+  ApplesoftLister l;
+  if (!l.listFile(dat, s, inspector->applesoftHeaderBytes())) {
+    printf("Failed to list file\n");
+  }
+  free(dat);
+}
 
 struct _cmdInfo commands[] = {
   {"ls", lsHandler},
   {"cat", catHandler},
   {"cpout", cpoutHandler},
   {"strip", stripHandler},
+  {"list", listHandler},
   {"", 0} };
 
 void performCommand(char *cmd)

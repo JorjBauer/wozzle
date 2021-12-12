@@ -11,6 +11,7 @@ class ProdosSpector : public Wozspector {
   ~ProdosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+  virtual uint8_t applesoftHeaderBytes() { return 0; };
 
 protected:
   virtual Vent *createTree();

@@ -16,6 +16,9 @@ public:
   // return value is the length
   virtual uint32_t getFileContents(Vent *e, char **toWhere) = 0;
 
+  // Dos and ProDOS have different size applesoft headers, which affects listing
+  virtual uint8_t applesoftHeaderBytes() = 0;
+
 protected:
   virtual Vent *createTree() = 0;
   virtual void displayTree(Vent *tree);

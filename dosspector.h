@@ -10,6 +10,7 @@ class DosSpector : public Wozspector {
   ~DosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+  virtual uint8_t applesoftHeaderBytes() { return 2; };
 
 protected:
   virtual Vent *createTree();

@@ -10,8 +10,8 @@ WOZOBJS=woz.o crc32.o nibutil.o wozzle.o
 FUSESRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozfuse.cpp
 FUSEOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozfuse.o
 
-WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp
-WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o
+WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp
+WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o applesoft.o
 
 .PHONY: test clean
 
@@ -35,7 +35,7 @@ depend: .depend
 include .depend
 
 clean:
-	rm -f $(OBJS) wozzle wozit *~
+	rm -f $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) wozzle wozit *~
 
 test: all
 	if [ -d "woz test images" ]; then \
