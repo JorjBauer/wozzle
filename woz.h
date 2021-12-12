@@ -61,6 +61,7 @@ class Woz {
   bool flush();
 
   bool decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16]);
+  bool decodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataOut[256]);
  protected:
   bool writeWozFile(const char *filename, uint8_t subtype);
   bool writeWozFile(int fdout, uint8_t subtype);

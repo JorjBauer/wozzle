@@ -1379,6 +1379,22 @@ bool Woz::decodeWozTrackToNibFromDataTrack(uint8_t dataTrack, nibSector sectorDa
   return true;
 }
 
+bool Woz::decodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataOut[256])
+{
+  uint8_t dataTrack = quarterTrackMap[phystrack*4];
+  nibSector nibData;
+  if (!readNibSectorDataFromDataTrack(dataTrack, sector, &nibData)) {
+    fprintf(stderr, "Failed to readNibSectorDataFromDataTrack for track %d sector %d\n", phystrack, sector);
+    return false;
+  }
+  if (denibblizeSector(nibData, dataOut) != errorNone) {
+    fprintf(stderr, "failed to denib sector\n");
+    return false;
+  }
+  return true;
+}
+
+
 bool Woz::decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16])
 {
   // Figure out which datatrack we need for the given physical track
