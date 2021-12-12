@@ -91,7 +91,7 @@ void cpoutHandler(char *cmd)
   char buf[16];
   char *p = strstr(cmd, " ");
   if (!p) {
-    printf("Error parsing arguments\n");
+    printf("Error parsing arguments. Usage: cpout <SOURCE> <DEST>\n");
     return;
   }
   uint32_t len = p-cmd;
@@ -121,7 +121,7 @@ void cpoutHandler(char *cmd)
     fwrite(dat, 1, s, out);
     fclose(out);
   } else {
-    printf("Empty file\n");
+    printf("Empty file; skipping\n");
     return;
   }
 }
@@ -135,7 +135,7 @@ void stripHandler(char *cmd)
     striphi = false;
     printf("Strip high bit: false\n");
   } else {
-    printf("Bad arguments\n");
+    printf("Bad arguments. Usage: strip <on|off>\n");
   }
 }
 
