@@ -15,7 +15,7 @@ WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector
 
 .PHONY: test clean
 
-all: wozzle
+all: wozzle wozit
 
 wozzle: $(WOZOBJS)
 	$(CXX) $(CFLAGS) -o wozzle $(WOZOBJS) 
@@ -35,7 +35,7 @@ depend: .depend
 include .depend
 
 clean:
-	rm -f $(OBJS) wozzle *~
+	rm -f $(OBJS) wozzle wozit *~
 
 test: all
 	if [ -d "woz test images" ]; then \
