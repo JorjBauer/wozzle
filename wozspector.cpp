@@ -46,6 +46,7 @@ void Wozspector::freeTree(Vent *tree)
     tree = tree->nextEnt();
     delete t;
   } while (tree);
+  tree = NULL;
 }
 
 void Wozspector::appendTree(Vent *a)

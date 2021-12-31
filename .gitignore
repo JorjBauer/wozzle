@@ -1,1 +1,8 @@
 .depend
+*.o
+*.po
+*.dsk
+*.nib
+*.woz
+wozit
+wozzle

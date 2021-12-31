@@ -12,12 +12,20 @@ public:
   Vent *getTree();
   void displayTree();
   
+  virtual void displayInfo() = 0;
+  
   // getFileContents will will malloc(); caller must call free()
   // return value is the length
   virtual uint32_t getFileContents(Vent *e, char **toWhere) = 0;
 
   // Dos and ProDOS have different size applesoft headers, which affects listing
   virtual uint8_t applesoftHeaderBytes() = 0;
+
+  virtual bool writeFile(uint8_t *fileContents,
+                         char *fileName,
+                         char fileType,
+                         uint16_t fileStart,
+                         uint16_t fileSize) = 0;
 
 protected:
   virtual Vent *createTree() = 0;

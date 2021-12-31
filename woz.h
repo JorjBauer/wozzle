@@ -39,6 +39,7 @@ typedef struct _trackInfo {
   uint16_t blockCount;
   uint32_t bitCount;
   uint8_t *trackData;
+  bool dirty;
 } trackInfo;
 
 class Woz {
@@ -62,6 +63,8 @@ class Woz {
 
   bool decodeWozTrackToDsk(uint8_t phystrack, uint8_t subtype, uint8_t sectorData[256*16]);
   bool decodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataOut[256]);
+  bool encodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataIn[256]);
+  
  protected:
   bool writeWozFile(const char *filename, uint8_t subtype);
   bool writeWozFile(int fdout, uint8_t subtype);
@@ -72,6 +75,8 @@ class Woz {
   
   uint8_t nextDiskBit(uint8_t datatrack);
   uint8_t nextDiskByte(uint8_t datatrack);
+
+  void writeDiskByte(uint8_t datatrack, uint8_t b);
   
  private:
   bool readWozFile(const char *filename, bool preloadTracks);
@@ -95,6 +100,7 @@ class Woz {
   bool writeTRKSChunk(uint8_t version, int fdout);
 
   bool readWozDataTrack(uint8_t datatrack);
+  bool writeNibSectorDataToDataTrack(uint8_t dataTrack, uint8_t sector, uint8_t nibData[343]);
   bool readNibSectorDataFromDataTrack(uint8_t dataTrack, uint8_t sector, nibSector *sectorData);
 
   bool loadMissingTrackFromImage(uint8_t datatrack);
@@ -113,7 +119,6 @@ class Woz {
   uint8_t dumpflags;
 
   bool autoFlushTrackData;
-  bool trackDirty;
   
   uint8_t quarterTrackMap[40*4];
   diskInfo di;

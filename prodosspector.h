@@ -13,6 +13,13 @@ class ProdosSpector : public Wozspector {
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
   virtual uint8_t applesoftHeaderBytes() { return 0; };
 
+  virtual bool writeFile(uint8_t *fileContents,
+                         char *fileName,
+                         char fileType,
+                         uint16_t fileStart,
+                         uint16_t fileSize) { return false; };
+
+  virtual void displayInfo() {printf("Info not implemented for prodos\n"); };
 protected:
   virtual Vent *createTree();
 

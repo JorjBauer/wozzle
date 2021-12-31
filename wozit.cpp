@@ -45,7 +45,7 @@ struct _cmdInfo {
 void lsHandler(char *cmd)
 {
   if (strlen(cmd)) {
-    printf("Extraneous arguments\n");
+    printf("Extraneous arguments: '%s' (0x%llX)\n", cmd, (unsigned long long)cmd);
     return;
   }
 
@@ -131,6 +131,39 @@ void cpoutHandler(char *cmd)
   }
 }
 
+void infoHandler(char *cmd)
+{
+  // FIXME: handle arguments? Or throw error?
+  inspector->displayInfo();
+}
+
+void cpinHandler(char *cmd)
+{
+  // cpin: copy a local file in to a file image
+  // cpin <filename> <dest filename> <file type char> <start address in hex>
+
+  // FIXME actually parse arguments, don't use these static things
+  uint16_t fileSize = 49;
+  uint16_t fileStart = 0x1000;
+  char fileType = 'B';
+  uint8_t *fileContents = (uint8_t *)malloc(fileSize);
+  char localname[16] = "test.bin";
+  char imagename[16] = "TEST";
+  FILE *in = fopen(localname, "r");
+  if (!in) {
+    printf("ERROR: Failed to read file\n");
+    return;
+  }
+  fread(fileContents, 1, fileSize, in);
+  fclose(in);
+  
+  if (!inspector->writeFile(fileContents, imagename,
+                            fileType, fileStart, fileSize)) {
+    printf("ERROR: Failed to write file\n");
+  }
+  free(fileContents);
+}
+
 void stripHandler(char *cmd)
 {
   if (!strcmp(cmd, "on")) {
@@ -172,6 +205,7 @@ void listHandler(char *cmd)
   ApplesoftLister l;
   if (!l.listFile(dat, s, inspector->applesoftHeaderBytes())) {
     printf("Failed to list file\n");
+    // fall through to free the alloc'd file contents
   }
   free(dat);
 }
@@ -182,6 +216,8 @@ struct _cmdInfo commands[] = {
   {"cpout", cpoutHandler},
   {"strip", stripHandler},
   {"list", listHandler},
+  {"cpin", cpinHandler},
+  {"info", infoHandler},
   {"", 0} };
 
 void performCommand(char *cmd)
@@ -248,38 +284,6 @@ int main(int argc, char *argv[]) {
     performCommand(cmd);
     free(cmd);
   }
-#if 0
-  // Dump the file:
-  // load the T/S map from firstTrack/Sector
-  if (!w.decodeWozTrackToDsk(firstTrack, T_DSK, trackData)) {
-    printf("Failed to read track %d; can't read T/S map\n", firstTrack);
-    exit(1);
-  }
-  struct _dosTsList tslist;
-  memcpy(&tslist, &trackData[256*firstSector], 256);
-
-  // Dump each of the blocks
-  // FIXME: nextTrack / nextSector
-  // FIXME: sectorOffset - could be loaded out of order
-  for (int i=0; i<122; i++) {
-    if (tslist.tsPair[i].track) {
-      //      printf("Next chunk of data comes from track %d sector %d\n", tslist.tsPair[i].track, tslist.tsPair[i].sector);
-      if (!w.decodeWozTrackToDsk(tslist.tsPair[i].track, T_DSK, trackData)) {
-	printf("Failed to read track %d; can't read data sector\n",
-	       tslist.tsPair[i].track);
-	exit(1);
-      }
-      // FIXME: actual file length, not just all the blocks
-      write(fout, &trackData[tslist.tsPair[i].sector*256], 256);
-    }
-  }
-
-#endif
-  /*
-  if (!w.writeFile(outname)) {
-    printf("Failed to write file\n");
-    exit(1);
-    }*/
-
+  
   return 0;
 }

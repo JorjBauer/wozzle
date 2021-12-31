@@ -7,6 +7,7 @@
 Vent::Vent()
 {
   isDos33 = false;
+  children = next = NULL;
 }
 
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
@@ -44,7 +45,9 @@ Vent::Vent(struct _subdirent *di)
   assert(di->entryLength == 0x27);
   assert(di->entriesPerBlock == 0x0D);
   this->activeFileCount = di->fileCount[1] * 256 + di->fileCount[0];
-  
+
+  this->children = this->next = NULL;
+
   //  ...
 }
 
@@ -113,6 +116,7 @@ Vent::Vent(struct _dosFdEntry *fe)
   firstTrack = fe->firstTrack;
   firstSector = fe->firstSector;
   // FIXME: what about file flags? Locked, at least? in fileTypeAndFlags
+  this->children = this->next = NULL;
 }
 
 Vent::Vent(const Vent &vi)

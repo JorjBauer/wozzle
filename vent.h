@@ -103,10 +103,10 @@ struct _tsPair {
 
 struct _dosTsList {
   uint8_t unused;
-  uint8_t nextTrack;
+  uint8_t nextTrack; // If there's another T/S list block, this points to it
   uint8_t nextSector;
   uint8_t unused2[2];
-  uint8_t sectorOffset[2]; // low first?                                        
+  uint8_t sectorOffset[2]; // low byte first - could be used for sparse files
   uint8_t unused3[5];
   struct _tsPair tsPair[122];
 };
