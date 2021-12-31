@@ -78,7 +78,6 @@ Vent *DosSpector::createTree()
   uint8_t catalogTrack = vt.catalogTrack;
   uint8_t catalogSector = vt.catalogSector;
   while (catalogTrack == 17 && catalogSector < 16) {
-    printf("Reading t/s %d/%d\n", catalogTrack, catalogSector);
     struct _catalogInfo *ci = (struct _catalogInfo *)&track[256*catalogSector];
     for (int i=0; i<7; i++) {
       if (ci->fileEntries[i].fileName[0]) {
@@ -482,6 +481,10 @@ bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
         // write 'e' as a blob of data over the current entry, then write
         // out the sector to disk again
         memcpy(&ci->fileEntries[i], e, sizeof(struct _dosFdEntry));
+        // (... we have to go set the high bit on the file name too)
+        for (int j=0; j<30; j++) {
+          ci->fileEntries[i].fileName[j] |= 0x80;
+        }
 
         // write it
         if (!encodeWozTrackSector(catalogTrack, enphys[catalogSector], sectorData)) {

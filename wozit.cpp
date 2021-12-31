@@ -162,6 +162,10 @@ void cpinHandler(char *cmd)
     printf("ERROR: Failed to write file\n");
   }
   free(fileContents);
+
+  // DEBUGGING
+  inspector->writeFile("out.dsk", T_DSK);
+
 }
 
 void stripHandler(char *cmd)
