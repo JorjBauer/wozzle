@@ -198,23 +198,47 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
     remainingSize -= 256;
   }
 
-  // Write the file to those blocks
-  remainingSize = fileSize;
+  // Write the file to those blocks. DOS 3.3 inserts a short header before
+  // most file types, so we need to take the file type in to account when
+  // figuring out the data & size.
+  uint8_t *adulteratedData = NULL;
+  uint16_t writeSize = 0;
+  switch (fileType) {
+  case 'B':
+    writeSize = fileSize + 4;
+    adulteratedData = (uint8_t *)malloc(writeSize);
+    memcpy(&adulteratedData[4], fileContents, fileSize);
+    // The first 4 bytes are L/H address and L/H length.
+    adulteratedData[0] = fileStart & 0xFF;
+    adulteratedData[1] = (fileStart >> 8) & 0xFF;
+    adulteratedData[2] = fileSize & 0xFF;
+    adulteratedData[3] = (fileSize >> 8) & 0xFF;
+    break;
+  }
+  if (!adulteratedData) {
+    printf("ERROR: don't know how to set up the file header for this file type\n");
+    return false;
+  }
+
+  remainingSize = writeSize;
   uint16_t dataPtr = 0;
   uint8_t sectorData[256];
   for (int b=0; b<tsPairPtr; b++) {
     int t = tsList.tsPair[b].track;
     int s = tsList.tsPair[b].sector;
     memset(sectorData, 0, sizeof(sectorData));
-    memcpy(sectorData, &fileContents[dataPtr],
+    memcpy(sectorData, &adulteratedData[dataPtr],
            remainingSize >= 256 ? 256 : remainingSize);
     printf("Writing data to track %d sector %d\n", t, s);
     if (!encodeWozTrackSector(t, enphys[s], sectorData)) {
       printf("ERROR: failed to encodeWozTrackSector\n");
+      free(adulteratedData);
       return false;
     }
     dataPtr += 256;
   }
+  free(adulteratedData);
+  adulteratedData = NULL;
 
   // Find a free block for the TS list itself
   int t,s;
@@ -271,17 +295,6 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
     return false;
   }
 
-  printf("test 4 - if we return true here then the sector list wasn't updated?\n");
-  printf("and if we don't return here, then the catalog is corrupted\n");
-  printf("... regardless, the flushFreeSectorList appears to corrupt the catalog\n");
-  printf("... and why doesn't the bitmap in vt match the bitmap array? (Or does it and I'm wrong?)\n");
-
-  // DEBUGGING: test that the vtoc is still ok
-  createTree();
-  if (!tree) {
-    printf("No VTOC?[4]\n");
-    exit(1);
-  }
   // actually add the directory entry
   if (!addDirectoryEntryForFile(&newEntry)) {
     printf("ERROR: failed to add directory entry\n");
@@ -295,13 +308,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
     printf("No VTOC[5]?\n");
   }
 
-  printf("FIXME: need to write out the disk image now\n");
-  /*
-  if (!writeWozFile(..., T_DSK)) {
-    printf("Failed to write disk image\n");
-    return false;
-    }*/
-
+  // Caller is responsible for updating the on-disk image
   return true;
 }
 
