@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -17,6 +18,10 @@ using namespace std;
 #include "dosspector.h"
 #include "applesoft.h"
 //#include "vent.h"
+
+#ifndef MAXPATH
+#define MAXPATH 127
+#endif
 
 uint8_t trackData[256*16];
 char infoname[256] = {0};
@@ -142,30 +147,66 @@ void cpinHandler(char *cmd)
   // cpin: copy a local file in to a file image
   // cpin <filename> <dest filename> <file type char> <start address in hex>
 
-  // FIXME actually parse arguments, don't use these static things
-  uint16_t fileSize = 49;
-  uint16_t fileStart = 0x1000;
-  char fileType = 'B';
+  // Parse arguments
+  char fn[MAXPATH+1];
+  char destfn[30+1];
+  char ftchar;
+  uint16_t addr = 0x1000;
+  memset(fn, 0, sizeof(fn));
+  memset(destfn, 0, sizeof(destfn));
+
+  char *fnp = strstr(cmd, " ");
+  if (!fnp) {
+    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
+    return;
+  }
+  char *destfnp = strstr(++fnp, " ");
+  if (!destfnp) {
+    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
+    return;
+  }
+  strncpy(fn, fnp, destfnp-fnp < MAXPATH ? destfnp-fnp : MAXPATH);
+  char *ftp = strstr(++destfnp, " ");
+  if (!ftp) {
+    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
+    return;
+  }
+  strncpy(destfn, destfnp, ftp-destfnp < 30 ? ftp-destfnp : 30);
+  char *addrp = strstr(++ftp, " ");
+  ftchar = *ftp;
+
+  if (addrp) {
+    addrp++;
+    addr = strtol(addrp, NULL, 16);
+  }
+
+  // stat the file so we get a length
+  struct stat s;
+  if (lstat(fn, &s)) {
+    printf("Unable to stat source file '%s'\n", fn);
+    return;
+  }
+  uint16_t fileSize = s.st_size;
+  uint16_t fileStart = addr;
+  char fileType = ftchar;
+
+  // Read the file contents to a buffer
   uint8_t *fileContents = (uint8_t *)malloc(fileSize);
-  char localname[16] = "test.bin";
-  char imagename[16] = "TEST";
-  FILE *in = fopen(localname, "r");
+  FILE *in = fopen(fn, "r");
   if (!in) {
     printf("ERROR: Failed to read file\n");
+    free(fileContents);
     return;
   }
   fread(fileContents, 1, fileSize, in);
   fclose(in);
-  
-  if (!inspector->writeFileToImage(fileContents, imagename,
+
+  // Write the file into the image
+  if (!inspector->writeFileToImage(fileContents, destfn,
                                    fileType, fileStart, fileSize)) {
     printf("ERROR: Failed to write file\n");
   }
   free(fileContents);
-
-  // DEBUGGING
-  inspector->writeFile("out.dsk", T_DSK);
-
 }
 
 void stripHandler(char *cmd)
@@ -178,6 +219,18 @@ void stripHandler(char *cmd)
     printf("Strip high bit: false\n");
   } else {
     printf("Bad arguments. Usage: strip <on|off>\n");
+  }
+}
+
+void saveHandler(char *cmd)
+{
+  char *fnp = strstr(cmd, " ");
+  if (!fnp) {
+    printf("Usage: save <file name>\n");
+    return;
+  }
+  if (!inspector->writeFile(++fnp)) {
+    printf("Failed to write file\n");
   }
 }
 
@@ -222,6 +275,7 @@ struct _cmdInfo commands[] = {
   {"list", listHandler},
   {"cpin", cpinHandler},
   {"info", infoHandler},
+  {"save", saveHandler},
   {"", 0} };
 
 void performCommand(char *cmd)
