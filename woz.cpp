@@ -95,7 +95,7 @@ bool Woz::writeNextWozBit(uint8_t datatrack, uint8_t bit)
     trackByte = tracks[datatrack].trackData[trackPointer];
     trackByteFromDataTrack = datatrack;
   }
-  
+
   if (bit)
     trackByte |= trackBitIdx;
   else
@@ -1533,6 +1533,11 @@ bool Woz::encodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataIn
 {
   uint8_t dataTrack = quarterTrackMap[phystrack*4];
   uint8_t dataOut[343];
+
+  if (nibblizeSector(dataIn, dataOut) != errorNone) {
+    fprintf(stderr, "Failed to nibblizeSector for track %d sector %d\n", phystrack, sector);
+    return false;
+  }
 
   if (!writeNibSectorDataToDataTrack(dataTrack, sector, dataOut)) {
     fprintf(stderr, "Failed to writeNibSectorDataToDataTrack for track %d sector %d\n", phystrack, sector);
