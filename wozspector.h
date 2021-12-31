@@ -21,11 +21,11 @@ public:
   // Dos and ProDOS have different size applesoft headers, which affects listing
   virtual uint8_t applesoftHeaderBytes() = 0;
 
-  virtual bool writeFile(uint8_t *fileContents,
-                         char *fileName,
-                         char fileType,
-                         uint16_t fileStart,
-                         uint16_t fileSize) = 0;
+  virtual bool writeFileToImage(uint8_t *fileContents,
+                                char *fileName,
+                                char fileType,
+                                uint16_t fileStart,
+                                uint16_t fileSize) = 0;
 
 protected:
   virtual Vent *createTree() = 0;

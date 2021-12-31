@@ -44,7 +44,7 @@ struct _cmdInfo {
 
 void lsHandler(char *cmd)
 {
-  if (strlen(cmd)) {
+  if (cmd && strlen(cmd)) {
     printf("Extraneous arguments: '%s' (0x%llX)\n", cmd, (unsigned long long)cmd);
     return;
   }
@@ -157,8 +157,8 @@ void cpinHandler(char *cmd)
   fread(fileContents, 1, fileSize, in);
   fclose(in);
   
-  if (!inspector->writeFile(fileContents, imagename,
-                            fileType, fileStart, fileSize)) {
+  if (!inspector->writeFileToImage(fileContents, imagename,
+                                   fileType, fileStart, fileSize)) {
     printf("ERROR: Failed to write file\n");
   }
   free(fileContents);
@@ -227,7 +227,7 @@ void performCommand(char *cmd)
   bool handled = false;
   while (p->cmdName[0]) {
     if (!strncmp(p->cmdName, cmd, strlen(p->cmdName))) {
-      p->fp(&cmd[strlen(p->cmdName)+1]);
+      p->fp(&cmd[strlen(p->cmdName)]);
       handled = true;
       break;
     }

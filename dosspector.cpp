@@ -156,11 +156,11 @@ bool DosSpector::findFreeSector(int *trackOut, int *sectorOut)
   return false;
 }
 
-bool DosSpector::writeFile(uint8_t *fileContents,
-                           char *fileName,
-                           char fileType,
-                           uint16_t fileStart,
-                           uint16_t fileSize)
+bool DosSpector::writeFileToImage(uint8_t *fileContents,
+                                  char *fileName,
+                                  char fileType,
+                                  uint16_t fileStart,
+                                  uint16_t fileSize)
 {
 
   if (fileSize > 31232) {

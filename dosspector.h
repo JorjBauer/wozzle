@@ -37,11 +37,11 @@ class DosSpector : public Wozspector {
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
   virtual uint8_t applesoftHeaderBytes() { return 2; };
 
-  virtual bool writeFile(uint8_t *fileContents,
-                         char *fileName,
-                         char fileType,
-                         uint16_t fileStart,
-                         uint16_t fileSize);
+  virtual bool writeFileToImage(uint8_t *fileContents,
+                                char *fileName,
+                                char fileType,
+                                uint16_t fileStart,
+                                uint16_t fileSize);
 
   virtual void displayInfo();
 
