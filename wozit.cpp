@@ -5,11 +5,16 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#if defined(__APPLE__)
+  #include <machine/endian.h>
+#else
+  #include <endian.h>
+#endif
+
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#include <stack>
-using namespace std;
+#include "applesingle.h"
 
 #include "woz.h"
 #include "crc32.h"
@@ -144,53 +149,45 @@ void infoHandler(char *cmd)
 
 void cpinHandler(char *cmd)
 {
-  // cpin: copy a local file in to a file image
-  // cpin <filename> <dest filename> <file type char> <start address in hex>
+  // cpin: copy a local file in to a file image.
+  // cpin <filename> <dest filename>
+  // If it's an AppleSingle file, then the type comes from the AppleSingle
+  //   ProDOS file format data; if it's not an AppleSingle file, then it's
+  //   assumed it's an as-is binary file
 
   // Parse arguments
   char fn[MAXPATH+1];
   char destfn[30+1];
-  char ftchar;
-  uint16_t addr = 0x1000;
+  uint8_t filetype = 0x06; // ProDOS type numbers (more expressive than DOS)
+  uint16_t fileSize = 0;
+  uint16_t auxTypeData = 0x2000;
   memset(fn, 0, sizeof(fn));
   memset(destfn, 0, sizeof(destfn));
 
   char *fnp = strstr(cmd, " ");
   if (!fnp) {
-    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
+    printf("Usage: cpin <filename> <dest filename>\n");
     return;
   }
   char *destfnp = strstr(++fnp, " ");
   if (!destfnp) {
-    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
+    printf("Usage: cpin <filename> <dest filename>\n");
     return;
   }
   strncpy(fn, fnp, destfnp-fnp < MAXPATH ? destfnp-fnp : MAXPATH);
-  char *ftp = strstr(++destfnp, " ");
-  if (!ftp) {
-    printf("Usage: cpin <filename> <dest filename> <file type char> [<start address in hex>]\n");
-    return;
-  }
-  strncpy(destfn, destfnp, ftp-destfnp < 30 ? ftp-destfnp : 30);
-  char *addrp = strstr(++ftp, " ");
-  ftchar = *ftp;
-
-  if (addrp) {
-    addrp++;
-    addr = strtol(addrp, NULL, 16);
-  }
-
+  destfnp++;
+  strncpy(destfn, destfnp, 30);
+  
   // stat the file so we get a length
   struct stat s;
   if (lstat(fn, &s)) {
     printf("Unable to stat source file '%s'\n", fn);
     return;
   }
-  uint16_t fileSize = s.st_size;
-  uint16_t fileStart = addr;
-  char fileType = ftchar;
+  fileSize = s.st_size; // assume file size to copy in is the 
 
   // Read the file contents to a buffer
+  uint8_t *dataToCopy = NULL;
   uint8_t *fileContents = (uint8_t *)malloc(fileSize);
   FILE *in = fopen(fn, "r");
   if (!in) {
@@ -201,11 +198,71 @@ void cpinHandler(char *cmd)
   fread(fileContents, 1, fileSize, in);
   fclose(in);
 
+  // Look for an AppleSingle header
+  bool foundAppleSingle = false;
+  bool foundMetadata = false;
+  if (fileSize >= sizeof(applesingle)) {
+    applesingle *as = (applesingle *)fileContents;
+    if (ntohl(as->magic) == 0x51600 && ntohl(as->version) == 0x20000) {
+      foundAppleSingle = true;
+      for (int i=0; i<16; i++) {
+        if (as->filler[i] != 0) {
+          printf("ERROR: Filler is NOT BLANK\n");
+          foundAppleSingle = false;
+          break;
+        }
+      }
+      if (foundAppleSingle) {
+        for (int i=0; i<ntohs(as->num_entries); i++) {
+          printf("ENTRY %d:\n", i);
+          printf("  entryID: %d\n", ntohs(as->entry[i].entryID));
+          printf("  offset: %d\n", ntohs(as->entry[i].offset));
+          printf("  length: %d\n", ntohs(as->entry[i].length));
+
+          if (ntohs(as->entry[i].entryID) == as_prodosFileInfo) {
+            type11prodos *p = (type11prodos *)(&fileContents[ntohs(as->entry[i].offset)]);
+            printf("    Access: 0x%X\n", ntohs(p->access));
+            printf("    FileType: 0x%X\n", ntohs(p->filetype));
+            printf("    AuxType: 0x%X\n", ntohl(p->auxtype));
+            /* The access field is bitwise ProDOS access permissions
+             * FileType is a ProDOS file type (0x06 == BIN)
+             * AuxType carries the start address for BIN files
+             *   (cf. https://prodos8.com/docs/technote/19/)
+             */
+            foundMetadata = true;
+            filetype = ntohs(p->filetype);
+            auxTypeData = ntohl(p->auxtype);
+          }
+          else if (ntohs(as->entry[i].entryID) == as_dataFork) {
+            fileSize = ntohs(as->entry[i].length);
+            if (dataToCopy) {
+              // dunno why we'd get 2 of them but...
+              free(dataToCopy);
+            }
+            dataToCopy = (uint8_t *)malloc(fileSize);
+            memcpy(dataToCopy, &fileContents[ntohs(as->entry[i].offset)], fileSize);
+          } else {
+            printf("ERROR: unknown entry ID type\n");
+            foundAppleSingle = false;
+            break;
+          }
+        }
+        //asEntry entries[1]; // and continue off the end of the array
+        // .entryID, .offset, .length
+        // then _type11prodos (as_prodosFileInfo)
+        // .access, .filetype, .auxtype
+        // and as_dataFork
+
+      }
+    }
+  }
+  
   // Write the file into the image
-  if (!inspector->writeFileToImage(fileContents, destfn,
-                                   fileType, fileStart, fileSize)) {
+  if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents, destfn,
+                                   filetype, auxTypeData, fileSize)) {
     printf("ERROR: Failed to write file\n");
   }
+  if (dataToCopy) free(dataToCopy);
   free(fileContents);
 }
 

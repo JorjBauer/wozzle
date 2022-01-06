@@ -157,7 +157,7 @@ bool DosSpector::findFreeSector(int *trackOut, int *sectorOut)
 
 bool DosSpector::writeFileToImage(uint8_t *fileContents,
                                   char *fileName,
-                                  char fileType,
+                                  uint8_t fileType,
                                   uint16_t fileStart,
                                   uint16_t fileSize)
 {
@@ -204,7 +204,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   uint8_t *adulteratedData = NULL;
   uint16_t writeSize = 0;
   switch (fileType) {
-  case 'B':
+  case 0x06:
     writeSize = fileSize + 4;
     adulteratedData = (uint8_t *)malloc(writeSize);
     memcpy(&adulteratedData[4], fileContents, fileSize);
@@ -258,23 +258,26 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   newEntry.firstTrack = t;
   newEntry.firstSector = s;
 
+  // The fileType argument passed in to us was a ProDOS file type, because
+  // they're more expressive than the DOS file types, so we can use just one
+  // and interpret them here.
   switch (fileType) {
-  case 'T':
+  case FT_TXT: // 'T' Text
     newEntry.fileTypeAndFlags = 0;
     break;
-  case 'I':
+  case FT_INT: // 'I' Integer basic
     newEntry.fileTypeAndFlags = 1;
     break;
-  case 'A':
+  case FT_BAS: // 'A' Applesoft Basic
     newEntry.fileTypeAndFlags = 2;
     break;
-  case 'B':
+  case FT_BIN: // 'B' Binary file
     newEntry.fileTypeAndFlags = 4;
     break;
-  case 'S':
+  case FT_SYS: // 'S' sys
     newEntry.fileTypeAndFlags = 8;
     break;
-  case 'R':
+  case FT_REL: // 'R' rel
     newEntry.fileTypeAndFlags = 16;
     break;
   default:

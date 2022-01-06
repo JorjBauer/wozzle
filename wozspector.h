@@ -23,8 +23,8 @@ public:
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
-                                char fileType,
-                                uint16_t fileStart,
+                                uint8_t fileType, // ProDOS file type, always
+                                uint16_t auxTypeData,
                                 uint16_t fileSize) = 0;
 
 protected:

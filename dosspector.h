@@ -39,8 +39,8 @@ class DosSpector : public Wozspector {
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
-                                char fileType,
-                                uint16_t fileStart,
+                                uint8_t fileType,
+                                uint16_t auxTypeData,
                                 uint16_t fileSize);
 
   virtual void displayInfo();
