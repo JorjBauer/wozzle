@@ -14,6 +14,7 @@
 
 #ifdef TEENSYDUINO
 // This junk is for my AiiE project. I need to abstract it out better.
+#include "iocompat.h"
 #define SKIPCHECKSUM
 #define malloc extmem_malloc
 #define free extmem_free
@@ -33,10 +34,10 @@
 #define END_SECTION(fd) {                   \
   long endpos = lseek(fd, 0, SEEK_CUR);	    \
   lseek(fd, curpos-4, SEEK_SET);            \
-  uint32_t chunksize = endpos - curpos;     \
+  uint32_t chunksize = endpos - curpos;                                 \
   if (!write32(fd, chunksize))               \
     return false;                           \
-  lseek(fd, 0, SEEK_END);                   \
+  lseek(fd, endpos, SEEK_SET);                   \
   }
 
 Woz::Woz(bool verbose, uint8_t dumpflags)
@@ -371,6 +372,7 @@ bool Woz::writeWozFile(const char *filename, uint8_t subtype)
 
   bool retval = writeWozFile(fdout, subtype);
   close(fdout);
+
   return retval;
 }
 
@@ -480,6 +482,11 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
   }
 #endif
   
+  for (int i=0; i<160; i++) {
+    tracks[i].dirty = false;
+  }
+
+  
   retval = true;
 
  done:
@@ -522,6 +529,10 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
     }
   }
 
+  for (int i=0; i<160; i++) {
+    tracks[i].dirty = false;
+  }
+
   return true;
 }
 
@@ -555,6 +566,10 @@ bool Woz::writeNibFile(int fdout)
       fprintf(stderr, "Failed[1] to write track %d; aborting\n", phystrack);
       exit(1);
     }
+  }
+
+  for (int i=0; i<160; i++) {
+    tracks[i].dirty = false;
   }
 
   return true;
@@ -845,7 +860,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x4F464E49: // 'INFO'
       if (verbose) {
 	printf("Reading INFO chunk starting at byte 0x%llX\n",
-	       lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long)lseek(fd, 0, SEEK_CUR));
       }
       isOk = parseInfoChunk(chunkDataSize);
       haveData |= cINFO;
@@ -853,7 +868,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x50414D54: // 'TMAP'
       if (verbose) {
 	printf("Reading TMAP chunk starting at byte 0x%llX\n",
-	       lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long)lseek(fd, 0, SEEK_CUR));
       }
       isOk = parseTMAPChunk(chunkDataSize);
       haveData |= cTMAP;
@@ -861,7 +876,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x534B5254: // 'TRKS'
       if (verbose) {
 	printf("Reading TRKS chunk starting at byte 0x%llX\n",
-	       lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long) lseek(fd, 0, SEEK_CUR));
       }
       isOk = parseTRKSChunk(chunkDataSize);
       haveData |= cTRKS;
@@ -869,7 +884,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x4154454D: // 'META'
       if (verbose) {
 	printf("Reading META chunk starting at byte 0x%llX\n",
-	       lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long) lseek(fd, 0, SEEK_CUR));
       }	  
       isOk = parseMetaChunk(chunkDataSize);
       break;
@@ -1812,13 +1827,6 @@ uint8_t Woz::dataTrackNumberForQuarterTrack(uint16_t qt)
 
 bool Woz::flush()
 {
-#if 0
-  if (trackDirty) {
-    printf("Hackily writing /tmp/auto.woz\n");
-    trackDirty = false;
-    return writeFile(2, "/tmp/auto.woz"); // FIXME: debugging
-  }
-#endif
-  // *** FIXME - should flush() write the image out?
+  // *** FIXME - should flush() write the image out if it's dirty?
   return true;
 }
