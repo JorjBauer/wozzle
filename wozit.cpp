@@ -50,6 +50,7 @@ typedef void (*cmdParser)(char *cmd);
 struct _cmdInfo {
   char cmdName[20];
   cmdParser fp;
+  char helpInfo[80];
 };
 
 void lsHandler(char *cmd)
@@ -324,16 +325,34 @@ void listHandler(char *cmd)
   free(dat);
 }
 
+void helpHandler(char *cmd); // forward decl for commands[]
+
 struct _cmdInfo commands[] = {
-  {"ls", lsHandler},
-  {"cat", catHandler},
-  {"cpout", cpoutHandler},
-  {"strip", stripHandler},
-  {"list", listHandler},
-  {"cpin", cpinHandler},
-  {"info", infoHandler},
-  {"save", saveHandler},
-  {"", 0} };
+  {"cat",   catHandler,   "<filename>        : Dump file contents" },
+  {"cpin",  cpinHandler,  "<SOURCE> <DEST>  : copy host file <SOURCE> in to image filename <DEST>" },
+  {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
+  {"help",  helpHandler,  "                 : this text" },
+  {"info",  infoHandler,  "                 : show filesystem meta-information" },
+  {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
+  {"ls",    lsHandler,   "                   : List directory" },
+  {"save",  saveHandler, "<filename>       : save modified disk image as <filename>" },
+  {"strip", stripHandler, "<on|off>        : turn on or off high bit strip for 'cat'"},
+  {"", 0, ""} };
+
+void helpHandler(char *cmd)
+{
+  // Ignoring cmd for now
+  printf("List of wozit commands:\n");
+  struct _cmdInfo *p = commands;
+  while (p->cmdName[0]) {
+    printf("%s %s\n", p->cmdName, p->helpInfo);
+    p++;
+  }
+  printf("\n");
+}
+
+
+
 
 void performCommand(char *cmd)
 {
@@ -342,7 +361,7 @@ void performCommand(char *cmd)
   bool handled = false;
   while (p->cmdName[0]) {
     if (!strncmp(p->cmdName, cmd, strlen(p->cmdName))) {
-      p->fp(&cmd[strlen(p->cmdName)]);
+      p->fp(&cmd[strlen(p->cmdName)+1]);
       handled = true;
       break;
     }
