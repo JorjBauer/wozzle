@@ -41,7 +41,7 @@ class DosSpector : public Wozspector {
                                 char *fileName,
                                 uint8_t fileType,
                                 uint16_t auxTypeData,
-                                uint16_t fileSize);
+                                uint32_t fileSize);
 
   virtual void displayInfo();
 

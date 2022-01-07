@@ -159,7 +159,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
                                   char *fileName,
                                   uint8_t fileType,
                                   uint16_t fileStart,
-                                  uint16_t fileSize)
+                                  uint32_t fileSize)
 {
 
   if (fileSize > 31232) {
@@ -305,11 +305,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   }
 
   // Re-read the VTOC
-  printf("Reread VTOC\n");
   createTree();
-  if (!tree) {
-    printf("No VTOC[5]?\n");
-  }
 
   // Caller is responsible for updating the on-disk image
   return true;
@@ -464,8 +460,6 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 
 bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
 {
-  printf("adding dirent\n");
-  
   // The tree has to be loaded before we start
   if (!tree)
     createTree();
@@ -476,7 +470,6 @@ bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
 
   uint8_t catalogTrack = vt.catalogTrack;
   uint8_t catalogSector = vt.catalogSector;
-  printf("Starting catalog at %d/%d\n", catalogTrack, catalogSector);
   
   // Spin through all the catalog sectors to find an empty entry
   while (catalogTrack) {

@@ -17,17 +17,29 @@ class ProdosSpector : public Wozspector {
                                 char *fileName,
                                 uint8_t fileType,
                                 uint16_t auxTypeData,
-                                uint16_t fileSize) { return false; };
+                                uint32_t fileSize);
 
-  virtual void displayInfo() {printf("Info not implemented for prodos\n"); };
+  virtual void displayInfo();
 protected:
   virtual Vent *createTree();
 
+  uint16_t calculateBlocksFree();
+  void printFreeBlocks();
+  
+  bool findFreeBlock(uint16_t *blockOut);
+  bool flushFreeBlockList();
+  bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
+  bool writeBlock(uint16_t blockNum, uint8_t data[512]);
+  bool addDirectoryEntryForFile(struct _prodosFent *e);
+  
 private:
   Vent *descendTree(uint16_t fromBlock);
 
 private:
   uint8_t trackData[35*256*16];
+  uint8_t freeBlockBitmap[512];
+  uint16_t volBitmapBlock;
+  uint16_t numBlocksTotal;
 };
 
 #endif

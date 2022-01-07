@@ -25,7 +25,7 @@ public:
                                 char *fileName,
                                 uint8_t fileType, // ProDOS file type, always
                                 uint16_t auxTypeData,
-                                uint16_t fileSize) = 0;
+                                uint32_t fileSize) = 0;
 
 protected:
   virtual Vent *createTree() = 0;
