@@ -283,12 +283,11 @@ void stripHandler(char *cmd)
 
 void saveHandler(char *cmd)
 {
-  char *fnp = strstr(cmd, " ");
-  if (!fnp) {
+  if (!cmd || !cmd[0]) {
     printf("Usage: save <file name>\n");
     return;
   }
-  if (!inspector->writeFile(++fnp)) {
+  if (!inspector->writeFile(cmd)) {
     printf("Failed to write file\n");
   }
 }
