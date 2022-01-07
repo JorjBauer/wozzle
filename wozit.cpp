@@ -165,14 +165,14 @@ void cpinHandler(char *cmd)
   memset(fn, 0, sizeof(fn));
   memset(destfn, 0, sizeof(destfn));
 
-  char *fnp = strstr(cmd, " ");
+  char *fnp = cmd;
   if (!fnp) {
-    printf("Usage: cpin <filename> <dest filename>\n");
+    printf("Usage[1]: cpin <filename> <dest filename>\n");
     return;
   }
-  char *destfnp = strstr(++fnp, " ");
+  char *destfnp = strstr(fnp, " ");
   if (!destfnp) {
-    printf("Usage: cpin <filename> <dest filename>\n");
+    printf("Usage[2]: cpin <filename> <dest filename>\n");
     return;
   }
   strncpy(fn, fnp, destfnp-fnp < MAXPATH ? destfnp-fnp : MAXPATH);
