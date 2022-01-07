@@ -42,6 +42,7 @@ void usage(char *name)
   printf("  -I [input filename]     input disk image to inspect/modify\n");
   printf("  -d                      DOS mode\n");
   printf("  -p                      ProDOS mode\n");
+  printf("  -v                      verbose operation\n");
   printf("\n");
 }
 
@@ -378,7 +379,7 @@ int main(int argc, char *argv[]) {
 
   // Parse command-line arguments
   int c;
-  while ( (c=getopt(argc, argv, "dpI:h?")) != -1 ) {
+  while ( (c=getopt(argc, argv, "dpI:h?v")) != -1 ) {
     switch (c) {
     case 'd':
       dosMode = true;
@@ -388,6 +389,9 @@ int main(int argc, char *argv[]) {
       break;
     case 'I':
       strncpy(infoname, optarg, sizeof(infoname));
+      break;
+    case 'v':
+      verbose = true;
       break;
     case 'h':
     case '?':
