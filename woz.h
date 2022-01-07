@@ -78,7 +78,7 @@ class Woz {
 
   void writeDiskByte(uint8_t datatrack, uint8_t b);
   
- private:
+ protected:
   bool readWozFile(const char *filename, bool preloadTracks);
   bool readDskFile(const char *filename, bool preloadTracks, uint8_t subtype);
   bool readNibFile(const char *filename, bool preloadTracks);
@@ -112,7 +112,7 @@ class Woz {
  protected:
   int fd;
   
- private:
+ protected:
   uint8_t imageType;
   
   bool verbose;
