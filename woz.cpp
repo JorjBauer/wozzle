@@ -1830,3 +1830,13 @@ bool Woz::flush()
   // *** FIXME - should flush() write the image out if it's dirty?
   return true;
 }
+
+bool Woz::isDirty()
+{
+  for (int i=0; i<160; i++) {
+    if (tracks[i].dirty)
+      return true;
+  }
+  return false;
+}
+
