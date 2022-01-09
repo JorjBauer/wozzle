@@ -8,6 +8,9 @@ Vent::Vent()
 {
   isDos33 = false;
   children = next = NULL;
+
+  memset(&prodosData, 0, sizeof(prodosData));
+  memset(&dosData, 0, sizeof(dosData));
 }
 
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
@@ -55,6 +58,8 @@ Vent::Vent(struct _prodosFent *fi)
 {
   isDirectoryHeader = false;
   isDos33 = false;
+
+  memcpy(&prodosData, fi, sizeof(prodosData));
   
   this->entryType = (fi->typelen & 0xF0) >> 4;
   memcpy(this->name, fi->name, 15);
@@ -79,6 +84,8 @@ Vent::Vent(struct _dosFdEntry *fe)
 {
   isDirectoryHeader = false;
   isDos33 = true;
+  memcpy(&dosData, fe, sizeof(dosData));
+  
   for (int i=0; i<30; i++) {
     name[i] = fe->fileName[i] ^ 0x80;
     if (name[i] == ' ') {
@@ -146,7 +153,7 @@ Vent::~Vent()
 {
 }
 
-void Vent::Dump()
+void Vent::Dump(bool verbose)
 {
   if (isDos33) {
     switch (fileType) {
@@ -265,6 +272,44 @@ void Vent::Dump()
       strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
       // FIXME uc() that 
       printf("%s  %5d %s\n", buf, eofLength, auxData);
+    }
+  }
+
+  if (verbose) {
+    printf("Is directory header: %s\n", isDirectoryHeader ? "true" : "false");
+    printf("Is DOS 3.3: %s\n", isDos33 ? "true" : "false");
+    printf("EntryType: 0x%.2X\n", entryType);
+    printf("FileType: 0x%.2X\n", fileType);
+    printf("keyPointer: 0x%.4X\n", keyPointer);
+    printf("blocksUsed: 0x%.4X\n", blocksUsed);
+    printf("eofLength: 0x%.8X\n", eofLength);
+    printf("typeData: 0x%.4X\n", typeData);
+
+    if (!isDos33) {
+      printf("ProdosData dump:\n");
+
+      printf("  type/len: 0x%.2X\n", prodosData.typelen);
+      printf("  fileType: 0x%.2X\n", prodosData.fileType);
+      printf("  keyPointer: 0x%.2X%.2X\n", prodosData.keyPointer[1],
+             prodosData.keyPointer[0]);
+      printf("  blocksUsed: 0x%.2X%.2X\n", prodosData.blocksUsed[1],
+             prodosData.blocksUsed[0]);
+      printf("  eofLength: 0x%.2X%.2X%.2X\n",
+             prodosData.eofLength[2],
+             prodosData.eofLength[1],
+             prodosData.eofLength[0]);
+      printf("  creatorVersion: 0x%.2X\n", prodosData.creatorVersion);
+      printf("  minRequiredVersion: 0x%.2X\n", prodosData.minRequiredVersion);
+      printf("  accessFlags: 0x%.2X\n", prodosData.accessFlags);
+      printf("  typeData: 0x%.2X%.2X\n", prodosData.typeData[1],
+             prodosData.typeData[0]);
+      printf("  headerPointer: 0x%.2X%.2X\n", prodosData.headerPointer[1],
+             prodosData.headerPointer[0]);
+    } else {
+      printf("dosData dump:\n");
+      printf("  first track/sector: %d/%d\n", dosData.firstTrack, dosData.firstSector);
+      printf("  fileTypeAndFlags: 0x%.2X\n", dosData.fileTypeAndFlags);
+      printf("  fileLength: 0x%.2X%.2X\n", dosData.fileLength[1], dosData.fileLength[0]);
     }
   }
 }

@@ -325,6 +325,17 @@ void listHandler(char *cmd)
   free(dat);
 }
 
+void inspectHandler(char *cmd)
+{
+  Vent *fp = findFileByName(cmd);
+  if (fp) {
+    printf("Entry dump for '%s':\n", cmd);
+    fp->Dump(true);
+  } else {
+    printf("File not found\n");
+  }
+}
+
 void helpHandler(char *cmd); // forward decl for commands[]
 
 struct _cmdInfo commands[] = {
@@ -333,6 +344,7 @@ struct _cmdInfo commands[] = {
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
+  {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },
   {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
   {"ls",    lsHandler,   "                   : List directory" },
   {"save",  saveHandler, "<filename>       : save modified disk image as <filename>" },
@@ -416,7 +428,12 @@ int main(int argc, char *argv[]) {
   }
 
   while (1) {
-    char *cmd = (char *)readline("wozit> ");
+    char *cmd;
+    if (inspector->isDirty()) {
+      cmd = (char *)readline("wozit*> ");
+    } else {
+      cmd = (char *)readline("wozit> ");
+    }
     if (!cmd) break;
     if (cmd[0]) performCommand(cmd);
     free(cmd);

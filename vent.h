@@ -93,7 +93,7 @@ struct _dosFdEntry {
   uint8_t firstSector;
   uint8_t fileTypeAndFlags;
   char fileName[30];
-  uint8_t fileLength[2]; // low first                                           
+  uint8_t fileLength[2]; // low first
 };
 
 struct _tsPair {
@@ -121,7 +121,7 @@ class Vent {
   Vent(const Vent &vi);
   ~Vent();
 
-  void Dump();
+  void Dump(bool verbose=false);
 
   Vent *nextEnt();
   void nextEnt(Vent *);
@@ -168,6 +168,10 @@ class Vent {
   // dos33 pointers
   uint8_t firstTrack;
   uint8_t firstSector;
+
+  // Cache for inspection
+  struct _prodosFent prodosData;
+  struct _dosFdEntry dosData;
 };
 
 #endif
