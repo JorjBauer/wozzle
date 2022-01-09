@@ -470,6 +470,10 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     uint8_t indexBlockPtr = 0;
     memset(indexBlockData, 0, sizeof(indexBlockData));
 
+    fent.keyPointer[0] = indexBlock & 0xFF;
+    fent.keyPointer[1] = (indexBlock >> 8);
+
+    
     // Allocate the blocks for the file data and start copying it in
     uint32_t bytesRemaining = fileSize;
     for (int idx = 0; idx < fileSize; idx+= 512, bytesRemaining -= 512) {
