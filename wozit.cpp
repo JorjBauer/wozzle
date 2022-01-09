@@ -331,6 +331,7 @@ void inspectHandler(char *cmd)
   if (fp) {
     printf("Entry dump for '%s':\n", cmd);
     fp->Dump(true);
+    inspector->inspectFile(cmd, fp);
   } else {
     printf("File not found\n");
   }

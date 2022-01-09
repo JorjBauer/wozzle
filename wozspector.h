@@ -27,6 +27,8 @@ public:
                                 uint16_t auxTypeData,
                                 uint32_t fileSize) = 0;
 
+  virtual void inspectFile(const char *fileName, Vent *fp) = 0;
+  
 protected:
   virtual Vent *createTree() = 0;
   virtual void displayTree(Vent *tree);

@@ -28,13 +28,13 @@ const static uint8_t s2map[8] = { 2, 6, 10, 14, 3, 7, 11, 15 };
 
 // file entry type flags
 enum {
-  ft_deleted   = (0x00<<4),
-  ft_seedling  = (0x01<<4),
-  ft_sapling   = (0x02<<4),
-  ft_tree      = (0x03<<4),
-  ft_subdir    = (0x0D<<4),
-  ft_subdirhdr = (0x0E<<4),
-  ft_voldirhdr = (0x0F<<4)
+  ft_deleted   = 0x00,
+  ft_seedling  = 0x01,
+  ft_sapling   = 0x02,
+  ft_tree      = 0x03,
+  ft_subdir    = 0x0D,
+  ft_subdirhdr = 0x0E,
+  ft_voldirhdr = 0x0F
 };
 
 // access type flags
@@ -219,6 +219,7 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
       freeBlockBitmap[ptr] &= ~bits;
       // return the value
       *blockOut = i;
+      printf("> use block %d (0x%X)\n", i, i); // debugging
       // return that we succeeded in finding a free block
       return true;
     }
@@ -243,11 +244,6 @@ bool ProdosSpector::readBlock(uint16_t blockNum, uint8_t dataOut[512])
   if (!tree)
     return false;
 
-  for (int i=0; i<512; i++) {
-    printf("%.2X ", trackData[512*blockNum+i]);
-  }
-  printf("\n");
-  
   memcpy(dataOut, &trackData[512*blockNum], 512);
   return true;
 }
@@ -437,7 +433,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     // Seedling file entry
     // The KEY_POINTER in the directory block points directly to the file
     // data
-    fent.typelen |= ft_seedling;
+    fent.typelen |= (ft_seedling<<4);
     
     // Allocate one block for the file
     uint16_t firstBlock;
@@ -459,7 +455,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     // Sapling file entry
     // We need an index block that points to all of the data blocks, and the
     // index block number is stored in KEY_POINTER.
-    fent.typelen |= ft_sapling;
+    fent.typelen |= (ft_sapling<<4);
     blocksUsed++;
     uint16_t indexBlock;
     if (!findFreeBlock(&indexBlock)) {
@@ -483,8 +479,8 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
         return false;
       }
 
-      indexBlockData[indexBlockPtr++] = nextBlock & 0xFF;
-      indexBlockData[indexBlockPtr++] = (nextBlock >> 8);
+      indexBlockData[indexBlockPtr] = nextBlock & 0xFF;
+      indexBlockData[0x100 + indexBlockPtr++] = (nextBlock >> 8);
 
       uint8_t paddedData[512];
       memset(&paddedData, 0, sizeof(paddedData));
@@ -594,5 +590,40 @@ void ProdosSpector::displayInfo()
   
   printFreeBlocks();
   printf("\nBlocks total: %d\nBlocks free: %d\n", numBlocksTotal, calculateBlocksFree());
+}
+
+void ProdosSpector::inspectFile(const char *fileName, Vent *fp)
+{
+  uint32_t fileSize = fp->getEofLength();
+  if (fileSize <= 512) {
+    printf("seedling\n");
+    if (fp->getStorageType() != ft_seedling) {
+      printf("WARNING: type in dir says 0x%X, seedling should be 0x%X\n", fp->getStorageType(), ft_seedling);
+    }
+  } else if (fileSize <= 128*1024) {
+    printf("sapling\n");
+    if (fp->getStorageType() != ft_sapling) {
+      printf("WARNING: type in dir says 0x%X, sapling should be 0x%X\n", fp->getStorageType(), ft_sapling);
+    }
+    uint16_t kpv = fp->keyPointerVal();
+    printf("looking up key pointer %d (0x%X)\n", kpv, kpv);
+    uint8_t blockData[512];
+    if (!readBlock(kpv, blockData)) {
+      printf("ERROR: unable to read block\n");
+      return;
+    }
+    printf("Sapling index block data:\n");
+    for (int i=0; i<512; i+=16) {
+      printf("%.4X  ", i);
+      for (int j=0; j<16; j++) {
+        printf("%.2X ", blockData[i+j]);
+      }
+      printf("\n");
+    }
+  } else {
+    printf("tree\n");
+    printf("(Tree entries are not coded yet; cannot inspect.)\n");
+  }
+             
 }
 

@@ -44,6 +44,7 @@ class DosSpector : public Wozspector {
                                 uint32_t fileSize);
 
   virtual void displayInfo();
+  virtual void inspectFile(const char *fileName, Vent *fp) {};
 
 protected:
   virtual Vent *createTree();
