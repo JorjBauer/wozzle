@@ -418,7 +418,7 @@ int main(int argc, char *argv[]) {
   while (1) {
     char *cmd = (char *)readline("wozit> ");
     if (!cmd) break;
-    performCommand(cmd);
+    if (cmd[0]) performCommand(cmd);
     free(cmd);
   }
   
