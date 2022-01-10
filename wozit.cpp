@@ -146,6 +146,7 @@ void cpoutHandler(char *cmd)
 void infoHandler(char *cmd)
 {
   // FIXME: handle arguments? Or throw error?
+  inspector->dumpInfo();
   inspector->displayInfo();
 }
 
@@ -418,9 +419,9 @@ int main(int argc, char *argv[]) {
   }
 
   if (dosMode) {
-    inspector = new DosSpector(verbose, 0);
+    inspector = new DosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
   } else {
-    inspector = new ProdosSpector(verbose, 0);
+    inspector = new ProdosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
   }
 
   if (!inspector->readFile(infoname, true)) {
