@@ -1510,6 +1510,19 @@ bool Woz::decodeWozTrackToNibFromDataTrack(uint8_t dataTrack, nibSector sectorDa
 {
   for (int sector=0; sector<16; sector++) {
     if (!readNibSectorDataFromDataTrack(dataTrack, sector, (nibSector *)(&sectorData[sector]))) {
+#if 0
+      /* Debugging code -- dump the raw track data for inspection */
+      printf("Track is %d bits long (%d blocks)\n", tracks[dataTrack].bitCount, tracks[dataTrack].blockCount);
+      if (tracks[dataTrack].trackData) {
+        for (int i=0; i<tracks[dataTrack].bitCount/8; i+=16) {
+          fprintf(stderr, "%.4X  ", i);
+          for (int j=0; j<16 && ((i+j)<(tracks[dataTrack].bitCount/8)); j++) {
+            fprintf(stderr, "%.2X ", tracks[dataTrack].trackData[i+j]);
+          }
+          fprintf(stderr, "\n");
+        }
+      }
+#endif      
       fprintf(stderr, "failed to readNibSectorDataFromDataTrack for sector %d\n", sector);
       return false;
     }
@@ -1688,9 +1701,11 @@ void Woz::dumpInfo()
     printf("Woz internal quarter-track CRCs:\n");
     // Dump the CRC32 for each Woz quarter-track
     for (int i=0 ;i<160; i++) {
-      uint32_t crc=0;
-      checksumWozDataTrack(i, &crc);
-      printf("Woz track %d CRC32: 0x%X\n", i, crc);
+      if (tracks[i].trackData) {
+        uint32_t crc=0;
+        checksumWozDataTrack(i, &crc);
+        printf("Woz track %d CRC32: 0x%X\n", i, crc);
+      }
     }
   }
 
