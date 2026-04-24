@@ -385,6 +385,56 @@ static bool buildBlankProdosPo(const char *volumeName, uint8_t *img)
   return true;
 }
 
+void dumptrackHandler(char *cmd)
+{
+  // dumptrack <track#> <outfile>
+  // Dumps one NIBTRACKSIZE-byte revolution of latched nibbles for the
+  // given physical track to a raw binary file. Intended for analyzing
+  // non-standard disk formats (rwts18, copy-protected layouts) where
+  // the normal catalog / filesystem layers can't help.
+  if (!cmd || !cmd[0]) {
+    printf("Usage: dumptrack <track#> <outfile>\n");
+    return;
+  }
+
+  char *sp = strchr(cmd, ' ');
+  if (!sp) {
+    printf("Usage: dumptrack <track#> <outfile>\n");
+    return;
+  }
+  int trackNum = atoi(cmd);
+  if (trackNum < 0 || trackNum > 39) {
+    printf("ERROR: track number %d out of range (0..39)\n", trackNum);
+    return;
+  }
+  const char *outPath = sp + 1;
+  if (!*outPath) {
+    printf("ERROR: output filename is blank\n");
+    return;
+  }
+
+  uint8_t buf[NIBTRACKSIZE];
+  if (!inspector->readRawNibStream((uint8_t)trackNum, buf)) {
+    printf("ERROR: failed to read raw nibble stream for track %d\n", trackNum);
+    return;
+  }
+
+  FILE *f = fopen(outPath, "wb");
+  if (!f) {
+    printf("ERROR: failed to open '%s' for write\n", outPath);
+    return;
+  }
+  size_t w = fwrite(buf, 1, NIBTRACKSIZE, f);
+  fclose(f);
+  if (w != NIBTRACKSIZE) {
+    printf("ERROR: short write to '%s' (%zu of %d bytes)\n",
+           outPath, w, NIBTRACKSIZE);
+    return;
+  }
+  printf("Wrote %d bytes from track %d to '%s'\n",
+         NIBTRACKSIZE, trackNum, outPath);
+}
+
 void formatHandler(char *cmd)
 {
   if (!cmd || !cmd[0]) {
@@ -534,6 +584,7 @@ struct _cmdInfo commands[] = {
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
   {"cpin",  cpinHandler,  "<SOURCE> <DEST>  : copy host file <SOURCE> in to image filename <DEST>" },
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
+  {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
   {"format", formatHandler, "<fname> [<vol>]: create a blank DOS 3.3 or ProDOS image" },
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
