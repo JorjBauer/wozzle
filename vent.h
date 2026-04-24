@@ -145,6 +145,13 @@ class Vent {
   // ProDOS: block count from file entry
   uint16_t getBlocksUsed();
 
+  // For ProDOS directory headers: the fileCount field — the header's
+  // record of how many active entries the directory contains. Older
+  // interpreters (ProDOS 1.1.1, FILER, etc.) use this to decide when
+  // to stop listing; a discrepancy vs. a full scan means entries are
+  // either hidden from those tools or present as dangling data.
+  uint16_t getActiveFileCount();
+
  private:
   bool isDirectoryHeader;
   bool isDos33;

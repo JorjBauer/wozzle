@@ -151,13 +151,14 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
   Vent *ret = NULL;
 
   uint16_t currentBlock = fromBlock;
-  
+  uint32_t activeEntriesFound = 0;  // full-scan count, to cross-check header
+
   while (currentBlock) {
     uint8_t *block;
     block = &trackData[512 * currentBlock];
-    
+
     struct _idxHeader *ih = (struct _idxHeader *)block;
-    
+
     for (int i=0; i<13; i++) {
       if (i==0 && currentBlock == fromBlock) {
 	// The first entry of the first block is header data
@@ -185,6 +186,7 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 	struct _prodosFent *fe = (struct _prodosFent *)&trackData[512 * currentBlock + i*0x27 + 4];
 	// if (fe->typen & 0xF0) == 0, then it's an empty directory entry.
 	if (fe->typelen & 0xF0) {
+	  activeEntriesFound++;
 	  Vent *ve = new Vent(fe);
 	  assert(ret); // should have been initialized already?
 	  Vent *p3 = ret;
@@ -199,7 +201,25 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
     currentBlock = ih->nextBlock[1] * 256 + ih->nextBlock[0];
   }
 
-  return ret;  
+  // Cross-check the header's fileCount against what the full scan found.
+  // ProDOS 1.1.1's CAT trusts the header count and stops early; a higher
+  // actual count means files are visible to anything that walks all
+  // blocks but hidden from older tools. A lower actual count means the
+  // header is lying about entries that aren't really there. Either way,
+  // worth flagging — including in non-verbose mode, since it often
+  // indicates tampering, corruption, or a deliberate hiding trick.
+  if (ret) {
+    uint16_t declared = ret->getActiveFileCount();
+    if (declared != activeEntriesFound) {
+      printf("WARNING: directory '%s' header says %u active entries "
+             "but the full scan found %u. ProDOS 1.1.1 will only see "
+             "the first %u via CAT.\n",
+             ret->getName(), declared,
+             activeEntriesFound, declared);
+    }
+  }
+
+  return ret;
 }
 
 // side effect: marks it as used in RAM until flushFreeBlockList() is called

@@ -380,3 +380,8 @@ uint16_t Vent::getBlocksUsed()
   return blocksUsed;
 }
 
+uint16_t Vent::getActiveFileCount()
+{
+  return activeFileCount;
+}
+
