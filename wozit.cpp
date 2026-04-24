@@ -306,6 +306,151 @@ void cpinHandler(char *cmd)
   free(fileContents);
 }
 
+// Lay down a freshly-formatted DOS 3.3 filesystem into the provided
+// 140 KB buffer (which must already be zeroed). Track 17/0 gets the
+// VTOC; sectors 17/15 down to 17/1 form the catalog chain with all
+// entries zero.
+static bool buildBlankDosDsk(uint8_t volumeNumber, uint8_t *img)
+{
+  const int trackBytes = 16 * 256;
+
+  struct _vtoc *v = (struct _vtoc *)(img + 17 * trackBytes + 0 * 256);
+  v->catalogTrack = 17;
+  v->catalogSector = 15;
+  v->dosVersion = 3;
+  v->volumeNumber = volumeNumber;
+  v->maxTSpairs = 122;
+  v->lastTrackAllocated = 18;
+  v->allocationDirection = 1;
+  v->tracksPerDisk = 35;
+  v->sectorsPerTrack = 16;
+  v->bytesPerSectorLow = 0x00;
+  v->bytesPerSectorHigh = 0x01; // 256 bytes/sector
+
+  // Track-allocation bitmap. 1-bits are free, 0-bits are used. Tracks 0/1/2
+  // hold the bootable DOS image, track 17 holds VTOC + catalog.
+  for (int t = 0; t < 35; t++) {
+    bool used = (t == 0 || t == 1 || t == 2 || t == 17);
+    v->trackState[t].sectorsUsed[0] = used ? 0x00 : 0xFF;
+    v->trackState[t].sectorsUsed[1] = used ? 0x00 : 0xFF;
+  }
+
+  // Catalog chain: sector 15 → 14 → ... → 1 → (0,0). Only the link
+  // bytes need to be set; the 7 file entries per sector stay zero.
+  for (int s = 15; s >= 1; s--) {
+    uint8_t *sec = img + 17 * trackBytes + s * 256;
+    sec[1] = (s > 1) ? 17 : 0;
+    sec[2] = (s > 1) ? (uint8_t)(s - 1) : 0;
+  }
+  return true;
+}
+
+// Lay down a blank ProDOS volume. Block 0 (boot) stays zeros; blocks 2-5
+// are a 4-block volume directory chain; block 6 is the volume bitmap.
+static bool buildBlankProdosPo(const char *volumeName, uint8_t *img)
+{
+  const uint16_t totalBlocks = 280;
+
+  uint8_t *b2 = img + 2 * 512;
+  b2[0] = 0; b2[1] = 0;  // prev block = none
+  b2[2] = 3; b2[3] = 0;  // next block = 3
+
+  struct _subdirent *hdr = (struct _subdirent *)(b2 + 4);
+  size_t nl = strlen(volumeName);
+  if (nl > 15) nl = 15;
+  hdr->typelen = (0x0F << 4) | (uint8_t)nl;  // 0xF = volume directory hdr
+  memcpy(hdr->name, volumeName, nl);
+  hdr->accessFlags = 0xC3;    // destroy, rename, write, read
+  hdr->entryLength = 0x27;
+  hdr->entriesPerBlock = 0x0D;
+  hdr->volBitmap.pointer[0] = 6;
+  hdr->volBitmap.pointer[1] = 0;
+  hdr->volBlocks.total[0] = (uint8_t)(totalBlocks & 0xFF);
+  hdr->volBlocks.total[1] = (uint8_t)(totalBlocks >> 8);
+
+  // Remaining directory blocks in the chain. Only the prev/next header
+  // bytes matter for an empty volume.
+  for (int b = 3; b <= 5; b++) {
+    uint8_t *blk = img + b * 512;
+    blk[0] = (uint8_t)(b - 1);
+    blk[2] = (b == 5) ? 0 : (uint8_t)(b + 1);
+  }
+
+  // Volume bitmap. MSb-first within each byte: bit 0x80 of byte 0 = block 0.
+  // Used: blocks 0 (boot), 1 (reserved), 2-5 (vol dir), 6 (bitmap).
+  uint8_t *bm = img + 6 * 512;
+  bm[0] = 0x01;                             // block 7 free; 0-6 used
+  for (int i = 1; i <= 34; i++) bm[i] = 0xFF; // blocks 8..279 free
+  // bytes 35..511 stay 0 — bits past block 279 must be marked unavailable
+  return true;
+}
+
+void formatHandler(char *cmd)
+{
+  if (!cmd || !cmd[0]) {
+    printf("Usage: format <filename> [<volume>]\n");
+    printf("  DOS mode:    <volume> is 1-254 (default 254).\n");
+    printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK).\n");
+    printf("  Image type follows the current -d/-p mode. Writes .dsk (DOS)\n");
+    printf("  or .po (ProDOS); use wozzle to convert to .woz if needed.\n");
+    return;
+  }
+
+  char fname[MAXPATH + 1] = {0};
+  char vol[32] = {0};
+  char *sp = strchr(cmd, ' ');
+  if (sp) {
+    size_t fl = (size_t)(sp - cmd);
+    if (fl > MAXPATH) fl = MAXPATH;
+    memcpy(fname, cmd, fl);
+    strncpy(vol, sp + 1, sizeof(vol) - 1);
+  } else {
+    strncpy(fname, cmd, MAXPATH);
+  }
+
+  // Don't clobber an existing file — the user may be formatting next to
+  // the currently-loaded image and a typo shouldn't destroy work.
+  struct stat st;
+  if (lstat(fname, &st) == 0) {
+    printf("ERROR: '%s' already exists; refusing to overwrite\n", fname);
+    return;
+  }
+
+  const size_t DISK_SIZE = 35 * 16 * 256;  // = 280 * 512
+  uint8_t *img = (uint8_t *)calloc(1, DISK_SIZE);
+  if (!img) {
+    printf("ERROR: out of memory\n");
+    return;
+  }
+
+  bool ok;
+  if (dosMode) {
+    int v = vol[0] ? atoi(vol) : 254;
+    if (v < 1 || v > 254) v = 254;
+    ok = buildBlankDosDsk((uint8_t)v, img);
+    if (ok) {
+      FILE *f = fopen(fname, "wb");
+      if (f) { ok = (fwrite(img, 1, DISK_SIZE, f) == DISK_SIZE); fclose(f); }
+      else   { ok = false; }
+    }
+    if (ok) printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, v);
+  } else {
+    const char *name = vol[0] ? vol : "BLANK";
+    ok = buildBlankProdosPo(name, img);
+    if (ok) {
+      FILE *f = fopen(fname, "wb");
+      if (f) { ok = (fwrite(img, 1, DISK_SIZE, f) == DISK_SIZE); fclose(f); }
+      else   { ok = false; }
+    }
+    if (ok) printf("Created blank ProDOS image '%s' (volume '%s')\n", fname, name);
+  }
+
+  free(img);
+  if (!ok) {
+    printf("ERROR: failed to write '%s'\n", fname);
+  }
+}
+
 void stripHandler(char *cmd)
 {
   if (!strcmp(cmd, "on")) {
@@ -389,6 +534,7 @@ struct _cmdInfo commands[] = {
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
   {"cpin",  cpinHandler,  "<SOURCE> <DEST>  : copy host file <SOURCE> in to image filename <DEST>" },
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
+  {"format", formatHandler, "<fname> [<vol>]: create a blank DOS 3.3 or ProDOS image" },
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
   {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },
@@ -518,7 +664,15 @@ int main(int argc, char *argv[]) {
       cmd = (char *)readline("wozit> ");
     }
     if (!cmd) break;
-    if (cmd[0]) performCommand(cmd);
+    if (cmd[0]) {
+      // Record non-empty lines so readline's up-arrow scrolls back
+      // through them. Skip consecutive duplicates to avoid clutter.
+      HIST_ENTRY *last = (history_length > 0) ? history_get(history_length) : NULL;
+      if (!last || !last->line || strcmp(last->line, cmd) != 0) {
+        add_history(cmd);
+      }
+      performCommand(cmd);
+    }
     free(cmd);
   }
 

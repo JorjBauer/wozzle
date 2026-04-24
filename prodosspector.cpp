@@ -315,20 +315,10 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
     
   uint8_t indexType = e->getStorageType();
   uint16_t kp = e->keyPointerVal();
-  uint32_t l = 0; // length varies based on type of file -
-  switch (e->getFileType()) {
-  case FT_BIN:
-    l = e->getEofLength();
-    break;
-  case FT_TXT:
-    l = e->getEofLength();
-    break;
-  case FT_BAS:
-    l = e->getEofLength();
-    break;
-  default:
-    printf("unhandled type %d\n", e->getFileType());
-  }
+  // eofLength is the authoritative file size for every ProDOS entry,
+  // regardless of file type. Directories are excluded at the storage-type
+  // level below (they never reach the seedling/sapling/tree cases).
+  uint32_t l = e->getEofLength();
 
   if (!l) {
       // handle zero-length files
