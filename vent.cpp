@@ -375,3 +375,8 @@ uint8_t Vent::getFileType()
   return fileType;
 }
 
+uint16_t Vent::getBlocksUsed()
+{
+  return blocksUsed;
+}
+

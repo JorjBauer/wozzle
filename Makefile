@@ -1,7 +1,7 @@
 FUSELIBS=-losxfuse
 MACFLAGS=-mmacosx-version-min=10.15
 
-CFLAGS = -Wall -g -I/usr/local/include/osxfuse -D_FILE_OFFSET_BITS=64
+CFLAGS = -Wall -g -I/usr/local/include/osxfuse -I/opt/homebrew/opt/readline/include -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
 WOZSRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp
@@ -10,8 +10,8 @@ WOZOBJS=woz.o crc32.o nibutil.o wozzle.o
 FUSESRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozfuse.cpp
 FUSEOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozfuse.o
 
-WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp
-WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o applesoft.o
+WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp intbas.cpp
+WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o applesoft.o intbas.o
 
 .PHONY: test clean
 
@@ -24,7 +24,7 @@ wozfuse: $(FUSEOBJS)
 	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) 
 
 wozit: $(WOZITOBJS)
-	$(CXX) $(CFLAGS) -lreadline -o wozit $(WOZITOBJS)
+	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -lreadline -o wozit $(WOZITOBJS)
 
 depend: .depend
 

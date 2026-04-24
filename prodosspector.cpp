@@ -592,6 +592,26 @@ void ProdosSpector::displayInfo()
   printf("\nBlocks total: %d\nBlocks free: %d\n", numBlocksTotal, calculateBlocksFree());
 }
 
+bool ProdosSpector::probe()
+{
+  // ProDOS volume directory header lives at block 2. Track 0 in
+  // ProDOS-order layout holds blocks 0-7 back-to-back, so block 2 starts
+  // 512 bytes into that track's data. The header entry has a zero
+  // prev-block pointer, a non-zero next-block pointer, a storage_type
+  // nybble of 0xF (volume directory header), and a name length 1..15.
+  uint8_t track[256*16];
+  if (!decodeWozTrackToDsk(0, T_PO, track)) return false;
+  uint8_t *b2 = &track[512 * 2];
+  if (b2[0] != 0 || b2[1] != 0) return false;
+  uint16_t next = b2[2] | (b2[3] << 8);
+  if (next == 0) return false;
+  uint8_t stype = (b2[4] & 0xF0) >> 4;
+  uint8_t namelen = b2[4] & 0x0F;
+  if (stype != 0x0F) return false;
+  if (namelen < 1 || namelen > 15) return false;
+  return true;
+}
+
 void ProdosSpector::inspectFile(const char *fileName, Vent *fp)
 {
   uint32_t fileSize = fp->getEofLength();

@@ -35,6 +35,8 @@ class DosSpector : public Wozspector {
   ~DosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+  virtual uint32_t getAllocatedByteCount(Vent *e);
+  virtual uint32_t getFileAllocation(Vent *e, char **toWhere);
   virtual uint8_t applesoftHeaderBytes() { return 2; };
 
   virtual bool writeFileToImage(uint8_t *fileContents,
@@ -44,7 +46,8 @@ class DosSpector : public Wozspector {
                                 uint32_t fileSize);
 
   virtual void displayInfo();
-  virtual void inspectFile(const char *fileName, Vent *fp) {};
+  virtual void inspectFile(const char *fileName, Vent *fp);
+  virtual bool probe();
 
 protected:
   virtual Vent *createTree();
