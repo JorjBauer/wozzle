@@ -31,6 +31,8 @@ typedef struct _diskInfo {
   uint16_t compatHardware;  // 0=unknown compatability
   uint16_t requiredRam;     // value in K. 0 = unknown
   uint16_t largestTrack;    // # of 512-byte blocks used for largest track
+  uint16_t fluxBlock;       // INFO v3: 0 if no FLUX chunk
+  uint16_t largestFluxTrack;// INFO v3: 0 if no FLUX chunk
 } diskInfo;
 
 typedef struct _trackInfo {
