@@ -54,6 +54,16 @@ protected:
   bool flushFreeSectorList();
   bool findFreeSector(int *trackOut, int *sectorOut);
   bool addDirectoryEntryForFile(struct _dosFdEntry *e);
+  // Reads a logical track into a 16-sector buffer, dispatching to the
+  // 13-sector codec if the underlying WOZ says so. For 13-sector disks
+  // only the first 13*256 bytes of `out` are populated.
+  bool readLogicalTrack(uint8_t phystrack, uint8_t out[256*16]);
+
+  // Reads a single DOS-logical sector. Implemented on top of
+  // readLogicalTrack (slightly wasteful — decodes the whole track — but
+  // correct for both 13- and 16-sector formats with one code path).
+  bool readLogicalSector(uint8_t phystrack, uint8_t logsect,
+                         uint8_t out[256]);
   
 protected:
   bool trackSectorUsedMap[35][16];

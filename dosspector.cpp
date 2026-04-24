@@ -42,6 +42,29 @@ static void dumpVtoc(struct _vtoc vt)
 }
 
 
+// Read one logical track, dispatching on the disk's sector format. The
+// caller-supplied buffer is sized for 16 sectors (4096 B); for a 13-
+// sector track we read into a 13-sector buffer and copy only the
+// populated portion, which is all the callers touch.
+bool DosSpector::readLogicalTrack(uint8_t phystrack, uint8_t out[256*16])
+{
+  if (isThirteenSectorDisk()) {
+    uint8_t smallBuf[256*13];
+    if (!decodeWozTrack13ToDsk(phystrack, smallBuf)) return false;
+    memcpy(out, smallBuf, 256*13);
+    return true;
+  }
+  return decodeWozTrackToDsk(phystrack, T_DSK, out);
+}
+
+bool DosSpector::readLogicalSector(uint8_t phystrack, uint8_t logsect, uint8_t out[256])
+{
+  uint8_t track[256*16];
+  if (!readLogicalTrack(phystrack, track)) return false;
+  memcpy(out, &track[logsect * 256], 256);
+  return true;
+}
+
 Vent *DosSpector::createTree()
 {
   if (tree) {
@@ -51,7 +74,7 @@ Vent *DosSpector::createTree()
   if (verbose) printf("Creating tree\n");
 
   uint8_t track[256*16];
-  if (!decodeWozTrackToDsk(17, T_DSK, track)) {
+  if (!readLogicalTrack(17, track)) {
     printf("ERROR: Failed to read track 17\n");
     return tree;
   }
@@ -60,7 +83,12 @@ Vent *DosSpector::createTree()
   // FIXME sanity checking: vt.dosVersion and whatnot?
   // FIXME assert vt.bytesPerSectorHigh/Low == 256
   if (verbose) dumpVtoc(vt);
-  
+
+  // A sensible bound for the in-memory sector bitmap. Honors DOS 3.2's
+  // 13 or DOS 3.3's 16; if the VTOC is garbage, fall back to 16.
+  uint8_t spt = vt.sectorsPerTrack;
+  if (spt != 13 && spt != 16) spt = 16;
+
   memset(&trackSectorUsedMap, 0, sizeof(trackSectorUsedMap));
 
   // FIXME: the trackSectorUsedMap is only set for 35 tracks - what if it's a bigger woz disk?
@@ -68,16 +96,16 @@ Vent *DosSpector::createTree()
   for (int i=0; i<vt.tracksPerDisk; i++) {
     uint16_t state = (vt.trackState[i].sectorsUsed[0] << 8) |
       vt.trackState[i].sectorsUsed[1];
-    for (int j=0; j<16; j++) {
+    for (int j=0; j<spt; j++) {
       // 1-bits are free; 0-bits are used (Beneath Apple Dos, p. 4-3)
       trackSectorUsedMap[i][j] = (state & (1 << (j))) ? false : true;
     }
   }
-  
+
   // FIXME check vt.catalogTrack == 17? Or pass in the whole disk?
   uint8_t catalogTrack = vt.catalogTrack;
   uint8_t catalogSector = vt.catalogSector;
-  while (catalogTrack == 17 && catalogSector < 16) {
+  while (catalogTrack == 17 && catalogSector < spt) {
     struct _catalogInfo *ci = (struct _catalogInfo *)&track[256*catalogSector];
     for (int i=0; i<7; i++) {
       if (ci->fileEntries[i].fileName[0]) {
@@ -352,10 +380,17 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
   
   struct _dosTsList *tsList = NULL;
   uint8_t sectorData[256];
-  if (!decodeWozTrackSector(tsTrack, enphys[tsSector], sectorData)) {
-    printf("Unable to decode track %d sector %d\n", tsTrack, tsSector);
-    *toWhere = NULL;
-    return 0;
+  {
+    // The T/S list sector is addressed by its logical sector number in
+    // the directory entry. Go through the format-aware helper so the
+    // same code path works for DOS 3.2 (13-sector) and DOS 3.3.
+    uint8_t trackBuf[256*16];
+    if (!readLogicalTrack(tsTrack, trackBuf)) {
+      printf("Unable to decode track %d sector %d\n", tsTrack, tsSector);
+      *toWhere = NULL;
+      return 0;
+    }
+    memcpy(sectorData, &trackBuf[256 * tsSector], 256);
   }
   tsList = (struct _dosTsList *)sectorData;
   if (verbose) {
@@ -380,7 +415,7 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
   
   uint8_t dataTrackData[256*16];
   if (verbose) printf("About to decode track %d\n", tsList->tsPair[0].track);
-  if (!decodeWozTrackToDsk(tsList->tsPair[0].track, T_DSK, dataTrackData)) {
+  if (!readLogicalTrack(tsList->tsPair[0].track, dataTrackData)) {
     printf("Unable to decode track %d\n", tsList->tsPair[0].track);
     *toWhere = NULL;
     return 0;
@@ -436,7 +471,7 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
   // '122' is the number of T/S pairs in the structure
   while (ptr < 122 && (tsList->tsPair[ptr].track != 0 || tsList->tsPair[ptr].sector != 0)) {
     // FIXME this could decode a single sector, instead of a track that we repeat
-    if (!decodeWozTrackToDsk(tsList->tsPair[ptr].track, T_DSK, dataTrackData)) {
+    if (!readLogicalTrack(tsList->tsPair[ptr].track, dataTrackData)) {
       printf("Unable to decode track %d\n", tsList->tsPair[ptr].track);
       free(*toWhere);
       *toWhere = NULL;
@@ -517,14 +552,22 @@ bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
 
 bool DosSpector::probe()
 {
-  // DOS 3.3 puts the VTOC at track 17 / sector 0 in DOS ordering. A
-  // plausible VTOC has dosVersion == 3, catalogTrack == 17, and an
-  // expected tracks/sectors geometry. If any of those are off, the
-  // image is very unlikely to be DOS 3.3.
+  // Apple DOS puts the VTOC at track 17 / sector 0 (logical). We accept
+  // both DOS 3.2 (dosVersion=2, 13 sectors/track, 5&3 codec) and DOS 3.3
+  // (dosVersion=3, 16 sectors/track, 6&2 codec) images; if neither
+  // decodes into a plausible VTOC, this isn't a DOS image.
   uint8_t track[256*16];
-  if (!decodeWozTrackToDsk(17, T_DSK, track)) return false;
+  bool ok = false;
+  if (isThirteenSectorDisk()) {
+    uint8_t buf[256*13];
+    ok = decodeWozTrack13ToDsk(17, buf);
+    if (ok) memcpy(track, buf, 256*13);
+  } else {
+    ok = decodeWozTrackToDsk(17, T_DSK, track);
+  }
+  if (!ok) return false;
   struct _vtoc *v = (struct _vtoc *)track;
-  if (v->dosVersion != 3) return false;
+  if (v->dosVersion != 2 && v->dosVersion != 3) return false;
   if (v->catalogTrack != 17) return false;
   if (v->tracksPerDisk != 35 && v->tracksPerDisk != 40) return false;
   if (v->sectorsPerTrack != 16 && v->sectorsPerTrack != 13) return false;
@@ -549,7 +592,7 @@ uint32_t DosSpector::getAllocatedByteCount(Vent *e)
   int safety = 256;
   while ((curT || curS) && safety-- > 0) {
     uint8_t sectorData[256];
-    if (!decodeWozTrackSector(curT, enphys[curS], sectorData)) {
+    if (!readLogicalSector(curT, curS, sectorData)) {
       return 0;
     }
     struct _dosTsList *tsList = (struct _dosTsList *)sectorData;
@@ -590,7 +633,7 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
     int safety = 256; // guard against a circular T/S list chain
     while ((curT || curS) && safety-- > 0) {
       uint8_t sectorData[256];
-      if (!decodeWozTrackSector(curT, enphys[curS], sectorData)) {
+      if (!readLogicalSector(curT, curS, sectorData)) {
         printf("ERROR: failed to read T/S list at %d/%d\n", curT, curS);
         return 0;
       }
@@ -621,7 +664,7 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
     int safety = 256;
     while ((curT || curS) && safety-- > 0) {
       uint8_t sectorData[256];
-      if (!decodeWozTrackSector(curT, enphys[curS], sectorData)) {
+      if (!readLogicalSector(curT, curS, sectorData)) {
         free(*toWhere);
         *toWhere = NULL;
         return 0;
@@ -632,7 +675,7 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
         uint8_t s = tsList->tsPair[i].sector;
         if (t == 0 && s == 0) continue;
         uint8_t dataSector[256];
-        if (!decodeWozTrackSector(t, enphys[s], dataSector)) {
+        if (!readLogicalSector(t, s, dataSector)) {
           // Couldn't read; leave a zero-filled hole rather than abort so
           // the rest of the file can still be recovered.
           memset((*toWhere) + writePos, 0, 256);
@@ -679,7 +722,7 @@ void DosSpector::inspectFile(const char *fileName, Vent *fp)
   int safetyBound = 256; // guard against circular T/S list chains
   while ((curT || curS) && safetyBound-- > 0) {
     uint8_t sectorData[256];
-    if (!decodeWozTrackSector(curT, enphys[curS], sectorData)) {
+    if (!readLogicalSector(curT, curS, sectorData)) {
       printf("  ERROR: failed to read T/S list at %d/%d\n", curT, curS);
       break;
     }
@@ -703,7 +746,7 @@ void DosSpector::inspectFile(const char *fileName, Vent *fp)
       }
       dataSectors++;
       if (!haveFirstData) {
-        if (decodeWozTrackSector(t, enphys[s], firstDataSector)) {
+        if (readLogicalSector(t, s, firstDataSector)) {
           haveFirstData = true;
           firstDataT = t;
           firstDataS = s;
