@@ -141,6 +141,10 @@ class Vent {
   uint32_t getEofLength();
   uint8_t getFileType();
 
+  // DOS 3.3: sector count from catalog entry (includes T/S list sector)
+  // ProDOS: block count from file entry
+  uint16_t getBlocksUsed();
+
  private:
   bool isDirectoryHeader;
   bool isDos33;

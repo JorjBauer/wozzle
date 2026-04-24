@@ -11,6 +11,9 @@ class ProdosSpector : public Wozspector {
   ~ProdosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
+  virtual uint32_t getAllocatedByteCount(Vent *e) {
+    return (uint32_t)e->getBlocksUsed() * 512;
+  }
   virtual uint8_t applesoftHeaderBytes() { return 0; };
 
   virtual bool writeFileToImage(uint8_t *fileContents,
@@ -20,8 +23,9 @@ class ProdosSpector : public Wozspector {
                                 uint32_t fileSize);
 
   virtual void displayInfo();
-  
+
   virtual void inspectFile(const char *fileName, Vent *fp);
+  virtual bool probe();
 protected:
   virtual Vent *createTree();
 
