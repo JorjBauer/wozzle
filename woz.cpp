@@ -149,11 +149,27 @@ uint8_t Woz::getNextWozBit(uint8_t datatrack)
   }
 
   if (trackByteFromDataTrack != datatrack) {
-    // FIXME what if trackPointer is out of bounds for this track
+    // Cross-track sync per WOZ 2.0 reference: when moving to a new
+    // track, scale the bit pointer so the head stays over the same
+    // rotational position. new_pos = old_pos * new_len / old_len.
+    // Without this, games with custom-encoded tracks (e.g. Miner
+    // 2049er II track 1 is a solid 0xA5 pattern) read at the wrong
+    // 8-bit alignment and fail their protection checks.
+    if (trackByteFromDataTrack < 160 &&
+        tracks[trackByteFromDataTrack].bitCount > 0 &&
+        tracks[datatrack].bitCount > 0 &&
+        trackBitCounter < tracks[trackByteFromDataTrack].bitCount) {
+      uint64_t scaled =
+        (uint64_t)trackBitCounter * tracks[datatrack].bitCount /
+        tracks[trackByteFromDataTrack].bitCount;
+      trackBitCounter = (uint32_t)scaled;
+      trackPointer = trackBitCounter / 8;
+      trackBitIdx = 0x80 >> (trackBitCounter & 7);
+    }
     trackByte = tracks[datatrack].trackData[trackPointer];
     trackByteFromDataTrack = datatrack;
   }
-  
+
   // It's assumed that trackByte is set properly when we get here. It
   // should be set when we load image or change tracks, and it's
   // changed again when we advanceBitStream.
