@@ -176,7 +176,7 @@ void Woz::advanceBitStream(uint8_t datatrack)
     // trackBitCounter after, but we want to not load from out of
     // bounds here, so unless we always set trackByte after the bit
     // range check below I'm not sure we can get rid of this one
-    if ((di.version == 2 && trackPointer < tracks[datatrack].blockCount*512) ||
+    if ((di.version >= 2 && trackPointer < tracks[datatrack].blockCount*512) ||
 	(di.version == 1 && trackPointer < NIBTRACKSIZE)
 	) {
       trackByte = tracks[datatrack].trackData[trackPointer];
@@ -889,10 +889,14 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
       isOk = parseMetaChunk(chunkDataSize);
       break;
     default:
-      printf("Unknown chunk type 0x%X\n", chunkType);
-      if (preloadTracks && fd != -1)
-	close(fd);
-      return false;
+      // The spec requires unknown chunks to be skipped for forward
+      // compatibility. fpos is advanced past the chunk at the bottom
+      // of the loop, so we just mark this chunk as "handled ok".
+      if (verbose) {
+        printf("Skipping unknown chunk type 0x%X (%d bytes)\n",
+               chunkType, chunkDataSize);
+      }
+      isOk = true;
       break;
     }
 
@@ -976,7 +980,9 @@ bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
 
 bool Woz::parseTRKSChunk(uint32_t chunkSize)
 {
-  if (di.version == 2) {
+  // WOZ 2.x (versions 2 and 3) use the same block-based TRKS layout;
+  // WOZ 1 uses the older packed-6656-byte format.
+  if (di.version >= 2) {
     for (int i=0; i<160; i++) {
       if (!read16(fd, &tracks[i].startingBlock))
 	return false;
@@ -1052,8 +1058,13 @@ bool Woz::parseInfoChunk(uint32_t chunkSize)
 
   if (!read8(fd, &di.version))
     return false;
-  if (di.version > 2) {
-    fprintf(stderr, "Incorrect version header; aborting\n");
+  // Per the spec: "use >= when checking the INFO Version field. The INFO
+  // chunk will always be upgraded in a safe way for older consumers."
+  // So we don't reject unknown future versions — we just don't try to
+  // parse fields that weren't defined yet in the version we know about.
+  if (di.version < 1) {
+    fprintf(stderr, "INFO version %d is below minimum (1); aborting\n",
+            di.version);
     return false;
   }
 
@@ -1101,6 +1112,20 @@ bool Woz::parseInfoChunk(uint32_t chunkSize)
 			  // padded to 6646 (yes, 6646, not 6656)bytes
 			  // in the v1 image.
     di.optimalBitTiming = 32; // "standard" disk bit timing for a 5.25" disk (4us per bit)
+  }
+
+  // INFO v3 added the FLUX chunk locator. If both fluxBlock and
+  // largestFluxTrack come back zero, there's no FLUX chunk; otherwise
+  // this WOZ carries flux-timing data for some tracks (we don't decode
+  // those yet, but we at least know not to trip on the chunk itself).
+  if (di.version >= 3) {
+    if (!read16(fd, &di.fluxBlock))
+      return false;
+    if (!read16(fd, &di.largestFluxTrack))
+      return false;
+  } else {
+    di.fluxBlock = 0;
+    di.largestFluxTrack = 0;
   }
 
   return true;
