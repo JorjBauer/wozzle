@@ -286,7 +286,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   }
 
   char buf[31];
-  sprintf(buf, "%-30s", fileName);
+  snprintf(buf, sizeof(buf), "%-30s", fileName);
   if (verbose) printf("new entry name: '%s'\n", buf);
   memcpy(newEntry.fileName, buf, 30); // no terminator copied
   newEntry.fileLength[0] = fileSize & 0xFF;
