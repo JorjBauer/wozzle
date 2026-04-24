@@ -42,10 +42,22 @@ private:
   Vent *descendTree(uint16_t fromBlock);
 
 private:
-  uint8_t trackData[35*256*16];
-  uint8_t freeBlockBitmap[512];
+  // Flat block-indexed buffer: block N lives at trackData[N*512 ..
+  // (N+1)*512 - 1]. Sized to the loaded image, so a 140 KB floppy
+  // allocates 280 blocks and a 32 MB HDV allocates 65536.
+  uint8_t *trackData;
+  uint32_t trackDataBytes;
+
+  // Volume bitmap. On a 140 KB floppy this fits in one 512-byte block,
+  // but a 32 MB HDV needs up to 16 contiguous bitmap blocks (1 bit per
+  // block, ceil(numBlocksTotal/4096) blocks total). Heap-allocated and
+  // sized when we learn numBlocksTotal from the volume directory header.
+  uint8_t *freeBlockBitmap;
+  uint32_t freeBlockBitmapBytes;
   uint16_t volBitmapBlock;
-  uint16_t numBlocksTotal;
+  uint32_t numBlocksTotal;  // widened: HDVs can exceed 65535
+
+  bool loadBlockBuffer();
 };
 
 #endif

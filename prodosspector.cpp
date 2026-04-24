@@ -71,13 +71,57 @@ void dumpFent(struct _prodosFent *e)
 
 ProdosSpector::ProdosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
 {
-  memset(freeBlockBitmap, 0, sizeof(freeBlockBitmap));
   volBitmapBlock = 6; // safe default; it's usually in block 6
-  numBlocksTotal = 280; // safe default
+  numBlocksTotal = 280; // safe default; overwritten from the vol dir header
+  trackData = NULL;
+  trackDataBytes = 0;
+  freeBlockBitmap = NULL;
+  freeBlockBitmapBytes = 0;
 }
 
 ProdosSpector::~ProdosSpector()
 {
+  if (trackData) {
+    free(trackData);
+    trackData = NULL;
+  }
+  if (freeBlockBitmap) {
+    free(freeBlockBitmap);
+    freeBlockBitmap = NULL;
+  }
+}
+
+// Load the flat block buffer from whatever the underlying Woz gave us.
+// For a floppy, walk the 35 tracks and decode each via T_PO. For an
+// HDV, just memcpy the raw file bytes into our buffer.
+bool ProdosSpector::loadBlockBuffer()
+{
+  if (trackData) {
+    free(trackData);
+    trackData = NULL;
+    trackDataBytes = 0;
+  }
+
+  if (isHdv()) {
+    trackDataBytes = hdvByteCount();
+    trackData = (uint8_t *)malloc(trackDataBytes);
+    if (!trackData) return false;
+    memcpy(trackData, hdvBuffer(), trackDataBytes);
+    return true;
+  }
+
+  // Floppy case: 35 tracks × 16 sectors × 256 bytes = 140 KB.
+  trackDataBytes = 35 * 256 * 16;
+  trackData = (uint8_t *)calloc(trackDataBytes, 1);
+  if (!trackData) return false;
+
+  for (int i = 0; i < 35; i++) {
+    if (!decodeWozTrackToDsk(i, T_PO, &trackData[i * 256 * 16])) {
+      fprintf(stderr, "Failed to read track %d\n", i);
+      return false;
+    }
+  }
+  return true;
 }
 
 // Read a volume bitmap and return the number of blocks free in it.
@@ -88,12 +132,12 @@ uint16_t ProdosSpector::calculateBlocksFree()
   if (!tree)
     createTree();
 
-  uint16_t maxBlocks = numBlocksTotal;
+  uint32_t maxBlocks = numBlocksTotal;
 
-  uint8_t ptr = 0;
+  uint32_t ptr = 0;
   uint8_t bits = 0x80;
-  uint16_t count = 0;
-  for (int i=0; i<maxBlocks; i++) {
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < maxBlocks; i++) {
     if (freeBlockBitmap[ptr] & bits) {
       count++;
     }
@@ -110,36 +154,45 @@ void ProdosSpector::printFreeBlocks()
 {
   if (!tree)
     createTree();
-  
-  bool blockFree[280]; // FIXME assumes a 280-block disk
-  bool trackSectorFree[35][16];
-  memset(trackSectorFree, 0, sizeof(trackSectorFree));
-  uint8_t ptr = 0;
-  uint8_t bits = 0x80;
-  for (int i=0; i<280; i++) {
-    blockFree[i] = (freeBlockBitmap[ptr] & bits) ? true : false;
-    trackSectorFree[trackFromBlock(i)][s1map[blockInTrack(i)]] = (freeBlockBitmap[ptr] & bits) ? true : false;
-    trackSectorFree[trackFromBlock(i)][s2map[blockInTrack(i)]] = (freeBlockBitmap[ptr] & bits) ? true : false;
-    bits >>= 1;
-    if (bits == 0) {
-      bits = 0x80;
-      ptr++;
+
+  // For a floppy-sized volume (≤280 blocks), show the familiar
+  // track/sector grid. For anything larger we'd need a screenful per
+  // hundred blocks, so just emit a linear block-level map in rows.
+  uint8_t *getBit = freeBlockBitmap;
+  auto isFree = [&](uint32_t i) -> bool {
+    return (getBit[i / 8] & (0x80 >> (i % 8))) != 0;
+  };
+
+  if (numBlocksTotal <= 280) {
+    bool trackSectorFree[35][16];
+    memset(trackSectorFree, 0, sizeof(trackSectorFree));
+    for (int i = 0; i < (int)numBlocksTotal; i++) {
+      bool f = isFree(i);
+      trackSectorFree[trackFromBlock(i)][s1map[blockInTrack(i)]] = f;
+      trackSectorFree[trackFromBlock(i)][s2map[blockInTrack(i)]] = f;
     }
+
+    printf("\n");
+    char col[16] = { 'S','E','C','T','O','R',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '};
+    printf("   TRACK           1               2  \n");
+    printf("   0123456789ABCDEF0123456789ABCDEF012\n\n");
+    for (int i = 0; i < 16; i++) {
+      printf("%c%X ", col[i], i);
+      for (int t = 0; t < 35; t++) {
+        printf("%c", trackSectorFree[t][i] ? '.' : '*');
+      }
+      printf("\n");
+    }
+    printf("\n");
+    return;
   }
 
-  printf("\n");
-  char col[16] = { 'S', 'E', 'C', 'T', 'O', 'R', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
-  printf("   TRACK           1               2  \n");
-  printf("   0123456789ABCDEF0123456789ABCDEF012\n");
-  printf("\n");
-  for (int i=0; i<16; i++) {
-    printf("%c%X ", col[i], i);
-    for (int t=0; t<35; t++) {
-      if (trackSectorFree[t][i]) {
-	printf(".");
-      } else {
-	printf("*");
-      }
+  // Large (HDV) case: 64 blocks per row, one char per block.
+  printf("\nBlock free map (64 blocks/row):\n");
+  for (uint32_t i = 0; i < numBlocksTotal; i += 64) {
+    printf("%6u  ", i);
+    for (uint32_t j = 0; j < 64 && (i + j) < numBlocksTotal; j++) {
+      printf("%c", isFree(i + j) ? '.' : '*');
     }
     printf("\n");
   }
@@ -172,15 +225,28 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
         // FIXME this should look at the type bits to see that it's a
         // vol header instead of using '2'
         if (currentBlock == 2) {
-          // Also load the free block bitmap
+          // Read the vol-dir header fields that size everything else.
           volBitmapBlock = md->volBitmap.pointer[1]*256 + md->volBitmap.pointer[0];
-          // FIXME check that it's a valid block number based on maxBlocks
-          // This would be:      readBlock(volBitmapBlock, freeBlockBitmap);
-          // ... but that reads from the cache, which checks to see that the
-          // tree has been loaded or it returns an error; and we haven't
-          // finished loading the tree, so that can't work. Instead:
-          memcpy(freeBlockBitmap, &trackData[512*volBitmapBlock], 512);
           numBlocksTotal = md->volBlocks.total[1]*256 + md->volBlocks.total[0];
+
+          // The volume bitmap is 1 bit per block. Round up to whole
+          // 512-byte blocks. A 140 KB floppy needs just one; a 32 MB
+          // HDV spans sixteen.
+          uint32_t bitmapBlocks = (numBlocksTotal + 4095) / 4096;
+          if (bitmapBlocks < 1) bitmapBlocks = 1;
+          if (freeBlockBitmap) free(freeBlockBitmap);
+          freeBlockBitmapBytes = bitmapBlocks * 512;
+          freeBlockBitmap = (uint8_t *)calloc(freeBlockBitmapBytes, 1);
+          if (!freeBlockBitmap) {
+            fprintf(stderr, "ERROR: out of memory for volume bitmap\n");
+            return NULL;
+          }
+          // FIXME check volBitmapBlock + bitmapBlocks < numBlocksTotal
+          // — readBlock would bounce off the un-prepped tree, so pull
+          // the bytes from our own trackData directly here.
+          memcpy(freeBlockBitmap,
+                 &trackData[512 * volBitmapBlock],
+                 freeBlockBitmapBytes);
         }
       } else {
 	struct _prodosFent *fe = (struct _prodosFent *)&trackData[512 * currentBlock + i*0x27 + 4];
@@ -229,17 +295,17 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
   if (!tree)
     return false;
 
-  uint16_t maxBlocks = numBlocksTotal;
+  uint32_t maxBlocks = numBlocksTotal;
 
-  uint8_t ptr = 0;
+  uint32_t ptr = 0;
   uint8_t bits = 0x80;
-  for (int i=0; i<maxBlocks; i++) {
+  for (uint32_t i = 0; i < maxBlocks; i++) {
     if (freeBlockBitmap[ptr] & bits) {
       // mark it as used
       freeBlockBitmap[ptr] &= ~bits;
       // return the value
-      *blockOut = i;
-      printf("> use block %d (0x%X)\n", i, i); // debugging
+      *blockOut = (uint16_t)i;
+      printf("> use block %u (0x%X)\n", i, i); // debugging
       // return that we succeeded in finding a free block
       return true;
     }
@@ -276,19 +342,29 @@ bool ProdosSpector::writeBlock(uint16_t blockNum, uint8_t data[512])
   // Caller must have prepped with createTree() call first, or we fail
   if (!tree)
     return false;
+  if ((uint32_t)blockNum * 512 + 512 > trackDataBytes)
+    return false;
 
   // update our local cached data, b/c we loaded it on createTree()
   memcpy(&trackData[512*blockNum], data, 512);
 
-  // update the woz image data
+  // HDV images have no track/sector structure — the HDV writer just
+  // flushes the raw buffer. Keep Woz's hdvData in sync so writeFile
+  // picks up the change.
+  if (isHdv()) {
+    memcpy(hdvBuffer() + 512 * blockNum, data, 512);
+    return true;
+  }
+
+  // Floppy case: also push the block back through the nibble encoder so
+  // Woz::writeFile() emits a correct WOZ/DSK/NIB.
   uint8_t t = trackFromBlock(blockNum);
-  // We have to write 2 sectors for a whole block
   uint8_t bidx = blockInTrack(blockNum);
   if (!encodeWozTrackSector(t, s1map[bidx], data) ||
       !encodeWozTrackSector(t, s2map[bidx], &data[256])) {
     return false;
   }
-  
+
   return true;
 }
 
@@ -299,13 +375,11 @@ Vent *ProdosSpector::createTree()
     tree = NULL;
   }
 
-  // For now we're reading the whole disk image in before starting
-  // FIXME could optimize this to load on demand
-  for (int i=0; i<35; i++) {
-    if (!decodeWozTrackToDsk(i, T_PO, &trackData[i*256*16])) {
-      fprintf(stderr, "Failed to read track %d\n", i);
-      exit(1);
-    }
+  // Pull the whole image into our block-indexed buffer (floppy: nibble-
+  // decode each track; HDV: copy raw bytes).
+  if (!loadBlockBuffer()) {
+    fprintf(stderr, "Failed to load block buffer\n");
+    return NULL;
   }
 
   stack <int> s;
@@ -599,7 +673,8 @@ void ProdosSpector::displayInfo()
     createTree();
   
   printFreeBlocks();
-  printf("\nBlocks total: %d\nBlocks free: %d\n", numBlocksTotal, calculateBlocksFree());
+  printf("\nBlocks total: %u\nBlocks free: %u\n",
+         numBlocksTotal, (unsigned)calculateBlocksFree());
 }
 
 bool ProdosSpector::probe()
@@ -609,9 +684,17 @@ bool ProdosSpector::probe()
   // 512 bytes into that track's data. The header entry has a zero
   // prev-block pointer, a non-zero next-block pointer, a storage_type
   // nybble of 0xF (volume directory header), and a name length 1..15.
+  const uint8_t *b2 = NULL;
   uint8_t track[256*16];
-  if (!decodeWozTrackToDsk(0, T_PO, track)) return false;
-  uint8_t *b2 = &track[512 * 2];
+  if (isHdv()) {
+    // HDVs have no nibbilized track layout — just peek at block 2 in
+    // the raw buffer. 2*512 = 1024.
+    if (hdvByteCount() < 1024 + 512) return false;
+    b2 = hdvBuffer() + 1024;
+  } else {
+    if (!decodeWozTrackToDsk(0, T_PO, track)) return false;
+    b2 = &track[512 * 2];
+  }
   if (b2[0] != 0 || b2[1] != 0) return false;
   uint16_t next = b2[2] | (b2[3] << 8);
   if (next == 0) return false;
