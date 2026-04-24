@@ -36,8 +36,10 @@ assert_eq() {
 
 assert_match() {
   # assert_match <literal substring> <string> <description>
-  # Checks that <string> contains <literal substring> anywhere.
-  if printf "%s" "$2" | grep -qF -- "$1"; then
+  # Checks that <string> contains <literal substring> anywhere. Uses a
+  # here-string (not a pipe) so grep -q's early exit doesn't SIGPIPE
+  # the producer.
+  if grep -qF -- "$1" <<<"$2"; then
     printf "  PASS: %s\n" "$3"
     t_pass=$((t_pass + 1))
   else
@@ -48,7 +50,7 @@ assert_match() {
 
 assert_no_match() {
   # assert_no_match <literal substring> <string> <description>
-  if printf "%s" "$2" | grep -qF -- "$1"; then
+  if grep -qF -- "$1" <<<"$2"; then
     printf "  FAIL: %s (found unexpected substring)\n    needle: %s\n    input:  %s\n" "$3" "$1" "$2" >&2
     t_fail=$((t_fail + 1))
   else
@@ -59,7 +61,7 @@ assert_no_match() {
 
 assert_regex() {
   # assert_regex <extended-regex> <string> <description>
-  if printf "%s" "$2" | grep -qE -- "$1"; then
+  if grep -qE -- "$1" <<<"$2"; then
     printf "  PASS: %s\n" "$3"
     t_pass=$((t_pass + 1))
   else
