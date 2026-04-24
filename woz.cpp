@@ -582,7 +582,7 @@ void Woz::_initInfo()
   di.writeProtected = 0;
   di.synchronized = 0;
   di.cleaned = 0;
-  sprintf(di.creator, "%.32s", VERSION_STRING);
+  snprintf(di.creator, sizeof(di.creator), "%.32s", VERSION_STRING);
   di.diskSides = 1;
   di.bootSectorFormat = 0;
   di.optimalBitTiming = 32;
@@ -1770,7 +1770,7 @@ void Woz::dumpInfo()
 				sectorData)) {
 	  for (int j=0; j<16; j++) {
 	    char buf[25];
-	    sprintf(buf, "t%ds%d", i, j);
+	    snprintf(buf, sizeof(buf), "t%ds%d", i, j);
 	    int fdout = open(buf, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
 	    write(fdout, &sectorData[256*j], 256);
 	    close(fdout);
