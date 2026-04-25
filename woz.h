@@ -59,6 +59,11 @@ class Woz {
 
   bool isSynchronized();
 
+  // INFO chunk write-protect flag. Most copy-protected WOZ images
+  // have this set (the originals were WP-tabbed); some protection
+  // schemes check $C08D's shifted-in WP bits as part of the handshake.
+  bool isWriteProtected() const { return di.writeProtected != 0; }
+
   uint8_t dataTrackNumberForQuarterTrack(uint16_t qt);
   
   bool flush();
@@ -84,6 +89,7 @@ class Woz {
   // exactly what a dumb nib-reader would see. Useful for analyzing
   // non-standard disk formats (rwts18, copy-protected variants).
   bool readRawNibStream(uint8_t phystrack, uint8_t out[/* NIBTRACKSIZE */]);
+  void dumpTrackState(uint8_t datatrack);
 
   // ProDOS hard-drive image accessors. Valid only when imageType == T_HDV.
   // The buffer is owned by Woz and sized to hdvByteCount(); callers can
