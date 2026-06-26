@@ -681,11 +681,288 @@ bool ProdosSpector::addDirectoryEntryForFile(struct _prodosFent *e)
   return false;
 }
     
+void ProdosSpector::markBlockFree(uint16_t block)
+{
+  // Never free the boot blocks, and don't run off the end of the bitmap.
+  if (block < 2 || block >= numBlocksTotal || !freeBlockBitmap)
+    return;
+  uint32_t ptr = block / 8;
+  uint8_t bits = 0x80 >> (block % 8);
+  freeBlockBitmap[ptr] |= bits;
+}
+
+bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
+{
+  uint8_t storage = (fe->typelen & 0xF0) >> 4;
+  uint16_t kp = fe->keyPointer[1] * 256 + fe->keyPointer[0];
+
+  switch (storage) {
+  case ft_seedling:
+    // The key block *is* the single data block.
+    markBlockFree(kp);
+    return true;
+  case ft_sapling:
+    // The key block is an index block; free every data block it points to
+    // (low bytes in the first half, high bytes in the second) and then the
+    // index block itself. Zero pointers are sparse holes - nothing to free.
+    for (int i = 0; i < 256; i++) {
+      uint16_t b = trackData[512 * kp + 256 + i] * 256 + trackData[512 * kp + i];
+      if (b) markBlockFree(b);
+    }
+    markBlockFree(kp);
+    return true;
+  case ft_tree:
+    printf("ERROR: deleting tree-structured files is not implemented\n");
+    return false;
+  default:
+    printf("ERROR: entry has unexpected storage type 0x%X; not deleting\n",
+           storage);
+    return false;
+  }
+}
+
+bool ProdosSpector::findDirEntry(const char *name, uint16_t *blockOut,
+                                 uint32_t *offsetOut)
+{
+  // FIXME root directory only, mirroring addDirectoryEntryForFile.
+  size_t want = strlen(name);
+  uint16_t currentBlock = 2;
+
+  while (currentBlock) {
+    uint8_t *block = &trackData[512 * currentBlock];
+    struct _idxHeader *ih = (struct _idxHeader *)block;
+
+    for (int i = 0; i < 13; i++) {
+      if (i == 0 && currentBlock == 2)
+        continue; // the volume directory header, not a file entry
+      uint32_t off = 512 * currentBlock + i * 0x27 + 4;
+      struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
+      if ((fe->typelen & 0xF0) == 0)
+        continue; // empty or deleted slot
+      uint8_t nl = fe->typelen & 0x0F;
+      if (nl == want && strncmp(fe->name, name, nl) == 0) {
+        *blockOut = currentBlock;
+        *offsetOut = off;
+        return true;
+      }
+    }
+
+    currentBlock = ih->nextBlock[1] * 256 + ih->nextBlock[0];
+  }
+  return false;
+}
+
+bool ProdosSpector::removeDirEntry(uint16_t block, uint32_t offset)
+{
+  // Zero the storage-type/name-length byte. That's ProDOS's deleted marker
+  // (storage type 0 = inactive), and it's also exactly what cpin's free-slot
+  // scan looks for (typelen == 0), so the slot becomes reusable and vanishes
+  // from the directory reader.
+  trackData[offset] = 0;
+  if (!writeBlock(block, &trackData[512 * block])) {
+    printf("ERROR: failed to write directory block %u\n", block);
+    return false;
+  }
+
+  // Drop the volume directory header's active file count by one.
+  struct _subdirent *md = (struct _subdirent *)(&trackData[512 * 2 + 4]);
+  uint16_t fc = md->fileCount[1] * 256 + md->fileCount[0];
+  if (fc) fc--;
+  md->fileCount[0] = fc & 0xFF;
+  md->fileCount[1] = (fc >> 8);
+  if (!writeBlock(2, &trackData[512 * 2])) {
+    printf("ERROR: failed to update directory header\n");
+    return false;
+  }
+  return true;
+}
+
+bool ProdosSpector::removeFile(const char *fileName)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t block;
+  uint32_t off;
+  if (!findDirEntry(fileName, &block, &off)) {
+    printf("File '%s' not found\n", fileName);
+    return false;
+  }
+
+  // Copy the entry out before we start mutating blocks underneath it.
+  struct _prodosFent fe;
+  memcpy(&fe, &trackData[off], sizeof(fe));
+
+  if (((fe.typelen & 0xF0) >> 4) == ft_subdir) {
+    printf("'%s' is a directory; use rmdir\n", fileName);
+    return false;
+  }
+
+  if (!freeFileBlocks(&fe))
+    return false;
+  if (!removeDirEntry(block, off))
+    return false;
+
+  flushFreeBlockList();
+  createTree(); // re-read so subsequent commands see the change
+  printf("Removed '%s'\n", fileName);
+  return true;
+}
+
+bool ProdosSpector::removeDirectory(const char *dirName)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t block;
+  uint32_t off;
+  if (!findDirEntry(dirName, &block, &off)) {
+    printf("Directory '%s' not found\n", dirName);
+    return false;
+  }
+
+  struct _prodosFent fe;
+  memcpy(&fe, &trackData[off], sizeof(fe));
+
+  if (((fe.typelen & 0xF0) >> 4) != ft_subdir) {
+    printf("'%s' is not a directory; use rm\n", dirName);
+    return false;
+  }
+
+  uint16_t keyBlock = fe.keyPointer[1] * 256 + fe.keyPointer[0];
+
+  // The subdirectory's own header must be a real directory header, and it
+  // must be empty - refuse otherwise (like Unix rmdir).
+  struct _subdirent *sd = (struct _subdirent *)&trackData[512 * keyBlock + 4];
+  if (sd->entryLength != 0x27 || sd->entriesPerBlock != 0x0D) {
+    printf("ERROR: '%s' does not point at a directory header; refusing\n",
+           dirName);
+    return false;
+  }
+  uint16_t fc = sd->fileCount[1] * 256 + sd->fileCount[0];
+  if (fc != 0) {
+    printf("ERROR: directory '%s' is not empty (%u entr%s); refusing\n",
+           dirName, fc, fc == 1 ? "y" : "ies");
+    return false;
+  }
+
+  // Free the directory's block chain (an empty subdir is usually one block,
+  // but follow the next-block links just in case it grew and emptied).
+  uint16_t cur = keyBlock;
+  int safety = 4096; // guard against a corrupt circular chain
+  while (cur && safety-- > 0) {
+    struct _idxHeader *ih = (struct _idxHeader *)&trackData[512 * cur];
+    uint16_t next = ih->nextBlock[1] * 256 + ih->nextBlock[0];
+    markBlockFree(cur);
+    cur = next;
+  }
+
+  if (!removeDirEntry(block, off))
+    return false;
+
+  flushFreeBlockList();
+  createTree();
+  printf("Removed directory '%s'\n", dirName);
+  return true;
+}
+
+bool ProdosSpector::makeDirectory(const char *dirName)
+{
+  if (!tree)
+    createTree();
+
+  size_t namelen = strlen(dirName);
+  if (namelen < 1 || namelen > 15) {
+    printf("ERROR: directory names must be 1..15 chars in ProDOS\n");
+    return false;
+  }
+
+  // Refuse to clobber an existing name (addDirectoryEntryForFile won't
+  // check this for us).
+  uint16_t existsBlock;
+  uint32_t existsOff;
+  if (findDirEntry(dirName, &existsBlock, &existsOff)) {
+    printf("ERROR: '%s' already exists\n", dirName);
+    return false;
+  }
+
+  // Allocate the subdirectory's key block (its single, initially-empty
+  // directory block).
+  uint16_t dirBlock;
+  if (!findFreeBlock(&dirBlock)) {
+    printf("ERROR: no free block for the new directory\n");
+    return false;
+  }
+
+  // Write the entry that lives in the parent (root) directory, pointing at
+  // the new block. fileType 0x0F (DIR) is what marks it as a directory.
+  struct _prodosFent fent;
+  memset(&fent, 0, sizeof(fent));
+  fent.typelen = (ft_subdir << 4) | namelen;
+  strncpy(fent.name, dirName, 15);
+  fent.fileType = ft_voldirhdr; // 0x0F == DIR file type
+  fent.keyPointer[0] = dirBlock & 0xFF;
+  fent.keyPointer[1] = (dirBlock >> 8);
+  fent.blocksUsed[0] = 1;
+  fent.eofLength[0] = 0x00;
+  fent.eofLength[1] = 0x02; // 512 bytes
+  fent.accessFlags = at_destroyed | at_renamed | at_written | at_read;
+  fent.headerPointer[0] = 2; // parent directory header is the volume dir
+  fent.headerPointer[1] = 0;
+
+  if (!addDirectoryEntryForFile(&fent)) {
+    // No free directory slot; the block we grabbed is only reserved in RAM,
+    // so leaving without flushing the bitmap discards that reservation.
+    printf("ERROR: couldn't add directory entry for '%s'\n", dirName);
+    return false;
+  }
+
+  // Find where that entry actually landed so the subdirectory header can
+  // point back at its parent block and entry number (ProDOS uses these to
+  // walk back up the tree).
+  uint16_t parentBlock;
+  uint32_t parentOff;
+  if (!findDirEntry(dirName, &parentBlock, &parentOff)) {
+    printf("ERROR: internal: just-written directory entry not found\n");
+    return false;
+  }
+  uint8_t entryNumber = (parentOff - 4 - 512 * parentBlock) / 0x27 + 1;
+
+  // Lay down the new directory block: zeroed, with a subdirectory header
+  // as its first entry.
+  uint8_t blockData[512];
+  memset(blockData, 0, sizeof(blockData));
+  // prev/next block links are both 0 (a one-block directory).
+  struct _subdirent *sd = (struct _subdirent *)&blockData[4];
+  sd->typelen = (ft_subdirhdr << 4) | namelen; // 0x0E storage type
+  memcpy(sd->name, dirName, namelen);
+  sd->subdir.fileType = 0x75; // ProDOS subdirectory-header signature byte
+  sd->accessFlags = at_destroyed | at_renamed | at_written | at_read;
+  sd->entryLength = 0x27;
+  sd->entriesPerBlock = 0x0D;
+  sd->fileCount[0] = 0;
+  sd->fileCount[1] = 0;
+  sd->subdirParent.pointer[0] = parentBlock & 0xFF;
+  sd->subdirParent.pointer[1] = (parentBlock >> 8);
+  sd->subParent.entry = entryNumber;
+  sd->subParent.entryLength = 0x27;
+
+  if (!writeBlock(dirBlock, blockData)) {
+    printf("ERROR: failed to write new directory block %u\n", dirBlock);
+    return false;
+  }
+
+  flushFreeBlockList();
+  createTree(); // re-read so subsequent commands see the new directory
+  printf("Created directory '%s'\n", dirName);
+  return true;
+}
+
 void ProdosSpector::displayInfo()
 {
   if (!tree)
     createTree();
-  
+
   printFreeBlocks();
   printf("\nBlocks total: %u\nBlocks free: %u\n",
          numBlocksTotal, (unsigned)calculateBlocksFree());

@@ -135,13 +135,18 @@ bool DosSpector::flushFreeSectorList()
   if (!tree)
     createTree();
   
-  // update the bitmap
+  // Update the bitmap. Each track's free map is two bytes: sectorsUsed[0]
+  // holds sectors 8-15 (the high byte) and sectorsUsed[1] holds sectors 0-7,
+  // matching how createTree reads it back as (sectorsUsed[0]<<8)|sectorsUsed[1].
+  // The byte to touch therefore depends on the SECTOR number j, not the track
+  // number i. (This previously keyed on i, which collided all 16 sectors into
+  // one byte and corrupted the free map.)
   for (int i=0; i<vt.tracksPerDisk; i++) {
     for (int j=0; j<16; j++) {
       uint8_t bpos = 1<<(j % 8);
       if (trackSectorUsedMap[i][j]) {
         // bit is clear if sector is used
-        vt.trackState[i].sectorsUsed[(i >= 8) ? 0 : 1] &= ~bpos;
+        vt.trackState[i].sectorsUsed[(j >= 8) ? 0 : 1] &= ~bpos;
         if (verbose && i==7) {
           printf("S%d used\n", j);
         }
@@ -149,7 +154,7 @@ bool DosSpector::flushFreeSectorList()
         // bit is set if sector is available
         if (verbose && i==7)
           printf("S%d free\n", j);
-        vt.trackState[i].sectorsUsed[(i >= 8) ? 0 : 1] |= bpos;
+        vt.trackState[i].sectorsUsed[(j >= 8) ? 0 : 1] |= bpos;
       }
     }
   }
@@ -547,6 +552,109 @@ bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
   }
 
   printf("addDirectoryEntryForFile failed to find an empty entry slot\n");
+  return false;
+}
+
+bool DosSpector::freeDosFileSectors(uint8_t tsTrack, uint8_t tsSector)
+{
+  int safety = 256; // guard against a circular T/S list chain
+  while ((tsTrack || tsSector) && safety-- > 0) {
+    uint8_t sectorData[256];
+    if (!readLogicalSector(tsTrack, tsSector, sectorData)) {
+      printf("ERROR: failed to read T/S list at %d/%d\n", tsTrack, tsSector);
+      return false;
+    }
+    struct _dosTsList *tsList = (struct _dosTsList *)sectorData;
+
+    // Free every data sector this list references (0/0 == sparse hole).
+    for (int i = 0; i < 122; i++) {
+      uint8_t t = tsList->tsPair[i].track;
+      uint8_t s = tsList->tsPair[i].sector;
+      if (t == 0 && s == 0) continue;
+      if (t < 35 && s < 16) trackSectorUsedMap[t][s] = false;
+    }
+
+    uint8_t nextT = tsList->nextTrack;
+    uint8_t nextS = tsList->nextSector;
+    // Free the T/S list sector itself, now that we've read it.
+    if (tsTrack < 35 && tsSector < 16) trackSectorUsedMap[tsTrack][tsSector] = false;
+
+    tsTrack = nextT;
+    tsSector = nextS;
+  }
+  return true;
+}
+
+bool DosSpector::removeFile(const char *fileName)
+{
+  if (!tree)
+    createTree();
+
+  uint8_t catalogTrack = vt.catalogTrack;
+  uint8_t catalogSector = vt.catalogSector;
+  uint8_t sectorData[256];
+
+  while (catalogTrack) {
+    if (!decodeWozTrackSector(catalogTrack, enphys[catalogSector], sectorData)) {
+      printf("ERROR: failed to read catalog %d/%d\n", catalogTrack, catalogSector);
+      return false;
+    }
+    struct _catalogInfo *ci = (struct _catalogInfo *)sectorData;
+
+    for (int i = 0; i < 7; i++) {
+      struct _dosFdEntry *fe = &ci->fileEntries[i];
+      uint8_t c0 = (uint8_t)fe->fileName[0];
+      if (c0 == 0x00 || c0 == 0xFF)
+        continue; // empty or already-deleted slot
+
+      // Clean the on-disk name exactly the way the directory lister does:
+      // strip the high bit and stop at the first space. That keeps "what
+      // ls shows" and "what rm matches" identical.
+      char clean[31];
+      int n = 0;
+      for (int j = 0; j < 30; j++) {
+        char ch = fe->fileName[j] & 0x7F;
+        if (ch == ' ') break;
+        clean[n++] = ch;
+      }
+      clean[n] = '\0';
+      if (strcmp(clean, fileName) != 0)
+        continue;
+
+      // Free the file's data and T/S list sectors (before we lose the
+      // first-T/S-list pointer to the tombstone below).
+      if (!freeDosFileSectors(fe->firstTrack, fe->firstSector))
+        return false;
+
+      // Tombstone the catalog entry. DOS convention: copy the original
+      // first-T/S-list track to the last byte of the name field (for
+      // undelete) and set the track field to $FF. We also zero the first
+      // name byte, which is how this tool's catalog reader (createTree) and
+      // the slot-reuse scan recognize a free entry.
+      fe->fileName[29] = fe->firstTrack;
+      fe->firstTrack = 0xFF;
+      fe->fileName[0] = 0x00;
+
+      if (!encodeWozTrackSector(catalogTrack, enphys[catalogSector], sectorData)) {
+        printf("ERROR: failed to write catalog sector %d/%d\n",
+               catalogTrack, catalogSector);
+        return false;
+      }
+      if (!flushFreeSectorList()) {
+        printf("ERROR: failed to flush free sector list\n");
+        return false;
+      }
+
+      createTree(); // re-read so subsequent commands see the change
+      printf("Removed '%s'\n", fileName);
+      return true;
+    }
+
+    catalogTrack = ci->nextCatalogTrack;
+    catalogSector = ci->nextCatalogSector;
+  }
+
+  printf("File '%s' not found\n", fileName);
   return false;
 }
 

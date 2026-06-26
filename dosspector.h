@@ -45,6 +45,8 @@ class DosSpector : public Wozspector {
                                 uint16_t auxTypeData,
                                 uint32_t fileSize);
 
+  virtual bool removeFile(const char *fileName);
+
   virtual void displayInfo();
   virtual void inspectFile(const char *fileName, Vent *fp);
   virtual bool probe();
@@ -54,6 +56,10 @@ protected:
   bool flushFreeSectorList();
   bool findFreeSector(int *trackOut, int *sectorOut);
   bool addDirectoryEntryForFile(struct _dosFdEntry *e);
+  // Walk a file's T/S list chain starting at the given list sector, marking
+  // every data sector and every T/S list sector itself free in the in-RAM
+  // bitmap. Call flushFreeSectorList() afterward to persist it.
+  bool freeDosFileSectors(uint8_t tsTrack, uint8_t tsSector);
   // Reads a logical track into a 16-sector buffer, dispatching to the
   // 13-sector codec if the underlying WOZ says so. For 13-sector disks
   // only the first 13*256 bytes of `out` are populated.
