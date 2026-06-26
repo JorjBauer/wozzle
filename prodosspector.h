@@ -2,6 +2,7 @@
 #define __PRODOSSPECTOR_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "wozspector.h"
 #include "vent.h"
 
@@ -25,6 +26,8 @@ class ProdosSpector : public Wozspector {
   virtual bool removeFile(const char *fileName);
   virtual bool removeDirectory(const char *dirName);
   virtual bool makeDirectory(const char *dirName);
+  virtual Vent *findEntry(const char *path);
+  virtual void displayDirectory(const char *path);
 
   virtual void displayInfo();
 
@@ -40,20 +43,28 @@ protected:
   bool flushFreeBlockList();
   bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
   bool writeBlock(uint16_t blockNum, uint8_t data[512]);
-  bool addDirectoryEntryForFile(struct _prodosFent *e);
+  // Add an entry to the directory whose key (first) block is dirKey.
+  bool addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent *e);
 
   // Mark a single block free in the in-RAM volume bitmap (no-op for the
   // boot blocks / out-of-range values). Call flushFreeBlockList() after.
   void markBlockFree(uint16_t block);
   // Free every data/index block belonging to a seedling or sapling entry.
   bool freeFileBlocks(const struct _prodosFent *fe);
-  // Locate a directory entry by name in the root directory. On success,
-  // returns the block holding it and the byte offset of the entry within
-  // the flat trackData buffer.
-  bool findDirEntry(const char *name, uint16_t *blockOut, uint32_t *offsetOut);
-  // Tombstone the entry at trackData[offset] (within directory `block`) and
-  // decrement the volume directory header's active file count.
-  bool removeDirEntry(uint16_t block, uint32_t offset);
+  // Locate an entry by name within the directory whose key block is dirKey.
+  // On success, returns the block holding it and the byte offset of the
+  // entry within the flat trackData buffer.
+  bool findEntryInDir(uint16_t dirKey, const char *name,
+                      uint16_t *blockOut, uint32_t *offsetOut);
+  // Resolve a (possibly slash-separated) path into the key block of the
+  // directory that should contain its final component, plus that leaf name.
+  // A leading '/' is optional and ignored (paths are volume-root relative).
+  bool resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
+                         char *leaf, size_t leafSz);
+  // Tombstone the entry at trackData[offset] (within directory block
+  // `block`) and decrement the active file count in the header of the
+  // directory whose key block is dirKey.
+  bool removeDirEntry(uint16_t dirKey, uint16_t block, uint32_t offset);
   
 private:
   Vent *descendTree(uint16_t fromBlock);

@@ -55,6 +55,16 @@ public:
   // operation is unsupported and changes nothing.
   virtual bool makeDirectory(const char *dirName);
 
+  // Resolve a name (ProDOS: a possibly slash-separated path) to its tree
+  // entry, or NULL. The returned Vent is owned by the tree - do not free it.
+  // The base implementation matches a flat leaf name; ProDOS overrides it to
+  // walk subdirectory paths.
+  virtual Vent *findEntry(const char *path);
+
+  // List the contents of a subdirectory named by `path`. Only ProDOS has
+  // subdirectories; the base implementation says so and lists nothing.
+  virtual void displayDirectory(const char *path);
+
   virtual void inspectFile(const char *fileName, Vent *fp) = 0;
 
   // Returns true if the loaded image looks like the filesystem this
