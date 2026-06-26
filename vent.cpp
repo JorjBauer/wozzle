@@ -45,8 +45,21 @@ Vent::Vent(struct _subdirent *di)
   this->creatorVersion = di->creatorVersion;
   this->minRequiredVersion = di->minRequiredVersion;
   this->accessFlags = di->accessFlags;
-  assert(di->entryLength == 0x27);
-  assert(di->entriesPerBlock == 0x0D);
+  // A valid ProDOS directory header always has 0x27-byte entries and
+  // 0x0D of them per block. Callers (e.g. descendTree) are expected to
+  // validate this before constructing us, but don't abort the process if
+  // something slips through with a malformed header — just warn and treat
+  // it as an empty directory so the tool stays usable on damaged images.
+  if (di->entryLength != 0x27 || di->entriesPerBlock != 0x0D) {
+    fprintf(stderr,
+            "WARNING: directory header has unexpected geometry "
+            "(entryLength=0x%02X, entriesPerBlock=0x%02X); "
+            "treating it as empty.\n",
+            di->entryLength, di->entriesPerBlock);
+    this->activeFileCount = 0;
+    this->children = this->next = NULL;
+    return;
+  }
   this->activeFileCount = di->fileCount[1] * 256 + di->fileCount[0];
 
   this->children = this->next = NULL;

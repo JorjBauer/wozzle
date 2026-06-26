@@ -31,7 +31,6 @@
 
 uint8_t trackData[256*16];
 char infoname[256] = {0};
-char oneShotCommand[512] = {0};
 bool verbose = false;
 bool dosMode = true; // otherwise, prodos mode
 bool striphi = false;
@@ -45,7 +44,8 @@ void usage(char *name)
   printf("  -I [input filename]     input disk image to inspect/modify\n");
   printf("  -d                      DOS mode\n");
   printf("  -p                      ProDOS mode\n");
-  printf("  -c [command]            run a single command non-interactively\n");
+  printf("  -c [command]            run a command non-interactively; repeat\n");
+  printf("                          -c to run several commands in order\n");
   printf("  -A                      cpout: copy full on-disk allocation,\n");
   printf("                          not the directory-reported length\n");
   printf("  -v                      verbose operation\n");
@@ -195,29 +195,42 @@ void cpinHandler(char *cmd)
   //   ProDOS file format data; if it's not an AppleSingle file, then it's
   //   assumed it's an as-is binary file
 
-  // Parse arguments
+  // Parse arguments:
+  //   cpin <source> <dest> [type [aux]]
+  // type/aux are ProDOS hex values (a leading 0x is optional). When given
+  // they win over everything; otherwise we fall back to AppleSingle
+  // metadata, then to a .SYSTEM-name heuristic, then to plain BIN/$2000.
   char fn[MAXPATH+1];
   char destfn[30+1];
+  char typeStr[16];
+  char auxStr[16];
   uint8_t filetype = 0x06; // ProDOS type numbers (more expressive than DOS)
   uint16_t fileSize = 0;
   uint16_t auxTypeData = 0x2000;
   memset(fn, 0, sizeof(fn));
   memset(destfn, 0, sizeof(destfn));
+  memset(typeStr, 0, sizeof(typeStr));
+  memset(auxStr, 0, sizeof(auxStr));
 
-  char *fnp = cmd;
-  if (!fnp) {
-    printf("Usage[1]: cpin <filename> <dest filename>\n");
+  if (!cmd) {
+    printf("Usage: cpin <source> <dest> [type [aux]]\n");
     return;
   }
-  char *destfnp = strstr(fnp, " ");
-  if (!destfnp) {
-    printf("Usage[2]: cpin <filename> <dest filename>\n");
+  int nargs = sscanf(cmd, "%127s %30s %15s %15s", fn, destfn, typeStr, auxStr);
+  if (nargs < 2) {
+    printf("Usage: cpin <source> <dest> [type [aux]]   (type/aux are hex)\n");
     return;
   }
-  strncpy(fn, fnp, destfnp-fnp < MAXPATH ? destfnp-fnp : MAXPATH);
-  destfnp++;
-  strncpy(destfn, destfnp, 30);
-  
+
+  bool explicitType = (typeStr[0] != '\0');
+  bool explicitAux  = (auxStr[0] != '\0');
+  if (explicitType) {
+    filetype = (uint8_t)strtol(typeStr, NULL, 16);
+  }
+  if (explicitAux) {
+    auxTypeData = (uint16_t)strtol(auxStr, NULL, 16);
+  }
+
   // stat the file so we get a length
   struct stat s;
   if (lstat(fn, &s)) {
@@ -270,8 +283,10 @@ void cpinHandler(char *cmd)
              *   (cf. https://prodos8.com/docs/technote/19/)
              */
             foundMetadata = true;
-            filetype = ntohs(p->filetype);
-            auxTypeData = ntohl(p->auxtype);
+            // Explicit command-line type/aux override the AppleSingle
+            // metadata; otherwise adopt what the metadata declares.
+            if (!explicitType) filetype = ntohs(p->filetype);
+            if (!explicitAux)  auxTypeData = ntohl(p->auxtype);
           }
           else if (ntohs(as->entry[i].entryID) == as_dataFork) {
             fileSize = ntohs(as->entry[i].length);
@@ -297,6 +312,20 @@ void cpinHandler(char *cmd)
     }
   }
   
+  // If the caller didn't pin a type (no explicit arg, no AppleSingle
+  // metadata) but the destination is named like a ProDOS system program,
+  // make it a launchable SYS file loading at $2000 — the convention for
+  // .SYSTEM programs. An explicit aux still wins if one was given.
+  if (!explicitType && !foundMetadata) {
+    size_t dl = strlen(destfn);
+    const char *suffix = ".SYSTEM";
+    size_t sl = strlen(suffix);
+    if (dl >= sl && strcmp(destfn + dl - sl, suffix) == 0) {
+      filetype = 0xFF; // SYS
+      if (!explicitAux) auxTypeData = 0x2000;
+    }
+  }
+
   // Write the file into the image
   if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents, destfn,
                                    filetype, auxTypeData, fileSize)) {
@@ -582,7 +611,7 @@ void helpHandler(char *cmd); // forward decl for commands[]
 struct _cmdInfo commands[] = {
   {"cat",   catHandler,   "<filename>        : Dump file contents" },
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
-  {"cpin",  cpinHandler,  "<SOURCE> <DEST>  : copy host file <SOURCE> in to image filename <DEST>" },
+  {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
   {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
   {"format", formatHandler, "<fname> [<vol>]: create a blank DOS 3.3 or ProDOS image" },
@@ -639,7 +668,11 @@ int main(int argc, char *argv[]) {
 
   preload_crc();
 
-  // Parse command-line arguments
+  // Parse command-line arguments. Each -c queues a command to run
+  // non-interactively, in order; optarg points into argv, which lives
+  // for the whole program, so we just keep the pointers.
+  char **oneShotCommands = (char **)malloc(argc * sizeof(char *));
+  int oneShotCount = 0;
   int c;
   while ( (c=getopt(argc, argv, "dpI:c:Ah?v")) != -1 ) {
     switch (c) {
@@ -653,7 +686,7 @@ int main(int argc, char *argv[]) {
       strncpy(infoname, optarg, sizeof(infoname));
       break;
     case 'c':
-      strncpy(oneShotCommand, optarg, sizeof(oneShotCommand) - 1);
+      oneShotCommands[oneShotCount++] = optarg;
       break;
     case 'A':
       useAllocation = true;
@@ -702,10 +735,14 @@ int main(int argc, char *argv[]) {
     delete other;
   }
 
-  if (oneShotCommand[0]) {
-    performCommand(oneShotCommand);
+  if (oneShotCount) {
+    for (int i = 0; i < oneShotCount; i++) {
+      performCommand(oneShotCommands[i]);
+    }
+    free(oneShotCommands);
     return 0;
   }
+  free(oneShotCommands);
 
   while (1) {
     char *cmd;

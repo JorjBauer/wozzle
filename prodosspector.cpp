@@ -216,6 +216,20 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
       if (i==0 && currentBlock == fromBlock) {
 	// The first entry of the first block is header data
 	struct _subdirent *md = (struct _subdirent *)(block+4);
+	// A real directory header declares 0x27-byte entries, 0x0D per
+	// block. If it doesn't, this block isn't actually a directory —
+	// we were steered here by a bogus key pointer (a corrupt image, or
+	// a file entry mis-typed as a directory). Bail out gracefully with
+	// a warning instead of aborting the whole process deep in the Vent
+	// constructor.
+	if (md->entryLength != 0x27 || md->entriesPerBlock != 0x0D) {
+	  fprintf(stderr,
+		  "WARNING: block %u was walked as a directory but its header "
+		  "is not one (entryLength=0x%02X, entriesPerBlock=0x%02X); "
+		  "skipping it.\n",
+		  currentBlock, md->entryLength, md->entriesPerBlock);
+	  return ret; // ret is still NULL here
+	}
 	Vent *sde = new Vent(md);
 	assert(ret == NULL); // shouldn't have been initialized yet?
 	ret = sde;
