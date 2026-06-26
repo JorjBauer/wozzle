@@ -129,6 +129,9 @@ class Vent {
   void childrenEnt(Vent *);
 
   bool isDirectory();
+  // True for the synthetic directory-header entry that descendTree emits as
+  // the first node of each directory (volume or subdirectory).
+  bool isHeader();
   uint16_t keyPointerVal();
 
   const char *getName();

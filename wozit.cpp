@@ -62,8 +62,10 @@ struct _cmdInfo {
 
 void lsHandler(char *cmd)
 {
+  // With an argument, list that subdirectory (ProDOS); with none, dump the
+  // whole tree as before.
   if (cmd && strlen(cmd)) {
-    printf("Extraneous arguments: '%s' (0x%llX)\n", cmd, (unsigned long long)cmd);
+    inspector->displayDirectory(cmd);
     return;
   }
 
@@ -72,15 +74,9 @@ void lsHandler(char *cmd)
 
 Vent *findFileByName(const char *name)
 {
-  Vent *tree = inspector->getTree();
-  Vent *p = tree;
-  while (p) {
-    if (!strcmp(name, p->getName())) {
-      return p;
-    }
-    p = p->nextEnt();
-  }
-  return NULL;
+  // Resolves a leaf name or, for ProDOS, a slash-separated path. The
+  // returned entry is owned by the tree; callers must not free it.
+  return inspector->findEntry(name);
 }
 
 static void dumpFileContents(const char *cmd, bool forceStripHi)
@@ -121,15 +117,15 @@ void cat7Handler(char *cmd)
 void cpoutHandler(char *cmd)
 {
   // cpout: copy from a file in the image to a file outside the image
-  // cpout <image filename> <output filename>
-  char buf[16];
+  // cpout <image filename> <output filename>  (source may be a ProDOS path)
+  char buf[256];
   char *p = strstr(cmd, " ");
   if (!p) {
     printf("Error parsing arguments. Usage: cpout <SOURCE> <DEST>\n");
     return;
   }
   uint32_t len = p-cmd;
-  if (len > 15) {
+  if (len > sizeof(buf)-1) {
     printf("Invalid filename\n");
     return;
   }
@@ -201,7 +197,7 @@ void cpinHandler(char *cmd)
   // they win over everything; otherwise we fall back to AppleSingle
   // metadata, then to a .SYSTEM-name heuristic, then to plain BIN/$2000.
   char fn[MAXPATH+1];
-  char destfn[30+1];
+  char destfn[256];
   char typeStr[16];
   char auxStr[16];
   uint8_t filetype = 0x06; // ProDOS type numbers (more expressive than DOS)
@@ -216,7 +212,7 @@ void cpinHandler(char *cmd)
     printf("Usage: cpin <source> <dest> [type [aux]]\n");
     return;
   }
-  int nargs = sscanf(cmd, "%127s %30s %15s %15s", fn, destfn, typeStr, auxStr);
+  int nargs = sscanf(cmd, "%127s %255s %15s %15s", fn, destfn, typeStr, auxStr);
   if (nargs < 2) {
     printf("Usage: cpin <source> <dest> [type [aux]]   (type/aux are hex)\n");
     return;
@@ -556,8 +552,8 @@ void saveHandler(char *cmd)
 
 void mkdirHandler(char *cmd)
 {
-  char name[31];
-  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+  char name[256];
+  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
     printf("Usage: mkdir <dirname>\n");
     return;
   }
@@ -566,8 +562,8 @@ void mkdirHandler(char *cmd)
 
 void rmHandler(char *cmd)
 {
-  char name[31];
-  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+  char name[256];
+  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
     printf("Usage: rm <filename>\n");
     return;
   }
@@ -576,8 +572,8 @@ void rmHandler(char *cmd)
 
 void rmdirHandler(char *cmd)
 {
-  char name[31];
-  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+  char name[256];
+  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
     printf("Usage: rmdir <dirname>\n");
     return;
   }

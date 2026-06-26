@@ -352,6 +352,11 @@ bool Vent::isDirectory()
   return (fileType == 0x0F);
 }
 
+bool Vent::isHeader()
+{
+  return isDirectoryHeader;
+}
+
 uint16_t Vent::keyPointerVal()
 {
   return keyPointer;

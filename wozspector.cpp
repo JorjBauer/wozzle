@@ -1,6 +1,7 @@
 #include "wozspector.h"
 
 #include <stdio.h>
+#include <string.h>
 
 Wozspector::Wozspector(bool verbose, uint8_t dumpflags) : Woz(verbose, dumpflags)
 {
@@ -19,6 +20,22 @@ bool Wozspector::makeDirectory(const char *dirName)
 {
   printf("This filesystem has no subdirectories; mkdir is not supported.\n");
   return false;
+}
+
+// Flat-namespace lookup: match the first tree entry whose leaf name equals
+// `path`. ProDOS overrides this to resolve subdirectory paths.
+Vent *Wozspector::findEntry(const char *path)
+{
+  for (Vent *p = getTree(); p; p = p->nextEnt()) {
+    if (!strcmp(path, p->getName()))
+      return p;
+  }
+  return NULL;
+}
+
+void Wozspector::displayDirectory(const char *path)
+{
+  printf("Listing a subdirectory is only supported on ProDOS.\n");
 }
 
 Wozspector::~Wozspector()

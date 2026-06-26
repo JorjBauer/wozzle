@@ -481,7 +481,6 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
   return 0;
 }
 
-// FIXME path support in subdirectories?
 bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
                                      char *fileName,
                                      uint8_t fileType,
@@ -490,17 +489,25 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
 {
   if (!tree)
     createTree();
-  
+
+  // fileName may be a path; resolve the directory it lands in and the leaf
+  // name within it. Everything below stores into `dirKey`.
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(fileName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
   // Construct a new filesystem entry structure
   struct _prodosFent fent;
   memset(&fent, 0, sizeof(fent));
-  strncpy(fent.name, fileName, 15);
-  // Set the low nybble of typelen to the length of the filename
-  fent.typelen = strlen(fileName);
-  if (fent.typelen > 15) {
+  size_t leaflen = strlen(leaf);
+  if (leaflen < 1 || leaflen > 15) {
     printf("ERROR: file names may not exceed 15 chars in ProDOS\n");
     return false;
   }
+  strncpy(fent.name, leaf, 15);
+  // Set the low nybble of typelen to the length of the filename
+  fent.typelen = leaflen;
   uint8_t blocksUsed = (fileSize / 512)+1; // number of data blocks
 
   fent.fileType = fileType;
@@ -519,11 +526,9 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   fent.typeData[0] = auxTypeData & 0xFF;
   fent.typeData[1] = (auxTypeData >> 8);
 
-  // FIXME: what is headerPointer? Am I right that it's the beginning of the
-  // subdir that stores the file? Since we don't do paths yet, that would be
-  // block # 2?
-  fent.headerPointer[0] = 2;
-  fent.headerPointer[1] = 0;
+  // headerPointer is the key block of the directory that holds this entry.
+  fent.headerPointer[0] = dirKey & 0xFF;
+  fent.headerPointer[1] = (dirKey >> 8);
   
   // Create the file structure - seedling for <= 512 bytes; sapling for <=128k;
   // or tree for >128k.
@@ -603,7 +608,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   fent.blocksUsed[1] = (blocksUsed >> 8);
 
   // Write the directory entry
-  if (!addDirectoryEntryForFile(&fent)) {
+  if (!addDirectoryEntryForFile(dirKey, &fent)) {
     printf("Error writing directory entry for file\n");
     return false;
   }
@@ -618,28 +623,28 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   return true;
 }
 
-bool ProdosSpector::addDirectoryEntryForFile(struct _prodosFent *e)
+bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent *e)
 {
   // The tree has to be loaded before we start; that loads the block cache
   if (!tree)
     createTree();
 
-  // FIXME: what if the target filename already exists?
-  
-  // FIXME we only know how to write in the root directory @ block 2, not
-  // in any subdirectory on another block
-  uint16_t currentBlock = 2;
+  // dirKey is the key (first) block of the directory we're adding to: block
+  // 2 for the volume root, or a subdirectory's key block. The directory may
+  // span several blocks via the next-block links; we don't yet grow a full
+  // directory by allocating a new block.
+  uint16_t currentBlock = dirKey;
 
   while (currentBlock) {
     uint8_t *block;
     block = &trackData[512 * currentBlock];
-    
+
     struct _idxHeader *ih = (struct _idxHeader *)block;
-    
+
     for (int i=0; i<13; i++) {
-      if (i==0 && currentBlock == 2) { // FIXME hard-coded '2'
-        // We have to bump up the fileCount in the header... AFTER we succeed,
-        // so skip it for now
+      if (i==0 && currentBlock == dirKey) {
+        // The first entry of the first block is the directory header. We
+        // bump its fileCount only after we succeed, so skip it for now.
       } else {
 	struct _prodosFent *fe = (struct _prodosFent *)&trackData[512 * currentBlock + i*0x27 + 4];
         if (fe->typelen == 0) { // FIXME are there other possibilties? Overwrite a deleted file, maybe?
@@ -653,19 +658,17 @@ bool ProdosSpector::addDirectoryEntryForFile(struct _prodosFent *e)
             printf("Error: can't write block data for directory\n");
             return false;
           }
-          
-          // Now update the directory header with the right number of entries
-          // FIXME: hard-coded numbers: 512*2 for sector #2 (hard coded) and
-          // offset +4 (always +4 for the subdir ent start position)
-          struct _subdirent *md = (struct _subdirent *)(&trackData[512*2+4]);
+
+          // Bump the active-entry count in this directory's header, which
+          // always lives at offset +4 of its key block.
+          struct _subdirent *md = (struct _subdirent *)(&trackData[512*dirKey+4]);
           uint16_t fc = md->fileCount[1]*256 + md->fileCount[0];
           fc++;
           md->fileCount[0] = fc & 0xFF;
           md->fileCount[1] = (fc >> 8);
           // That will have updated directly in the trackData cache; just need
-          // to write the block back to the Woz image
-          if (!writeBlock(2 /* FIXME hardcoded block num */,
-                          &trackData[512*2 /* FIXME hardcoded block num */])) {
+          // to write the header block back to the Woz image
+          if (!writeBlock(dirKey, &trackData[512*dirKey])) {
             printf("Failed to write directory header back out\n");
             return false;
           }
@@ -721,20 +724,19 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
   }
 }
 
-bool ProdosSpector::findDirEntry(const char *name, uint16_t *blockOut,
-                                 uint32_t *offsetOut)
+bool ProdosSpector::findEntryInDir(uint16_t dirKey, const char *name,
+                                   uint16_t *blockOut, uint32_t *offsetOut)
 {
-  // FIXME root directory only, mirroring addDirectoryEntryForFile.
   size_t want = strlen(name);
-  uint16_t currentBlock = 2;
+  uint16_t currentBlock = dirKey;
 
   while (currentBlock) {
     uint8_t *block = &trackData[512 * currentBlock];
     struct _idxHeader *ih = (struct _idxHeader *)block;
 
     for (int i = 0; i < 13; i++) {
-      if (i == 0 && currentBlock == 2)
-        continue; // the volume directory header, not a file entry
+      if (i == 0 && currentBlock == dirKey)
+        continue; // the directory's own header, not a file entry
       uint32_t off = 512 * currentBlock + i * 0x27 + 4;
       struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
       if ((fe->typelen & 0xF0) == 0)
@@ -752,7 +754,107 @@ bool ProdosSpector::findDirEntry(const char *name, uint16_t *blockOut,
   return false;
 }
 
-bool ProdosSpector::removeDirEntry(uint16_t block, uint32_t offset)
+bool ProdosSpector::resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
+                                      char *leaf, size_t leafSz)
+{
+  char buf[256];
+  strncpy(buf, path, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+
+  char *p = buf;
+  if (*p == '/') p++; // a leading slash is optional; paths are root-relative
+
+  // Each '/'-separated component up to the last names a directory to descend
+  // into; the final component is the leaf the caller will act on.
+  uint16_t dirKey = 2; // volume root
+  char *slash;
+  while ((slash = strchr(p, '/')) != NULL) {
+    *slash = '\0';
+    if (*p) { // tolerate empty components from doubled slashes
+      uint16_t b;
+      uint32_t off;
+      if (!findEntryInDir(dirKey, p, &b, &off)) {
+        printf("Directory '%s' not found\n", p);
+        return false;
+      }
+      struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
+      if (fe->fileType != FT_DIR) {
+        printf("'%s' is not a directory\n", p);
+        return false;
+      }
+      dirKey = fe->keyPointer[1] * 256 + fe->keyPointer[0];
+    }
+    p = slash + 1;
+  }
+
+  if (!*p) {
+    printf("ERROR: missing filename in path '%s'\n", path);
+    return false;
+  }
+  strncpy(leaf, p, leafSz - 1);
+  leaf[leafSz - 1] = '\0';
+  *dirKeyOut = dirKey;
+  return true;
+}
+
+Vent *ProdosSpector::findEntry(const char *path)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(path, &dirKey, leaf, sizeof(leaf)))
+    return NULL;
+
+  uint16_t block;
+  uint32_t off;
+  if (!findEntryInDir(dirKey, leaf, &block, &off))
+    return NULL;
+
+  // Return the corresponding node from the loaded tree (which read the same
+  // on-disk data). A file's key pointer is unique, so match on that plus the
+  // leaf name, skipping the synthetic directory-header nodes.
+  struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
+  uint16_t kp = fe->keyPointer[1] * 256 + fe->keyPointer[0];
+  for (Vent *v = tree; v; v = v->nextEnt()) {
+    if (!v->isHeader() && v->keyPointerVal() == kp &&
+        !strcmp(v->getName(), leaf))
+      return v;
+  }
+  return NULL;
+}
+
+void ProdosSpector::displayDirectory(const char *path)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(path, &dirKey, leaf, sizeof(leaf)))
+    return;
+
+  uint16_t block;
+  uint32_t off;
+  if (!findEntryInDir(dirKey, leaf, &block, &off)) {
+    printf("'%s' not found\n", path);
+    return;
+  }
+  struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
+  if (fe->fileType != FT_DIR) {
+    printf("'%s' is not a directory\n", path);
+    return;
+  }
+
+  uint16_t subKey = fe->keyPointer[1] * 256 + fe->keyPointer[0];
+  Vent *list = descendTree(subKey);
+  displayTree(list);
+  freeTree(list);
+}
+
+bool ProdosSpector::removeDirEntry(uint16_t dirKey, uint16_t block,
+                                   uint32_t offset)
 {
   // Zero the storage-type/name-length byte. That's ProDOS's deleted marker
   // (storage type 0 = inactive), and it's also exactly what cpin's free-slot
@@ -764,13 +866,14 @@ bool ProdosSpector::removeDirEntry(uint16_t block, uint32_t offset)
     return false;
   }
 
-  // Drop the volume directory header's active file count by one.
-  struct _subdirent *md = (struct _subdirent *)(&trackData[512 * 2 + 4]);
+  // Drop the active file count by one in the header of the directory that
+  // owns this entry (its header lives at offset +4 of its key block).
+  struct _subdirent *md = (struct _subdirent *)(&trackData[512 * dirKey + 4]);
   uint16_t fc = md->fileCount[1] * 256 + md->fileCount[0];
   if (fc) fc--;
   md->fileCount[0] = fc & 0xFF;
   md->fileCount[1] = (fc >> 8);
-  if (!writeBlock(2, &trackData[512 * 2])) {
+  if (!writeBlock(dirKey, &trackData[512 * dirKey])) {
     printf("ERROR: failed to update directory header\n");
     return false;
   }
@@ -782,9 +885,14 @@ bool ProdosSpector::removeFile(const char *fileName)
   if (!tree)
     createTree();
 
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(fileName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
   uint16_t block;
   uint32_t off;
-  if (!findDirEntry(fileName, &block, &off)) {
+  if (!findEntryInDir(dirKey, leaf, &block, &off)) {
     printf("File '%s' not found\n", fileName);
     return false;
   }
@@ -800,7 +908,7 @@ bool ProdosSpector::removeFile(const char *fileName)
 
   if (!freeFileBlocks(&fe))
     return false;
-  if (!removeDirEntry(block, off))
+  if (!removeDirEntry(dirKey, block, off))
     return false;
 
   flushFreeBlockList();
@@ -814,9 +922,14 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   if (!tree)
     createTree();
 
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(dirName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
   uint16_t block;
   uint32_t off;
-  if (!findDirEntry(dirName, &block, &off)) {
+  if (!findEntryInDir(dirKey, leaf, &block, &off)) {
     printf("Directory '%s' not found\n", dirName);
     return false;
   }
@@ -857,7 +970,7 @@ bool ProdosSpector::removeDirectory(const char *dirName)
     cur = next;
   }
 
-  if (!removeDirEntry(block, off))
+  if (!removeDirEntry(dirKey, block, off))
     return false;
 
   flushFreeBlockList();
@@ -871,7 +984,12 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   if (!tree)
     createTree();
 
-  size_t namelen = strlen(dirName);
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(dirName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
+  size_t namelen = strlen(leaf);
   if (namelen < 1 || namelen > 15) {
     printf("ERROR: directory names must be 1..15 chars in ProDOS\n");
     return false;
@@ -881,7 +999,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   // check this for us).
   uint16_t existsBlock;
   uint32_t existsOff;
-  if (findDirEntry(dirName, &existsBlock, &existsOff)) {
+  if (findEntryInDir(dirKey, leaf, &existsBlock, &existsOff)) {
     printf("ERROR: '%s' already exists\n", dirName);
     return false;
   }
@@ -894,23 +1012,23 @@ bool ProdosSpector::makeDirectory(const char *dirName)
     return false;
   }
 
-  // Write the entry that lives in the parent (root) directory, pointing at
-  // the new block. fileType 0x0F (DIR) is what marks it as a directory.
+  // Write the entry that lives in the parent directory, pointing at the new
+  // block. fileType 0x0F (DIR) is what marks it as a directory.
   struct _prodosFent fent;
   memset(&fent, 0, sizeof(fent));
   fent.typelen = (ft_subdir << 4) | namelen;
-  strncpy(fent.name, dirName, 15);
-  fent.fileType = ft_voldirhdr; // 0x0F == DIR file type
+  strncpy(fent.name, leaf, 15);
+  fent.fileType = FT_DIR; // 0x0F
   fent.keyPointer[0] = dirBlock & 0xFF;
   fent.keyPointer[1] = (dirBlock >> 8);
   fent.blocksUsed[0] = 1;
   fent.eofLength[0] = 0x00;
   fent.eofLength[1] = 0x02; // 512 bytes
   fent.accessFlags = at_destroyed | at_renamed | at_written | at_read;
-  fent.headerPointer[0] = 2; // parent directory header is the volume dir
-  fent.headerPointer[1] = 0;
+  fent.headerPointer[0] = dirKey & 0xFF; // parent directory's key block
+  fent.headerPointer[1] = (dirKey >> 8);
 
-  if (!addDirectoryEntryForFile(&fent)) {
+  if (!addDirectoryEntryForFile(dirKey, &fent)) {
     // No free directory slot; the block we grabbed is only reserved in RAM,
     // so leaving without flushing the bitmap discards that reservation.
     printf("ERROR: couldn't add directory entry for '%s'\n", dirName);
@@ -922,7 +1040,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   // walk back up the tree).
   uint16_t parentBlock;
   uint32_t parentOff;
-  if (!findDirEntry(dirName, &parentBlock, &parentOff)) {
+  if (!findEntryInDir(dirKey, leaf, &parentBlock, &parentOff)) {
     printf("ERROR: internal: just-written directory entry not found\n");
     return false;
   }
@@ -935,7 +1053,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   // prev/next block links are both 0 (a one-block directory).
   struct _subdirent *sd = (struct _subdirent *)&blockData[4];
   sd->typelen = (ft_subdirhdr << 4) | namelen; // 0x0E storage type
-  memcpy(sd->name, dirName, namelen);
+  memcpy(sd->name, leaf, namelen);
   sd->subdir.fileType = 0x75; // ProDOS subdirectory-header signature byte
   sd->accessFlags = at_destroyed | at_renamed | at_written | at_read;
   sd->entryLength = 0x27;
