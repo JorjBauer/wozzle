@@ -41,6 +41,20 @@ public:
                                 uint16_t auxTypeData,
                                 uint32_t fileSize) = 0;
 
+  // Delete a file by name from the (root) directory, freeing its storage.
+  // Every filesystem implements this.
+  virtual bool removeFile(const char *fileName) = 0;
+
+  // Delete an empty subdirectory by name. Only filesystems with
+  // subdirectories (ProDOS) override this; the default reports that the
+  // operation is unsupported and changes nothing.
+  virtual bool removeDirectory(const char *dirName);
+
+  // Create a new (empty) subdirectory by name. Only filesystems with
+  // subdirectories (ProDOS) override this; the default reports that the
+  // operation is unsupported and changes nothing.
+  virtual bool makeDirectory(const char *dirName);
+
   virtual void inspectFile(const char *fileName, Vent *fp) = 0;
 
   // Returns true if the loaded image looks like the filesystem this

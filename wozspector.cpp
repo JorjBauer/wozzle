@@ -1,8 +1,24 @@
 #include "wozspector.h"
 
+#include <stdio.h>
+
 Wozspector::Wozspector(bool verbose, uint8_t dumpflags) : Woz(verbose, dumpflags)
 {
   tree = NULL;
+}
+
+// Default: this filesystem has no notion of subdirectories. ProDOS
+// overrides these; DOS 3.3 inherits the unsupported behavior.
+bool Wozspector::removeDirectory(const char *dirName)
+{
+  printf("This filesystem has no subdirectories; rmdir is not supported.\n");
+  return false;
+}
+
+bool Wozspector::makeDirectory(const char *dirName)
+{
+  printf("This filesystem has no subdirectories; mkdir is not supported.\n");
+  return false;
 }
 
 Wozspector::~Wozspector()

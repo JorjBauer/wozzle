@@ -554,6 +554,36 @@ void saveHandler(char *cmd)
   }
 }
 
+void mkdirHandler(char *cmd)
+{
+  char name[31];
+  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+    printf("Usage: mkdir <dirname>\n");
+    return;
+  }
+  inspector->makeDirectory(name);
+}
+
+void rmHandler(char *cmd)
+{
+  char name[31];
+  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+    printf("Usage: rm <filename>\n");
+    return;
+  }
+  inspector->removeFile(name);
+}
+
+void rmdirHandler(char *cmd)
+{
+  char name[31];
+  if (!cmd || sscanf(cmd, "%30s", name) != 1) {
+    printf("Usage: rmdir <dirname>\n");
+    return;
+  }
+  inspector->removeDirectory(name);
+}
+
 void listHandler(char *cmd)
 {
   if (cmd[0] == 0) {
@@ -620,6 +650,9 @@ struct _cmdInfo commands[] = {
   {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },
   {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
   {"ls",    lsHandler,   "                   : List directory" },
+  {"mkdir", mkdirHandler, "<dirname>        : create a directory (ProDOS only)" },
+  {"rm",    rmHandler,    "<filename>       : delete a file" },
+  {"rmdir", rmdirHandler, "<dirname>        : delete an empty directory (ProDOS only)" },
   {"save",  saveHandler, "<filename>       : save modified disk image as <filename>" },
   {"strip", stripHandler, "<on|off>        : turn on or off high bit strip for 'cat'"},
   {"", 0, ""} };

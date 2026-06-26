@@ -22,6 +22,10 @@ class ProdosSpector : public Wozspector {
                                 uint16_t auxTypeData,
                                 uint32_t fileSize);
 
+  virtual bool removeFile(const char *fileName);
+  virtual bool removeDirectory(const char *dirName);
+  virtual bool makeDirectory(const char *dirName);
+
   virtual void displayInfo();
 
   virtual void inspectFile(const char *fileName, Vent *fp);
@@ -37,6 +41,19 @@ protected:
   bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
   bool writeBlock(uint16_t blockNum, uint8_t data[512]);
   bool addDirectoryEntryForFile(struct _prodosFent *e);
+
+  // Mark a single block free in the in-RAM volume bitmap (no-op for the
+  // boot blocks / out-of-range values). Call flushFreeBlockList() after.
+  void markBlockFree(uint16_t block);
+  // Free every data/index block belonging to a seedling or sapling entry.
+  bool freeFileBlocks(const struct _prodosFent *fe);
+  // Locate a directory entry by name in the root directory. On success,
+  // returns the block holding it and the byte offset of the entry within
+  // the flat trackData buffer.
+  bool findDirEntry(const char *name, uint16_t *blockOut, uint32_t *offsetOut);
+  // Tombstone the entry at trackData[offset] (within directory `block`) and
+  // decrement the volume directory header's active file count.
+  bool removeDirEntry(uint16_t block, uint32_t offset);
   
 private:
   Vent *descendTree(uint16_t fromBlock);
