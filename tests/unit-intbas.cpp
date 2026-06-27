@@ -146,22 +146,17 @@ static void case_truncated_string() {
   free(out);
 }
 
-// Resync: a line whose stored lineLen doesn't match the bytes we consumed
-// (because an inline 0x01 inside a REM was interpreted as EOL). The reader
-// should still return success, emit a resync warning, and advance to the
-// byte after the stored length - so a following line is parsed cleanly.
-static void case_resync_after_rem_with_embedded_eol() {
-  // Line 10: REM with text containing a raw 0x01 (no high bit) - reader
-  //   will mistake it for EOL and stop early.
-  //   len=0x07, linenum=10(0A 00), REM(5D), raw-0x01, then 2 more payload
-  //   bytes (0x41 'A' low-bit) to make lineLen=0x07 plausible if you counted
-  //   through them. Real EOL at the end.
+// Binary payload inside a REM: a REM whose body contains raw control bytes
+// (here a 0x01, which a naive scan would mistake for EOL). The reader should
+// use the stored line length to span the whole body, render it as hex octets
+// instead of garbled control characters, NOT trip the resync path, and parse
+// the following line cleanly.
+static void case_rem_with_embedded_binary() {
+  // Line 10: REM with a 2-byte binary body {0x01, 0x41}. A scan-to-EOL would
+  //   stop at the 0x01; the length-driven reader spans both bytes.
+  //   len=0x07, linenum=10(0A 00), REM(5D), body(01 41), real EOL(01).
   //
-  // Layout: 07 0A 00 5D 01 41 01
-  //   After parsing, actual = 1+2+1+1(EOL)=5 bytes, but stored lineLen=7.
-  //   Resync target = startOffset + 7; remaining bytes get re-aligned.
-  //
-  // Line 20: simple "END" - must parse cleanly after resync.
+  // Line 20: simple "END" - must parse cleanly afterward.
   //   len=05, linenum=14(0x14 0x00), END(0x51), EOL(0x01)
   uint8_t buf[] = {
     0x07, 0x0A, 0x00, 0x5D, 0x01, 0x41, 0x01,
@@ -171,10 +166,13 @@ static void case_resync_after_rem_with_embedded_eol() {
   IntegerLister l;
   bool rc = l.listFile(buf, sizeof(buf), 0);
   char *out = cap.take();
-  check("resync case returns true", rc == true);
-  check("resync warning was printed", contains(out, "resyncing"));
-  check("line 20 still reached after resync", contains(out, "20"));
-  check("END keyword after resync", contains(out, "END"));
+  check("binary REM case returns true", rc == true);
+  check("binary body labelled", contains(out, "binary"));
+  check("binary body rendered as hex octets", contains(out, "01 41"));
+  check("no resync needed for length-spanned REM",
+        !contains(out, "resyncing"));
+  check("line 20 still reached", contains(out, "20"));
+  check("END keyword after binary REM", contains(out, "END"));
   free(out);
 }
 
@@ -205,7 +203,7 @@ int main(int, char **) {
   case_goto_constant();
   case_rem();
   case_truncated_string();
-  case_resync_after_rem_with_embedded_eol();
+  case_rem_with_embedded_binary();
   case_skipbytes();
 
   fprintf(stderr, "  -- unit-intbas: %d passed, %d failed --\n",
