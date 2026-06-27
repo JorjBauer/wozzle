@@ -180,10 +180,44 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
         printf("\"");
         pos++; // consume close-quote
       } else if (b == 0x5D) {
-        // REM: print the keyword, then consume bytes until EOL.
+        // REM: print the keyword, then the comment body. Normally the body
+        // is ASCII text (high bit set), but Integer BASIC programs sometimes
+        // hide 6502 machine code or binary data tables inside a REM so the
+        // payload lands at a fixed address (e.g. just under HIMEM) and can be
+        // CALLed or PEEKed. Such payloads routinely contain raw 0x01 bytes,
+        // which a naive "scan until EOL" mistakes for end-of-line — stopping
+        // mid-line and forcing a resync that mangles everything after it.
+        //
+        // Instead, trust the line's stored length to find the true EOL, and
+        // if the body isn't clean printable text, dump it as hex octets so
+        // the binary is visible rather than garbled into control characters.
         printf(" %s ", integerTokens[b].detokened);
-        while (pos < ssize && buf[pos] != 0x01) {
-          printf("%c", buf[pos++] & 0x7F);
+
+        // The EOL (0x01) is the final byte of the line: lineStart+lineLen-1.
+        // Fall back to scanning for 0x01 if the stored length is unusable.
+        uint32_t remEnd;
+        if (lineLen >= 4 && (uint32_t)(lineStart + lineLen) <= ssize) {
+          remEnd = lineStart + lineLen - 1;
+        } else {
+          remEnd = pos;
+          while (remEnd < ssize && buf[remEnd] != 0x01) remEnd++;
+        }
+
+        // Treat the body as binary if any byte (high bit stripped) is a
+        // control code other than tab.
+        bool binary = false;
+        for (uint32_t i = pos; i < remEnd; i++) {
+          uint8_t c = buf[i] & 0x7F;
+          if (c != '\t' && (c < 0x20 || c == 0x7F)) { binary = true; break; }
+        }
+
+        if (binary) {
+          printf("{binary: %u bytes:", remEnd - pos);
+          for (uint32_t i = pos; i < remEnd; i++) printf(" %.2X", buf[i]);
+          printf("}");
+          pos = remEnd;
+        } else {
+          while (pos < remEnd) printf("%c", buf[pos++] & 0x7F);
         }
         if (pos >= ssize) {
           printf("\nERROR: file ended inside a REM\n");
