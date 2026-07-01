@@ -322,6 +322,13 @@ void cpinHandler(char *cmd)
     }
   }
 
+  // If the destination already exists, remove it first. writeFileToImage
+  // doesn't replace in place — it just appends a fresh catalog entry — so
+  // without this a repeated cpin leaves stale duplicate entries behind.
+  if (findFileByName(destfn)) {
+    inspector->removeFile(destfn);
+  }
+
   // Write the file into the image
   if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents, destfn,
                                    filetype, auxTypeData, fileSize)) {
