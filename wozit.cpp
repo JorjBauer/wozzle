@@ -569,12 +569,22 @@ void mkdirHandler(char *cmd)
 
 void rmHandler(char *cmd)
 {
-  char name[256];
-  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
-    printf("Usage: rm <filename>\n");
+  char tok1[256], tok2[256];
+  int n = cmd ? sscanf(cmd, "%255s %255s", tok1, tok2) : 0;
+  if (n < 1) {
+    printf("Usage: rm [-r] <filename>\n");
     return;
   }
-  inspector->removeFile(name);
+  // "rm -r <dir>" removes a directory and everything beneath it.
+  if (!strcmp(tok1, "-r") || !strcmp(tok1, "-R")) {
+    if (n < 2) {
+      printf("Usage: rm -r <directory>\n");
+      return;
+    }
+    inspector->removeDirectoryRecursive(tok2);
+    return;
+  }
+  inspector->removeFile(tok1);
 }
 
 void rmdirHandler(char *cmd)
@@ -654,7 +664,7 @@ struct _cmdInfo commands[] = {
   {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
   {"ls",    lsHandler,   "                   : List directory" },
   {"mkdir", mkdirHandler, "<dirname>        : create a directory (ProDOS only)" },
-  {"rm",    rmHandler,    "<filename>       : delete a file" },
+  {"rm",    rmHandler,    "[-r] <filename>  : delete a file (-r: a directory tree)" },
   {"rmdir", rmdirHandler, "<dirname>        : delete an empty directory (ProDOS only)" },
   {"save",  saveHandler, "<filename>       : save modified disk image as <filename>" },
   {"strip", stripHandler, "<on|off>        : turn on or off high bit strip for 'cat'"},

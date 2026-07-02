@@ -25,6 +25,7 @@ class ProdosSpector : public Wozspector {
 
   virtual bool removeFile(const char *fileName);
   virtual bool removeDirectory(const char *dirName);
+  virtual bool removeDirectoryRecursive(const char *dirName);
   virtual bool makeDirectory(const char *dirName);
   virtual Vent *findEntry(const char *path);
   virtual void displayDirectory(const char *path);

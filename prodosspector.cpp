@@ -979,6 +979,82 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   return true;
 }
 
+bool ProdosSpector::removeDirectoryRecursive(const char *dirName)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(dirName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
+  uint16_t block;
+  uint32_t off;
+  if (!findEntryInDir(dirKey, leaf, &block, &off)) {
+    printf("Directory '%s' not found\n", dirName);
+    return false;
+  }
+
+  struct _prodosFent fe;
+  memcpy(&fe, &trackData[off], sizeof(fe));
+  if (((fe.typelen & 0xF0) >> 4) != ft_subdir) {
+    printf("'%s' is not a directory; use rm\n", dirName);
+    return false;
+  }
+
+  // Empty the directory one child at a time. removeFile()/removeDirectory()
+  // (and our own recursion) call createTree() and rewrite trackData, so we
+  // must re-scan from the top after every removal rather than caching
+  // pointers or offsets into a chain that's been rebuilt underneath us.
+  for (;;) {
+    uint16_t subKey = fe.keyPointer[1] * 256 + fe.keyPointer[0];
+
+    // Find the first live entry in the subdirectory (skipping its header).
+    char childLeaf[16];
+    bool childIsDir = false;
+    bool found = false;
+    uint16_t cur = subKey;
+    int safety = 4096; // guard against a corrupt circular chain
+    while (cur && !found && safety-- > 0) {
+      struct _idxHeader *ih = (struct _idxHeader *)&trackData[512 * cur];
+      for (int i = 0; i < 13; i++) {
+        if (i == 0 && cur == subKey)
+          continue; // the subdirectory's own header, not a file entry
+        uint32_t coff = 512 * cur + i * 0x27 + 4;
+        struct _prodosFent *cfe = (struct _prodosFent *)&trackData[coff];
+        if ((cfe->typelen & 0xF0) == 0)
+          continue; // empty or deleted slot
+        uint8_t nl = cfe->typelen & 0x0F;
+        memcpy(childLeaf, cfe->name, nl);
+        childLeaf[nl] = '\0';
+        childIsDir = (((cfe->typelen & 0xF0) >> 4) == ft_subdir);
+        found = true;
+        break;
+      }
+      cur = ih->nextBlock[1] * 256 + ih->nextBlock[0];
+    }
+    if (!found)
+      break; // directory is now empty
+
+    // Address the child by a path relative to the same root the caller used.
+    char childPath[256];
+    snprintf(childPath, sizeof(childPath), "%s/%s", dirName, childLeaf);
+    bool ok = childIsDir ? removeDirectoryRecursive(childPath)
+                         : removeFile(childPath);
+    if (!ok)
+      return false;
+
+    // trackData was rewritten; re-resolve our own entry before the next pass.
+    if (!resolveDirAndLeaf(dirName, &dirKey, leaf, sizeof(leaf)) ||
+        !findEntryInDir(dirKey, leaf, &block, &off))
+      return false;
+    memcpy(&fe, &trackData[off], sizeof(fe));
+  }
+
+  return removeDirectory(dirName);
+}
+
 bool ProdosSpector::makeDirectory(const char *dirName)
 {
   if (!tree)
