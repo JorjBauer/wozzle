@@ -50,6 +50,12 @@ public:
   // operation is unsupported and changes nothing.
   virtual bool removeDirectory(const char *dirName);
 
+  // Recursively delete a subdirectory and everything beneath it (contents
+  // first, then the directory itself). Only filesystems with subdirectories
+  // (ProDOS) override this; the default reports that the operation is
+  // unsupported and changes nothing.
+  virtual bool removeDirectoryRecursive(const char *dirName);
+
   // Create a new (empty) subdirectory by name. Only filesystems with
   // subdirectories (ProDOS) override this; the default reports that the
   // operation is unsupported and changes nothing.

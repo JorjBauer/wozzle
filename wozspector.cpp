@@ -16,6 +16,12 @@ bool Wozspector::removeDirectory(const char *dirName)
   return false;
 }
 
+bool Wozspector::removeDirectoryRecursive(const char *dirName)
+{
+  printf("This filesystem has no subdirectories; rm -r is not supported.\n");
+  return false;
+}
+
 bool Wozspector::makeDirectory(const char *dirName)
 {
   printf("This filesystem has no subdirectories; mkdir is not supported.\n");
