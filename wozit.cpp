@@ -548,13 +548,18 @@ void stripHandler(char *cmd)
 
 void saveHandler(char *cmd)
 {
-  if (!cmd || !cmd[0]) {
-    printf("Usage: save <file name>\n");
+  // With no argument, overwrite the image we originally loaded (infoname);
+  // with an argument, save to that path instead.
+  const char *dest = (cmd && cmd[0]) ? cmd : infoname;
+  if (!dest[0]) {
+    printf("Usage: save [file name]\n");
     return;
   }
-  if (!inspector->writeFile(cmd)) {
+  if (!inspector->writeFile(dest)) {
     printf("Failed to write file\n");
+    return;
   }
+  printf("Saved to '%s'\n", dest);
 }
 
 void mkdirHandler(char *cmd)
@@ -666,7 +671,7 @@ struct _cmdInfo commands[] = {
   {"mkdir", mkdirHandler, "<dirname>        : create a directory (ProDOS only)" },
   {"rm",    rmHandler,    "[-r] <filename>  : delete a file (-r: a directory tree)" },
   {"rmdir", rmdirHandler, "<dirname>        : delete an empty directory (ProDOS only)" },
-  {"save",  saveHandler, "<filename>       : save modified disk image as <filename>" },
+  {"save",  saveHandler, "[filename]       : save disk image (default: overwrite the loaded image)" },
   {"strip", stripHandler, "<on|off>        : turn on or off high bit strip for 'cat'"},
   {"", 0, ""} };
 

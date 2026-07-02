@@ -542,6 +542,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     uint16_t firstBlock;
     if (!findFreeBlock(&firstBlock)) {
       printf("Failed to find a free block for the data\n");
+      reloadFreeBlockBitmap();
       return false;
     }
     uint8_t paddedData[512];
@@ -549,6 +550,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     memcpy(paddedData, fileContents, fileSize);
     if (!writeBlock(firstBlock, paddedData)) {
       printf("Failed to write data block\n");
+      reloadFreeBlockBitmap();
       return false;
     }
 
@@ -563,6 +565,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     uint16_t indexBlock;
     if (!findFreeBlock(&indexBlock)) {
       printf("Failed to find a free block for the index\n");
+      reloadFreeBlockBitmap();
       return false;
     }
     uint8_t indexBlockData[512];
@@ -579,6 +582,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
       uint16_t nextBlock;
       if (!findFreeBlock(&nextBlock)) {
         printf("Failed to find next free block for the data\n");
+        reloadFreeBlockBitmap();
         return false;
       }
 
@@ -591,12 +595,14 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
              bytesRemaining >= 512 ? 512 : bytesRemaining);
       if (!writeBlock(nextBlock, paddedData)) {
         printf("Failed to write next data block\n");
+        reloadFreeBlockBitmap();
         return false;
       }
     }
 
     if (!writeBlock(indexBlock, indexBlockData)) {
       printf("Failed to write index block\n");
+      reloadFreeBlockBitmap();
       return false;
     }
   } else {
@@ -610,6 +616,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   // Write the directory entry
   if (!addDirectoryEntryForFile(dirKey, &fent)) {
     printf("Error writing directory entry for file\n");
+    reloadFreeBlockBitmap();
     return false;
   }
   
@@ -631,11 +638,13 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
 
   // dirKey is the key (first) block of the directory we're adding to: block
   // 2 for the volume root, or a subdirectory's key block. The directory may
-  // span several blocks via the next-block links; we don't yet grow a full
-  // directory by allocating a new block.
+  // span several blocks via the next-block links; if none of them has a free
+  // slot we grow the directory by appending a new block (see below).
   uint16_t currentBlock = dirKey;
+  uint16_t lastBlock = dirKey; // tail of the chain, for growth
 
   while (currentBlock) {
+    lastBlock = currentBlock;
     uint8_t *block;
     block = &trackData[512 * currentBlock];
 
@@ -680,10 +689,91 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
     currentBlock = ih->nextBlock[1] * 256 + ih->nextBlock[0];
   }
 
-  printf("Error: no free directory entries, can't store file\n");
-  return false;
+  // Every existing block is full: extend the directory with a new block.
+  return growDirectoryForEntry(dirKey, lastBlock, e);
 }
-    
+
+bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
+                                          struct _prodosFent *e)
+{
+  // The volume directory has a fixed number of blocks in ProDOS and cannot
+  // grow; only subdirectories can. (dirKey 2 is always the volume root.)
+  if (dirKey == 2) {
+    printf("Error: the volume directory is full and cannot be extended\n");
+    return false;
+  }
+
+  uint16_t newBlock;
+  if (!findFreeBlock(&newBlock)) {
+    printf("Error: no free block to extend the directory\n");
+    return false;
+  }
+
+  // Initialize the new block: doubly-linked into the chain after lastBlock,
+  // and (unlike a key block) its very first slot is a normal entry, so we
+  // store the incoming entry there.
+  uint8_t *nb = &trackData[512 * newBlock];
+  memset(nb, 0, 512);
+  nb[0] = lastBlock & 0xFF;         // prevBlock
+  nb[1] = (lastBlock >> 8);
+  // nb[2..3] (nextBlock) stay zero: this is the new tail.
+  memcpy(&nb[4], e, sizeof(struct _prodosFent));
+
+  // Link the old tail forward to the new block.
+  uint8_t *lb = &trackData[512 * lastBlock];
+  lb[2] = newBlock & 0xFF;          // nextBlock
+  lb[3] = (newBlock >> 8);
+
+  // Bump the directory's active-entry count (header at +4 of its key block).
+  struct _subdirent *md = (struct _subdirent *)(&trackData[512 * dirKey + 4]);
+  uint16_t fc = md->fileCount[1] * 256 + md->fileCount[0];
+  fc++;
+  md->fileCount[0] = fc & 0xFF;
+  md->fileCount[1] = (fc >> 8);
+
+  // The directory just grew by one block. Reflect that in its own entry in
+  // the parent directory: bump blocksUsed and grow EOF by one block. The
+  // subdir header records exactly where that parent entry lives.
+  uint16_t parentBlock = md->subdirParent.pointer[1] * 256 +
+                         md->subdirParent.pointer[0];
+  uint8_t  parentEntry = md->subParent.entry; // 1-based within parentBlock
+  if (parentBlock && parentEntry) {
+    struct _prodosFent *pe = (struct _prodosFent *)
+      &trackData[512 * parentBlock + 4 + (parentEntry - 1) * 0x27];
+    uint16_t bu = pe->blocksUsed[1] * 256 + pe->blocksUsed[0];
+    bu++;
+    pe->blocksUsed[0] = bu & 0xFF;
+    pe->blocksUsed[1] = (bu >> 8);
+    uint32_t eof = pe->eofLength[0] | (pe->eofLength[1] << 8) |
+                   (pe->eofLength[2] << 16);
+    eof += 512;
+    pe->eofLength[0] = eof & 0xFF;
+    pe->eofLength[1] = (eof >> 8) & 0xFF;
+    pe->eofLength[2] = (eof >> 16) & 0xFF;
+    if (!writeBlock(parentBlock, &trackData[512 * parentBlock])) {
+      printf("Error: can't update parent directory entry\n");
+      return false;
+    }
+  }
+
+  // Persist every block we touched. (When lastBlock == dirKey the tail and
+  // the key block are one and the same; writing it twice is harmless.)
+  if (!writeBlock(newBlock,  &trackData[512 * newBlock]) ||
+      !writeBlock(lastBlock, &trackData[512 * lastBlock]) ||
+      !writeBlock(dirKey,    &trackData[512 * dirKey])) {
+    printf("Error: can't write extended directory blocks\n");
+    return false;
+  }
+  return true;
+}
+
+void ProdosSpector::reloadFreeBlockBitmap()
+{
+  if (freeBlockBitmap)
+    memcpy(freeBlockBitmap, &trackData[512 * volBitmapBlock],
+           freeBlockBitmapBytes);
+}
+
 void ProdosSpector::markBlockFree(uint16_t block)
 {
   // Never free the boot blocks, and don't run off the end of the bitmap.

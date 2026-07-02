@@ -46,6 +46,15 @@ protected:
   bool writeBlock(uint16_t blockNum, uint8_t data[512]);
   // Add an entry to the directory whose key (first) block is dirKey.
   bool addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent *e);
+  // Append a fresh block to a full subdirectory's chain (whose current tail
+  // is `lastBlock`) and store entry `e` in it. Updates the directory's file
+  // count and its own size (blocksUsed/EOF) in the parent. Refuses to grow
+  // the volume directory, which is fixed-size in ProDOS.
+  bool growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
+                             struct _prodosFent *e);
+  // Re-read the volume bitmap from trackData, discarding un-flushed in-RAM
+  // allocations. Used to roll back after a write fails partway through.
+  void reloadFreeBlockBitmap();
 
   // Mark a single block free in the in-RAM volume bitmap (no-op for the
   // boot blocks / out-of-range values). Call flushFreeBlockList() after.
