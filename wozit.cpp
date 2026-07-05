@@ -26,7 +26,7 @@
 //#include "vent.h"
 
 #ifndef MAXPATH
-#define MAXPATH 127
+#define MAXPATH 1023
 #endif
 
 uint8_t trackData[256*16];
@@ -212,9 +212,15 @@ void cpinHandler(char *cmd)
     printf("Usage: cpin <source> <dest> [type [aux]]\n");
     return;
   }
-  int nargs = sscanf(cmd, "%127s %255s %15s %15s", fn, destfn, typeStr, auxStr);
+  // Width must match MAXPATH: a narrower %s silently splits a long host
+  // path across the following tokens instead of failing.
+  int nargs = sscanf(cmd, "%1023s %255s %15s %15s", fn, destfn, typeStr, auxStr);
   if (nargs < 2) {
     printf("Usage: cpin <source> <dest> [type [aux]]   (type/aux are hex)\n");
+    return;
+  }
+  if (strlen(fn) >= MAXPATH && cmd[MAXPATH] && cmd[MAXPATH] != ' ') {
+    printf("ERROR: source path is longer than %d chars\n", MAXPATH);
     return;
   }
 

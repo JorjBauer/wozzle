@@ -334,7 +334,15 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
 
 bool ProdosSpector::flushFreeBlockList()
 {
-  return writeBlock(volBitmapBlock, freeBlockBitmap);
+  // The volume bitmap spans multiple blocks on anything larger than a
+  // floppy (16 blocks on a 32MB HDV); flush every one of them, not just
+  // the first, or allocations of blocks >= 4096 are forgotten as soon as
+  // the bitmap is re-read.
+  for (uint32_t i = 0; i < freeBlockBitmapBytes / 512; i++) {
+    if (!writeBlock(volBitmapBlock + i, &freeBlockBitmap[512 * i]))
+      return false;
+  }
+  return true;
 }
 
 // Since we preloaded the whole image, this just has to copy data
