@@ -288,6 +288,10 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 	Vent *sde = new Vent(md);
 	assert(ret == NULL); // shouldn't have been initialized yet?
 	ret = sde;
+	// Headers don't carry their key block on disk; record it so a
+	// subdirectory entry (whose keyPointer names this block) can be
+	// matched to this group of entries in the flat tree.
+	sde->keyPointerVal(fromBlock);
 
         // FIXME hard-coded start of directory block, to differentiate the
         // volume header from a subdirectory header
@@ -385,7 +389,7 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
       freeBlockBitmap[ptr] &= ~bits;
       // return the value
       *blockOut = (uint16_t)i;
-      printf("> use block %u (0x%X)\n", i, i); // debugging
+      if (verbose) printf("> use block %u (0x%X)\n", i, i);
       // return that we succeeded in finding a free block
       return true;
     }
@@ -692,6 +696,28 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
                                      uint16_t auxTypeData,
                                      uint32_t fileSize)
 {
+  // Thin wrapper: build a metadata template with the classic defaults
+  // (unlocked, no dates, ProDOS 1.0 version bytes) and hand off.
+  struct _prodosFent meta;
+  memset(&meta, 0, sizeof(meta));
+  meta.fileType = fileType;
+  meta.accessFlags = at_destroyed | at_renamed | at_written | at_read;
+  meta.typeData[0] = auxTypeData & 0xFF;
+  meta.typeData[1] = (auxTypeData >> 8);
+  return writeFileWithMeta(fileContents, fileName, fileSize, &meta);
+}
+
+// Like writeFileToImage, but the caller supplies a full directory-entry
+// template whose metadata (file type, aux type, access flags, dates, and
+// version bytes) is preserved verbatim - the copy machinery uses this to
+// clone a file between images without losing its attributes. Structural
+// fields of `meta` (name, typelen, pointers, sizes) are ignored and
+// recomputed for this volume.
+bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
+                                      const char *fileName,
+                                      uint32_t fileSize,
+                                      const struct _prodosFent *meta)
+{
   if (!tree)
     createTree();
 
@@ -727,21 +753,17 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   if (dataBlocks == 0) dataBlocks = 1;
   uint16_t blocksUsed = dataBlocks;
 
-  fent.fileType = fileType;
+  fent.fileType = meta->fileType;
   fent.eofLength[0] = fileSize & 0xFF;
   fent.eofLength[1] = (fileSize >> 8) & 0xFF;
   fent.eofLength[2] = (fileSize >> 16);
 
-  // FIXME: fent.creationDate could be set to today's date/time instead of 0
-  // FIXME: same with lastModified
-  // FIXME: creatorVersion is still 0, meaning proDOS 1.0?
-  // FIXME:   same with minRequiredVersion
-  
-  // FIXME: should these access flags be different?
-  fent.accessFlags = at_destroyed | at_renamed | at_written | at_read;
-
-  fent.typeData[0] = auxTypeData & 0xFF;
-  fent.typeData[1] = (auxTypeData >> 8);
+  fent.accessFlags = meta->accessFlags;
+  memcpy(fent.creationDate, meta->creationDate, sizeof(fent.creationDate));
+  memcpy(fent.lastModified, meta->lastModified, sizeof(fent.lastModified));
+  fent.creatorVersion = meta->creatorVersion;
+  fent.minRequiredVersion = meta->minRequiredVersion;
+  memcpy(fent.typeData, meta->typeData, sizeof(fent.typeData));
 
   // headerPointer is the key block of the directory that holds this entry.
   fent.headerPointer[0] = dirKey & 0xFF;
@@ -893,7 +915,7 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
     }
   }
 
-  printf("Blocks used to store this file: %d\n", blocksUsed);
+  if (verbose) printf("Blocks used to store this file: %d\n", blocksUsed);
   fent.blocksUsed[0] = blocksUsed & 0xFF;
   fent.blocksUsed[1] = (blocksUsed >> 8);
 
@@ -1176,7 +1198,7 @@ bool ProdosSpector::findEntryInDir(uint16_t dirKey, const char *name,
 }
 
 bool ProdosSpector::resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
-                                      char *leaf, size_t leafSz)
+                                      char *leaf, size_t leafSz, bool quiet)
 {
   char buf[256];
   strncpy(buf, path, sizeof(buf) - 1);
@@ -1195,12 +1217,12 @@ bool ProdosSpector::resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
       uint16_t b;
       uint32_t off;
       if (!findEntryInDir(dirKey, p, &b, &off)) {
-        printf("Directory '%s' not found\n", p);
+        if (!quiet) printf("Directory '%s' not found\n", p);
         return false;
       }
       struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
       if (fe->fileType != FT_DIR) {
-        printf("'%s' is not a directory\n", p);
+        if (!quiet) printf("'%s' is not a directory\n", p);
         return false;
       }
       dirKey = fe->keyPointer[1] * 256 + fe->keyPointer[0];
@@ -1225,7 +1247,9 @@ Vent *ProdosSpector::findEntry(const char *path)
 
   uint16_t dirKey;
   char leaf[16];
-  if (!resolveDirAndLeaf(path, &dirKey, leaf, sizeof(leaf)))
+  // Quiet resolution: findEntry is the existence probe, so a missing
+  // intermediate directory is an answer (NULL), not something to report.
+  if (!resolveDirAndLeaf(path, &dirKey, leaf, sizeof(leaf), true))
     return NULL;
 
   uint16_t block;

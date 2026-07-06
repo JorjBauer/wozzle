@@ -47,6 +47,19 @@ class DosSpector : public Wozspector {
 
   virtual bool removeFile(const char *fileName);
 
+  // Set or clear the catalog locked flag (bit 7 of the file type byte) on
+  // an existing file - for metadata-preserving copies.
+  bool setFileLocked(const char *fileName, bool locked);
+
+  // Write a file's raw on-disk byte stream (as produced by
+  // getFileAllocation): the contents already embed whatever address or
+  // length header the file type uses, so nothing is prepended, and the
+  // catalog entry takes `typeAndFlags` verbatim (type bits plus the locked
+  // flag) with a correct sector count. For image-to-image copies, where
+  // fidelity beats interpretation.
+  bool writeFileRaw(uint8_t *contents, const char *fileName,
+                    uint8_t typeAndFlags, uint32_t size);
+
   virtual void displayInfo();
   virtual void inspectFile(const char *fileName, Vent *fp);
   virtual bool probe();
@@ -76,6 +89,11 @@ protected:
 
 private:
   struct _vtoc vt;
+  // True once createTree has read the VTOC and built trackSectorUsedMap.
+  // Deliberately distinct from `tree`: an empty catalog leaves tree NULL,
+  // and the ensure-loaded guards must not re-read the VTOC in that state
+  // (it would discard unflushed in-RAM sector allocations).
+  bool vtLoaded;
 };
 
 #endif

@@ -21,6 +21,7 @@ const static uint8_t enphys[16] = {
 
 DosSpector::DosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
 {
+  vtLoaded = false;
 }
 
 DosSpector::~DosSpector()
@@ -102,6 +103,14 @@ Vent *DosSpector::createTree()
     }
   }
 
+  // VTOC and the in-RAM sector map are now valid. This flag - not the tree
+  // pointer - is what the "ensure loaded" guards must test: an EMPTY
+  // catalog legitimately produces a NULL tree, and re-running createTree
+  // on every guard would reload the sector map from the on-disk VTOC,
+  // forgetting in-RAM allocations that haven't been flushed yet (every
+  // findFreeSector would then hand out the same sector).
+  vtLoaded = true;
+
   // FIXME check vt.catalogTrack == 17? Or pass in the whole disk?
   uint8_t catalogTrack = vt.catalogTrack;
   uint8_t catalogSector = vt.catalogSector;
@@ -132,7 +141,7 @@ Vent *DosSpector::createTree()
 bool DosSpector::flushFreeSectorList()
 {
   // The tree has to be loaded before we start, so vt is loaded
-  if (!tree)
+  if (!vtLoaded)
     createTree();
   
   // Update the bitmap. Each track's free map is two bytes: sectorsUsed[0]
@@ -171,7 +180,7 @@ bool DosSpector::flushFreeSectorList()
 bool DosSpector::findFreeSector(int *trackOut, int *sectorOut)
 {
   // The tree has to be loaded before we start, so trackSectorUsedMap is correct
-  if (!tree)
+  if (!vtLoaded)
     createTree();
   
   for (int trk=1; trk<35; trk++) {
@@ -201,7 +210,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   }
 
   // The tree has to be loaded before we start
-  if (!tree)
+  if (!vtLoaded)
     createTree();
 
   /*
@@ -348,7 +357,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
 uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 {
   // The tree has to be loaded before we start
-  if (!tree)
+  if (!vtLoaded)
     createTree();
   
   // Find the T/S list so we can find the first block of the file, so we can find its length
@@ -509,7 +518,7 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
 {
   // The tree has to be loaded before we start
-  if (!tree)
+  if (!vtLoaded)
     createTree();
   
   // Find the first directory entry that's empty
@@ -585,9 +594,145 @@ bool DosSpector::freeDosFileSectors(uint8_t tsTrack, uint8_t tsSector)
   return true;
 }
 
+bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
+                              uint8_t typeAndFlags, uint32_t size)
+{
+  if (!vtLoaded)
+    createTree();
+
+  uint32_t dataSectors = (size + 255) / 256;
+  if (dataSectors > 122) {
+    printf("ERROR: don't know how to handle files > 31232 bytes (b/c we "
+           "need multiple TSlist blocks)\n");
+    return false;
+  }
+  if (strlen(fileName) > 30) {
+    printf("ERROR: DOS 3.3 file names may not exceed 30 characters\n");
+    return false;
+  }
+
+  // Allocate and write the data sectors, recording them in the T/S list.
+  struct _dosTsList tsList;
+  memset(&tsList, 0, sizeof(tsList));
+  uint32_t remaining = size;
+  for (uint32_t b = 0; b < dataSectors; b++) {
+    int t, s;
+    if (!findFreeSector(&t, &s)) {
+      printf("ERROR: unable to find enough free sectors\n");
+      return false;
+    }
+    tsList.tsPair[b].track = t;
+    tsList.tsPair[b].sector = s;
+
+    uint8_t sectorData[256];
+    memset(sectorData, 0, sizeof(sectorData));
+    memcpy(sectorData, &contents[b * 256],
+           remaining >= 256 ? 256 : remaining);
+    if (!encodeWozTrackSector(t, enphys[s], sectorData)) {
+      printf("ERROR: failed to encodeWozTrackSector\n");
+      return false;
+    }
+    remaining -= (remaining >= 256) ? 256 : remaining;
+  }
+
+  // The T/S list sector itself.
+  int t, s;
+  if (!findFreeSector(&t, &s)) {
+    printf("ERROR: can't find a free sector for the TS list\n");
+    return false;
+  }
+  if (!encodeWozTrackSector(t, enphys[s], (uint8_t *)&tsList)) {
+    printf("ERROR: failed to encodeWozTrackSector for TSList\n");
+    return false;
+  }
+
+  struct _dosFdEntry newEntry;
+  memset(&newEntry, 0, sizeof(newEntry));
+  newEntry.firstTrack = t;
+  newEntry.firstSector = s;
+  newEntry.fileTypeAndFlags = typeAndFlags;
+
+  char buf[31];
+  snprintf(buf, sizeof(buf), "%-30s", fileName);
+  memcpy(newEntry.fileName, buf, 30); // no terminator copied
+  // The catalog length field is a sector count, including the T/S list.
+  uint16_t sectorCount = dataSectors + 1;
+  newEntry.fileLength[0] = sectorCount & 0xFF;
+  newEntry.fileLength[1] = (sectorCount >> 8) & 0xFF;
+
+  if (!flushFreeSectorList()) {
+    printf("ERROR: failed to flush free sector list\n");
+    return false;
+  }
+  if (!addDirectoryEntryForFile(&newEntry)) {
+    printf("ERROR: failed to add directory entry\n");
+    return false;
+  }
+
+  createTree();
+  return true;
+}
+
+bool DosSpector::setFileLocked(const char *fileName, bool locked)
+{
+  if (!vtLoaded)
+    createTree();
+
+  uint8_t catalogTrack = vt.catalogTrack;
+  uint8_t catalogSector = vt.catalogSector;
+  uint8_t sectorData[256];
+
+  while (catalogTrack) {
+    if (!decodeWozTrackSector(catalogTrack, enphys[catalogSector], sectorData)) {
+      printf("ERROR: failed to read catalog %d/%d\n", catalogTrack, catalogSector);
+      return false;
+    }
+    struct _catalogInfo *ci = (struct _catalogInfo *)sectorData;
+
+    for (int i = 0; i < 7; i++) {
+      struct _dosFdEntry *fe = &ci->fileEntries[i];
+      uint8_t c0 = (uint8_t)fe->fileName[0];
+      if (c0 == 0x00 || c0 == 0xFF)
+        continue; // empty or deleted slot
+
+      // Match names the same way the lister and rm do.
+      char clean[31];
+      int n = 0;
+      for (int j = 0; j < 30; j++) {
+        char ch = fe->fileName[j] & 0x7F;
+        if (ch == ' ') break;
+        clean[n++] = ch;
+      }
+      clean[n] = '\0';
+      if (strcmp(clean, fileName) != 0)
+        continue;
+
+      if (locked)
+        fe->fileTypeAndFlags |= 0x80;
+      else
+        fe->fileTypeAndFlags &= 0x7F;
+
+      if (!encodeWozTrackSector(catalogTrack, enphys[catalogSector], sectorData)) {
+        printf("ERROR: failed to write catalog sector %d/%d\n",
+               catalogTrack, catalogSector);
+        return false;
+      }
+
+      createTree(); // re-read so subsequent commands see the change
+      return true;
+    }
+
+    catalogTrack = ci->nextCatalogTrack;
+    catalogSector = ci->nextCatalogSector;
+  }
+
+  printf("ERROR: '%s' not found; can't set its locked flag\n", fileName);
+  return false;
+}
+
 bool DosSpector::removeFile(const char *fileName)
 {
-  if (!tree)
+  if (!vtLoaded)
     createTree();
 
   uint8_t catalogTrack = vt.catalogTrack;
@@ -690,7 +835,7 @@ uint32_t DosSpector::getAllocatedByteCount(Vent *e)
   // count (blocksUsed) over-counts by one per T/S list sector and isn't
   // used here for that reason.
 
-  if (!tree) createTree();
+  if (!vtLoaded) createTree();
 
   uint8_t curT = e->getFirstTrack();
   uint8_t curS = e->getFirstSector();
@@ -724,7 +869,7 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
   // the in-file length header is ignored, so this is the right way to
   // recover files whose catalog "length" is a stub hiding a larger payload.
 
-  if (!tree) createTree();
+  if (!vtLoaded) createTree();
 
   *toWhere = NULL;
 
@@ -935,7 +1080,7 @@ void DosSpector::inspectFile(const char *fileName, Vent *fp)
 
 void DosSpector::displayInfo()
 {
-  if (!tree)
+  if (!vtLoaded)
     createTree();
 
   // DEBUGGING: reload tsusedmap from the vt catalog

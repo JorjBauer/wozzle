@@ -362,6 +362,11 @@ uint16_t Vent::keyPointerVal()
   return keyPointer;
 }
 
+void Vent::keyPointerVal(uint16_t kp)
+{
+  keyPointer = kp;
+}
+
 const char *Vent::getName()
 {
   return name;

@@ -133,6 +133,15 @@ class Vent {
   // the first node of each directory (volume or subdirectory).
   bool isHeader();
   uint16_t keyPointerVal();
+  // Setter: directory headers don't carry their own key block on disk, so
+  // the tree builder records it here - it's how a subdirectory entry is
+  // matched to its group of child entries in the flat tree.
+  void keyPointerVal(uint16_t kp);
+
+  // Raw on-disk entries, for metadata-preserving copies. Only meaningful
+  // for a file entry of the matching filesystem (not directory headers).
+  const struct _prodosFent *getProdosFent() const { return &prodosData; }
+  const struct _dosFdEntry *getDosFent() const { return &dosData; }
 
   const char *getName();
 

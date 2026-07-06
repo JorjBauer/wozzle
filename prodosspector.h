@@ -39,6 +39,11 @@ class ProdosSpector : public Wozspector {
   // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
   bool readBootBlocks(uint8_t block0[512], uint8_t block1[512]);
   virtual bool renameVolume(const char *newName);
+  // Write a file preserving the metadata (type, aux, access, dates,
+  // versions) of an existing directory entry - for image-to-image copies.
+  bool writeFileWithMeta(uint8_t *fileContents, const char *fileName,
+                         uint32_t fileSize,
+                         const struct _prodosFent *meta);
 protected:
   virtual Vent *createTree();
 
@@ -78,8 +83,9 @@ protected:
   // Resolve a (possibly slash-separated) path into the key block of the
   // directory that should contain its final component, plus that leaf name.
   // A leading '/' is optional and ignored (paths are volume-root relative).
+  // With quiet, a failed resolution reports nothing (for existence probes).
   bool resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
-                         char *leaf, size_t leafSz);
+                         char *leaf, size_t leafSz, bool quiet = false);
   // Tombstone the entry at trackData[offset] (within directory block
   // `block`) and decrement the active file count in the header of the
   // directory whose key block is dirKey.
