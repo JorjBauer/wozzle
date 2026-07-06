@@ -18,6 +18,7 @@
 #include <readline/history.h>
 
 #include "applesingle.h"
+#include "bootblock.h"
 
 #include "woz.h"
 #include "crc32.h"
@@ -519,15 +520,73 @@ static bool hasExtension(const char *fname, const char *ext)
   return dot && !strcasecmp(dot, ext);
 }
 
+// Fill b0/b1 with boot code: from a donor image if one is named, else the
+// embedded standard ProDOS boot block (identical from ProDOS 1.1 through
+// 2.4, and the same on floppies and hard drives) with a zero block 1.
+static bool loadBootBlocks(const char *donor, uint8_t b0[512], uint8_t b1[512])
+{
+  if (!donor || !donor[0]) {
+    memcpy(b0, prodosBootBlock, 512);
+    memset(b1, 0, 512);
+    return true;
+  }
+
+  ProdosSpector d(false, 0);
+  if (!d.readFile((char *)donor, true)) {
+    printf("ERROR: can't read boot donor image '%s'\n", donor);
+    return false;
+  }
+  if (!d.probe()) {
+    // A DOS 3.3 boot sector also starts with $01, so without this check a
+    // DOS donor would pass the magic-byte test below and produce an
+    // unbootable mongrel.
+    printf("ERROR: '%s' doesn't look like a ProDOS volume; refusing to "
+           "take boot code from it\n", donor);
+    return false;
+  }
+  if (!d.readBootBlocks(b0, b1)) {
+    printf("ERROR: can't read boot blocks from '%s' (not a ProDOS image?)\n",
+           donor);
+    return false;
+  }
+  if (b0[0] != 0x01) {
+    // Every Apple II boot sector/block starts with $01. Refuse rather than
+    // install something that certainly won't boot.
+    printf("ERROR: '%s' block 0 doesn't look like boot code "
+           "(first byte 0x%02X, not 0x01)\n", donor, b0[0]);
+    return false;
+  }
+  return true;
+}
+
+void bootblocksHandler(char *cmd)
+{
+  uint8_t b0[512], b1[512];
+  if (!loadBootBlocks(cmd, b0, b1))
+    return;
+
+  if (!inspector->writeBootBlocks(b0, b1)) {
+    printf("ERROR: failed to write boot blocks\n");
+    return;
+  }
+  printf("Boot blocks installed%s%s; use 'save' to make it permanent.\n",
+         (cmd && cmd[0]) ? " from " : " (embedded ProDOS boot code)",
+         (cmd && cmd[0]) ? cmd : "");
+  printf("Note: booting also needs PRODOS and a .SYSTEM file (e.g. "
+         "BASIC.SYSTEM) in the volume root.\n");
+}
+
 void formatHandler(char *cmd)
 {
   if (!cmd || !cmd[0]) {
-    printf("Usage: format <filename> [<volume>] [<size>]\n");
+    printf("Usage: format <filename> [<volume>] [<size>] [bootable]\n");
     printf("  DOS mode:    <volume> is 1-254 (default 254); always 140k.\n");
     printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK);\n");
     printf("    <size> is 140k, 800k, 5m, 10m, 32m, or a block count\n");
     printf("    5-65535 (default 140k). Sizes other than 140k must be\n");
-    printf("    named .hdv or .img.\n");
+    printf("    named .hdv or .img. 'bootable' (a reserved word, not\n");
+    printf("    usable as a volume name here) installs the standard ProDOS\n");
+    printf("    boot block; booting also needs PRODOS and a .SYSTEM file.\n");
     printf("  A 140k image writes .dsk (DOS) / .po (ProDOS) data; use\n");
     printf("  wozzle to convert to .woz if needed.\n");
     return;
@@ -546,8 +605,16 @@ void formatHandler(char *cmd)
   // argument is the volume number - and images are always 140k.
   const char *volName = NULL;
   int32_t sizeBlocks = -1;
+  bool bootable = false;
   for (int i = 1; i < ntok; i++) {
-    if (!dosMode && isdigit((unsigned char)tok[i][0])) {
+    if (!strcasecmp(tok[i], "bootable")) {
+      if (dosMode) {
+        printf("ERROR: 'bootable' is ProDOS-only (DOS 3.3 boots from the "
+               "DOS image on tracks 0-2, which format doesn't install)\n");
+        return;
+      }
+      bootable = true;
+    } else if (!dosMode && isdigit((unsigned char)tok[i][0])) {
       if (sizeBlocks != -1) {
         printf("ERROR: more than one size given\n");
         return;
@@ -623,8 +690,14 @@ void formatHandler(char *cmd)
     if (ok) printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, v);
   } else {
     ok = buildBlankProdosPo(vol, img, (uint32_t)sizeBlocks);
-    if (ok) printf("Created blank ProDOS image '%s' (volume '%s', %d blocks)\n",
-                   fname, vol, sizeBlocks);
+    if (ok && bootable) {
+      // Standard ProDOS boot code in block 0; block 1 stays zero. The
+      // volume boots once PRODOS and a .SYSTEM file are copied in.
+      memcpy(img, prodosBootBlock, 512);
+    }
+    if (ok) printf("Created blank ProDOS image '%s' (volume '%s', %d "
+                   "blocks%s)\n", fname, vol, sizeBlocks,
+                   bootable ? ", bootable" : "");
   }
 
   if (ok) {
@@ -763,6 +836,7 @@ void inspectHandler(char *cmd)
 void helpHandler(char *cmd); // forward decl for commands[]
 
 struct _cmdInfo commands[] = {
+  {"bootblocks", bootblocksHandler, "[<donor>]  : install ProDOS boot code (embedded, or copied from a donor image)" },
   {"cat",   catHandler,   "<filename>        : Dump file contents" },
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
   {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },

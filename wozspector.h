@@ -50,6 +50,11 @@ public:
   // operation is unsupported and changes nothing.
   virtual bool removeDirectory(const char *dirName);
 
+  // Install boot code into the volume's boot blocks (ProDOS: blocks 0-1).
+  // The default reports that the operation is unsupported.
+  virtual bool writeBootBlocks(const uint8_t block0[512],
+                               const uint8_t block1[512]);
+
   // Recursively delete a subdirectory and everything beneath it (contents
   // first, then the directory itself). Only filesystems with subdirectories
   // (ProDOS) override this; the default reports that the operation is

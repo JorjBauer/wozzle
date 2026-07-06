@@ -28,6 +28,13 @@ bool Wozspector::makeDirectory(const char *dirName)
   return false;
 }
 
+bool Wozspector::writeBootBlocks(const uint8_t block0[512],
+                                 const uint8_t block1[512])
+{
+  printf("bootblocks is only supported for ProDOS volumes.\n");
+  return false;
+}
+
 // Flat-namespace lookup: match the first tree entry whose leaf name equals
 // `path`. ProDOS overrides this to resolve subdirectory paths.
 Vent *Wozspector::findEntry(const char *path)

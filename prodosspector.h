@@ -34,6 +34,10 @@ class ProdosSpector : public Wozspector {
 
   virtual void inspectFile(const char *fileName, Vent *fp);
   virtual bool probe();
+  virtual bool writeBootBlocks(const uint8_t block0[512],
+                               const uint8_t block1[512]);
+  // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
+  bool readBootBlocks(uint8_t block0[512], uint8_t block1[512]);
 protected:
   virtual Vent *createTree();
 
@@ -44,6 +48,10 @@ protected:
   bool flushFreeBlockList();
   bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
   bool writeBlock(uint16_t blockNum, uint8_t data[512]);
+  // True iff block b lies wholly inside the loaded image buffer. Corrupt
+  // directory chains and index blocks can point anywhere; every walker
+  // must check before indexing trackData by block number.
+  bool validBlock(uint16_t b);
   // Add an entry to the directory whose key (first) block is dirKey.
   bool addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent *e);
   // Append a fresh block to a full subdirectory's chain (whose current tail

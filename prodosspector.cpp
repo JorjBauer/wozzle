@@ -9,6 +9,7 @@
 #include "vent.h"
 
 #include <stack>
+#include <set>
 using namespace std;
 
 struct _idxHeader {
@@ -206,9 +207,63 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
   uint16_t currentBlock = fromBlock;
   uint32_t activeEntriesFound = 0;  // full-scan count, to cross-check header
 
+  // A corrupt chain can point outside the volume (a stale link overwritten
+  // by file data) or back into itself. Truncate the walk with a warning in
+  // either case - the entries already collected are still real.
+  set<uint16_t> visited;
+
   while (currentBlock) {
+    if (!validBlock(currentBlock)) {
+      fprintf(stderr,
+              "WARNING: directory chain starting at block %u points at "
+              "block %u, outside the volume; the directory is corrupt and "
+              "its listing is truncated here.\n", fromBlock, currentBlock);
+      break;
+    }
+    if (visited.count(currentBlock)) {
+      fprintf(stderr,
+              "WARNING: directory chain starting at block %u loops back to "
+              "block %u; the directory is corrupt and its listing is "
+              "truncated here.\n", fromBlock, currentBlock);
+      break;
+    }
+    visited.insert(currentBlock);
+
     uint8_t *block;
     block = &trackData[512 * currentBlock];
+
+    // A chain link can also point at a block that's *inside* the volume
+    // but no longer a directory - e.g. reallocated to a file's data after
+    // bitmap corruption. Parsing it would fabricate garbage entries, so
+    // vet every active entry slot first: legal storage type, legal name.
+    // (Storage types 4/5 are Pascal areas and GS/OS extended files.)
+    bool plausible = true;
+    for (int i = 0; i < 13 && plausible; i++) {
+      const uint8_t *e = block + 4 + i*0x27;
+      if (!e[0]) continue; // empty/deleted slot
+      uint8_t st = e[0] >> 4, nl = e[0] & 0xF;
+      if ((st < 1 || st > 5) && st != 0x0D && st != 0x0E && st != 0x0F) {
+        plausible = false;
+        break;
+      }
+      if (nl < 1 || nl > 15) { plausible = false; break; }
+      for (int c = 0; c < nl; c++) {
+        char ch = e[1 + c];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+              ch == '.')) {
+          plausible = false;
+          break;
+        }
+      }
+    }
+    if (!plausible) {
+      fprintf(stderr,
+              "WARNING: directory chain starting at block %u reaches block "
+              "%u, which no longer holds directory entries (overwritten?); "
+              "the directory is corrupt and its listing is truncated "
+              "here.\n", fromBlock, currentBlock);
+      break;
+    }
 
     struct _idxHeader *ih = (struct _idxHeader *)block;
 
@@ -255,12 +310,23 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
             fprintf(stderr, "ERROR: out of memory for volume bitmap\n");
             return NULL;
           }
-          // FIXME check volBitmapBlock + bitmapBlocks < numBlocksTotal
-          // - readBlock would bounce off the un-prepped tree, so pull
-          // the bytes from our own trackData directly here.
-          memcpy(freeBlockBitmap,
-                 &trackData[512 * volBitmapBlock],
-                 freeBlockBitmapBytes);
+          // The bitmap pointer comes from disk, so it can be corrupt.
+          // Leave the in-RAM bitmap all-zero (every block "used") if the
+          // on-disk bitmap isn't where the header claims: reads still
+          // work, and nothing will allocate on top of live data.
+          // (readBlock would bounce off the un-prepped tree, so pull the
+          // bytes from our own trackData directly here.)
+          if ((uint32_t)volBitmapBlock * 512 + freeBlockBitmapBytes
+              <= trackDataBytes) {
+            memcpy(freeBlockBitmap,
+                   &trackData[512 * volBitmapBlock],
+                   freeBlockBitmapBytes);
+          } else {
+            fprintf(stderr,
+                    "WARNING: volume bitmap (block %u) lies outside the "
+                    "volume; treating every block as used.\n",
+                    volBitmapBlock);
+          }
         }
       } else {
 	struct _prodosFent *fe = (struct _prodosFent *)&trackData[512 * currentBlock + i*0x27 + 4];
@@ -346,10 +412,44 @@ bool ProdosSpector::flushFreeBlockList()
 }
 
 // Since we preloaded the whole image, this just has to copy data
+bool ProdosSpector::validBlock(uint16_t b)
+{
+  return (uint32_t)b * 512 + 512 <= trackDataBytes;
+}
+
+bool ProdosSpector::writeBootBlocks(const uint8_t block0[512],
+                                    const uint8_t block1[512])
+{
+  if (!tree)
+    createTree();
+  if (!tree)
+    return false;
+
+  // No const_cast games: writeBlock only reads its input.
+  uint8_t buf[512];
+  memcpy(buf, block0, 512);
+  if (!writeBlock(0, buf))
+    return false;
+  memcpy(buf, block1, 512);
+  return writeBlock(1, buf);
+}
+
+bool ProdosSpector::readBootBlocks(uint8_t block0[512], uint8_t block1[512])
+{
+  if (!tree)
+    createTree();
+  if (!tree)
+    return false;
+
+  return readBlock(0, block0) && readBlock(1, block1);
+}
+
 bool ProdosSpector::readBlock(uint16_t blockNum, uint8_t dataOut[512])
 {
   // Caller must have prepped with createTree() call first, or we fail
   if (!tree)
+    return false;
+  if (!validBlock(blockNum))
     return false;
 
   memcpy(dataOut, &trackData[512*blockNum], 512);
@@ -405,7 +505,12 @@ Vent *ProdosSpector::createTree()
   }
 
   stack <int> s;
+  set <int> queued; // key blocks already visited/queued: a corrupt image
+                    // can make two directory entries point at the same
+                    // subdirectory (or form a cycle), which would loop or
+                    // duplicate entries here.
   s.push(2); // directory starts on block 2
+  queued.insert(2);
 
   while (!s.empty()) {
     int nextBlock = s.top(); s.pop();
@@ -413,7 +518,15 @@ Vent *ProdosSpector::createTree()
     Vent *p = nextDir;
     while (p) {
       if (p->isDirectory()) {
-	s.push(p->keyPointerVal());
+        uint16_t kp = p->keyPointerVal();
+        if (!validBlock(kp)) {
+          fprintf(stderr,
+                  "WARNING: directory '%s' points at key block %u, outside "
+                  "the volume; skipping its contents.\n", p->getName(), kp);
+        } else if (!queued.count(kp)) {
+          s.push(kp);
+          queued.insert(kp);
+        }
       }
       p = p->nextEnt();
     }
@@ -442,10 +555,21 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
       return 0;
   }
   
+  // On a corrupt volume the key block or any pointer inside an index can
+  // aim outside the image. Read what's real, substitute zeros for the
+  // rest, and say how much was substituted - the caller still gets a
+  // buffer of the file's full length.
+  uint32_t badPointers = 0;
+
   switch (indexType) {
   case 1:
     // Seedling file: we point right to the data
     *toWhere = (char *)malloc(l); // FIXME check for error
+    if (!validBlock(kp)) {
+      memset(*toWhere, 0, l);
+      badPointers++;
+      break;
+    }
     memcpy(*toWhere, &trackData[512 * kp], l);
     return l;
   case 2:
@@ -455,23 +579,29 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
       uint32_t sizeRemaining = l;
       uint32_t bytesCopied = 0;
       *toWhere = (char *)malloc(l); // FIXME check for error
+      if (!validBlock(kp)) {
+        memset(*toWhere, 0, l);
+        badPointers++;
+        break;
+      }
       uint8_t idx = 0;
       while (sizeRemaining) {
         uint32_t nextBlockOfData = trackData[512*kp + 256 + idx] * 256 + trackData[512*kp + idx];
-        if (sizeRemaining >= 512) {
-          memcpy((*toWhere) + bytesCopied, &trackData[512*nextBlockOfData], 512);
-          sizeRemaining -= 512;
-          bytesCopied += 512;
+        uint32_t chunk = (sizeRemaining >= 512) ? 512 : sizeRemaining;
+        if (nextBlockOfData && validBlock(nextBlockOfData)) {
+          memcpy((*toWhere) + bytesCopied, &trackData[512*nextBlockOfData], chunk);
         } else {
-          memcpy((*toWhere) + bytesCopied, &trackData[512*nextBlockOfData], sizeRemaining);
-          bytesCopied += sizeRemaining;
-          sizeRemaining = 0;
+          // zero pointer = sparse hole; out-of-range = corruption
+          memset((*toWhere) + bytesCopied, 0, chunk);
+          if (nextBlockOfData) badPointers++;
         }
+        bytesCopied += chunk;
+        sizeRemaining -= chunk;
         idx++;
       }
     }
-    return l;
-                 
+    break;
+
   case 3:
     // Tree file: the key block is a master index of up to 128 index
     // blocks, each of which points at up to 256 data blocks. A zero
@@ -480,11 +610,24 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
       uint32_t sizeRemaining = l;
       uint32_t bytesCopied = 0;
       *toWhere = (char *)malloc(l); // FIXME check for error
+      if (!validBlock(kp)) {
+        memset(*toWhere, 0, l);
+        badPointers++;
+        break;
+      }
       for (int mi = 0; mi < 128 && sizeRemaining; mi++) {
         uint32_t indexBlock = trackData[512*kp + 256 + mi] * 256 + trackData[512*kp + mi];
+        if (indexBlock && !validBlock(indexBlock)) {
+          badPointers++;
+          indexBlock = 0; // treat the whole 128k span as unreadable
+        }
         for (int i = 0; i < 256 && sizeRemaining; i++) {
           uint32_t dataBlock = indexBlock ?
             (uint32_t)trackData[512*indexBlock + 256 + i] * 256 + trackData[512*indexBlock + i] : 0;
+          if (dataBlock && !validBlock(dataBlock)) {
+            badPointers++;
+            dataBlock = 0;
+          }
           uint32_t chunk = (sizeRemaining >= 512) ? 512 : sizeRemaining;
           if (dataBlock) {
             memcpy((*toWhere) + bytesCopied, &trackData[512*dataBlock], chunk);
@@ -496,18 +639,21 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
         }
       }
     }
-    return l;
+    break;
   default:
     // deleted or reserved or something; skip it
     printf("Unimplemented file type '%d'\n", indexType);
     *toWhere = NULL;
     return 0;
   }
-  
-  
-  printf("Unimplemented\n");
-  *toWhere = NULL;
-  return 0;
+
+  if (badPointers) {
+    fprintf(stderr,
+            "WARNING: '%s' has %u block pointer%s outside the volume; "
+            "those parts read as zeros.\n",
+            e->getName(), badPointers, badPointers == 1 ? "" : "s");
+  }
+  return l;
 }
 
 bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
@@ -748,10 +894,25 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
   // 2 for the volume root, or a subdirectory's key block. The directory may
   // span several blocks via the next-block links; if none of them has a free
   // slot we grow the directory by appending a new block (see below).
+  if (!validBlock(dirKey)) {
+    printf("ERROR: directory key block %u is outside the volume\n", dirKey);
+    return false;
+  }
   uint16_t currentBlock = dirKey;
   uint16_t lastBlock = dirKey; // tail of the chain, for growth
 
+  // Writing through a corrupt chain would scribble on whatever the bogus
+  // link points at, so refuse outright rather than truncate-and-continue.
+  set<uint16_t> visited;
+
   while (currentBlock) {
+    if (!validBlock(currentBlock) || visited.count(currentBlock)) {
+      printf("ERROR: directory chain is corrupt at block %u; refusing to "
+             "add an entry to it\n", currentBlock);
+      return false;
+    }
+    visited.insert(currentBlock);
+
     lastBlock = currentBlock;
     uint8_t *block;
     block = &trackData[512 * currentBlock];
@@ -877,7 +1038,8 @@ bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
 
 void ProdosSpector::reloadFreeBlockBitmap()
 {
-  if (freeBlockBitmap)
+  if (freeBlockBitmap &&
+      (uint32_t)volBitmapBlock * 512 + freeBlockBitmapBytes <= trackDataBytes)
     memcpy(freeBlockBitmap, &trackData[512 * volBitmapBlock],
            freeBlockBitmapBytes);
 }
@@ -906,6 +1068,14 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
     // The key block is an index block; free every data block it points to
     // (low bytes in the first half, high bytes in the second) and then the
     // index block itself. Zero pointers are sparse holes - nothing to free.
+    // An out-of-range index block means the file is corrupt: there's
+    // nothing real to free through it. (markBlockFree itself rejects
+    // out-of-range data pointers.)
+    if (!validBlock(kp)) {
+      printf("WARNING: index block %u is outside the volume; freeing only "
+             "the directory entry\n", kp);
+      return true;
+    }
     for (int i = 0; i < 256; i++) {
       uint16_t b = trackData[512 * kp + 256 + i] * 256 + trackData[512 * kp + i];
       if (b) markBlockFree(b);
@@ -915,10 +1085,16 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
   case ft_tree:
     // The key block is a master index of index blocks. Free each index
     // block's data blocks, then the index block, then the master. Zero
-    // pointers at either level are sparse holes - nothing to free.
+    // pointers at either level are sparse holes - nothing to free, and
+    // out-of-range pointers are corruption - nothing real behind them.
+    if (!validBlock(kp)) {
+      printf("WARNING: master index block %u is outside the volume; freeing "
+             "only the directory entry\n", kp);
+      return true;
+    }
     for (int mi = 0; mi < 128; mi++) {
       uint16_t ib = trackData[512 * kp + 256 + mi] * 256 + trackData[512 * kp + mi];
-      if (!ib) continue;
+      if (!ib || !validBlock(ib)) continue;
       for (int i = 0; i < 256; i++) {
         uint16_t b = trackData[512 * ib + 256 + i] * 256 + trackData[512 * ib + i];
         if (b) markBlockFree(b);
@@ -939,8 +1115,13 @@ bool ProdosSpector::findEntryInDir(uint16_t dirKey, const char *name,
 {
   size_t want = strlen(name);
   uint16_t currentBlock = dirKey;
+  set<uint16_t> visited; // corrupt chains can loop or leave the volume
 
   while (currentBlock) {
+    if (!validBlock(currentBlock) || visited.count(currentBlock))
+      return false; // ran off the end of a corrupt chain: entry not found
+    visited.insert(currentBlock);
+
     uint8_t *block = &trackData[512 * currentBlock];
     struct _idxHeader *ih = (struct _idxHeader *)block;
 
@@ -1153,6 +1334,11 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   }
 
   uint16_t keyBlock = fe.keyPointer[1] * 256 + fe.keyPointer[0];
+  if (!validBlock(keyBlock)) {
+    printf("ERROR: '%s' points at key block %u, outside the volume; "
+           "refusing\n", dirName, keyBlock);
+    return false;
+  }
 
   // The subdirectory's own header must be a real directory header, and it
   // must be empty - refuse otherwise (like Unix rmdir).
@@ -1173,7 +1359,7 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   // but follow the next-block links just in case it grew and emptied).
   uint16_t cur = keyBlock;
   int safety = 4096; // guard against a corrupt circular chain
-  while (cur && safety-- > 0) {
+  while (cur && validBlock(cur) && safety-- > 0) {
     struct _idxHeader *ih = (struct _idxHeader *)&trackData[512 * cur];
     uint16_t next = ih->nextBlock[1] * 256 + ih->nextBlock[0];
     markBlockFree(cur);
@@ -1226,7 +1412,7 @@ bool ProdosSpector::removeDirectoryRecursive(const char *dirName)
     bool found = false;
     uint16_t cur = subKey;
     int safety = 4096; // guard against a corrupt circular chain
-    while (cur && !found && safety-- > 0) {
+    while (cur && !found && validBlock(cur) && safety-- > 0) {
       struct _idxHeader *ih = (struct _idxHeader *)&trackData[512 * cur];
       for (int i = 0; i < 13; i++) {
         if (i == 0 && cur == subKey)
