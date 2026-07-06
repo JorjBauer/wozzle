@@ -520,6 +520,47 @@ static bool hasExtension(const char *fname, const char *ext)
   return dot && !strcasecmp(dot, ext);
 }
 
+// Validate and uppercase a ProDOS volume name: 1-15 chars, letter first,
+// then letters/digits/periods. Prints the reason on failure.
+static bool normalizeVolumeName(const char *src, char out[16])
+{
+  size_t nl = strlen(src);
+  if (nl < 1 || nl > 15) {
+    printf("ERROR: volume name must be 1-15 characters\n");
+    return false;
+  }
+  memset(out, 0, 16);
+  for (size_t i = 0; i < nl; i++) {
+    char c = (char)toupper((unsigned char)src[i]);
+    bool okc = (i == 0) ? isalpha((unsigned char)c)
+                        : (isalnum((unsigned char)c) || c == '.');
+    if (!okc) {
+      printf("ERROR: bad volume name '%s' (letter first, then letters, "
+             "digits, or periods)\n", src);
+      return false;
+    }
+    out[i] = c;
+  }
+  return true;
+}
+
+void volnameHandler(char *cmd)
+{
+  if (!cmd || !cmd[0]) {
+    printf("Usage: volname <newname>   (1-15 chars: letter first, then "
+           "letters, digits, or periods)\n");
+    return;
+  }
+  char vol[16];
+  if (!normalizeVolumeName(cmd, vol))
+    return;
+  if (!inspector->renameVolume(vol)) {
+    printf("ERROR: failed to rename volume\n");
+    return;
+  }
+  printf("Volume renamed to '%s'; use 'save' to make it permanent.\n", vol);
+}
+
 // Fill b0/b1 with boot code: from a donor image if one is named, else the
 // embedded standard ProDOS boot block (identical from ProDOS 1.1 through
 // 2.4, and the same on floppies and hard drives) with a zero block 1.
@@ -645,26 +686,11 @@ void formatHandler(char *cmd)
   }
 
   // Validate/normalize the ProDOS volume name up front, before we touch
-  // the filesystem: 1-15 chars, letter first, then letters/digits/periods.
+  // the filesystem.
   char vol[16] = {0};
   if (!dosMode) {
-    const char *src = volName ? volName : "BLANK";
-    size_t nl = strlen(src);
-    if (nl < 1 || nl > 15) {
-      printf("ERROR: volume name must be 1-15 characters\n");
+    if (!normalizeVolumeName(volName ? volName : "BLANK", vol))
       return;
-    }
-    for (size_t i = 0; i < nl; i++) {
-      char c = (char)toupper((unsigned char)src[i]);
-      bool okc = (i == 0) ? isalpha((unsigned char)c)
-                          : (isalnum((unsigned char)c) || c == '.');
-      if (!okc) {
-        printf("ERROR: bad volume name '%s' (letter first, then letters, "
-               "digits, or periods)\n", src);
-        return;
-      }
-      vol[i] = c;
-    }
   }
 
   // Don't clobber an existing file - the user may be formatting next to
@@ -853,6 +879,7 @@ struct _cmdInfo commands[] = {
   {"rmdir", rmdirHandler, "<dirname>        : delete an empty directory (ProDOS only)" },
   {"save",  saveHandler, "[filename]       : save disk image (default: overwrite the loaded image)" },
   {"strip", stripHandler, "<on|off>        : turn on or off high bit strip for 'cat'"},
+  {"volname", volnameHandler, "<newname>     : rename the volume (ProDOS only)"},
   {"", 0, ""} };
 
 void helpHandler(char *cmd)

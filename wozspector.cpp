@@ -35,6 +35,13 @@ bool Wozspector::writeBootBlocks(const uint8_t block0[512],
   return false;
 }
 
+bool Wozspector::renameVolume(const char *newName)
+{
+  printf("volname is only supported for ProDOS volumes (DOS 3.3 has a "
+         "volume number, not a name).\n");
+  return false;
+}
+
 // Flat-namespace lookup: match the first tree entry whose leaf name equals
 // `path`. ProDOS overrides this to resolve subdirectory paths.
 Vent *Wozspector::findEntry(const char *path)

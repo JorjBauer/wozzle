@@ -38,6 +38,7 @@ class ProdosSpector : public Wozspector {
                                const uint8_t block1[512]);
   // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
   bool readBootBlocks(uint8_t block0[512], uint8_t block1[512]);
+  virtual bool renameVolume(const char *newName);
 protected:
   virtual Vent *createTree();
 

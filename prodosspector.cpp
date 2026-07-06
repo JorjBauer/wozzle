@@ -444,6 +444,36 @@ bool ProdosSpector::readBootBlocks(uint8_t block0[512], uint8_t block1[512])
   return readBlock(0, block0) && readBlock(1, block1);
 }
 
+bool ProdosSpector::renameVolume(const char *newName)
+{
+  if (!tree)
+    createTree();
+  if (!tree)
+    return false;
+
+  size_t nl = strlen(newName);
+  if (nl < 1 || nl > 15)
+    return false;
+
+  // The volume's name lives in exactly one place: the volume directory
+  // header at the start of block 2. High nybble of typelen stays 0xF
+  // (volume directory header); low nybble is the name length.
+  struct _subdirent *hdr = (struct _subdirent *)(&trackData[512 * 2 + 4]);
+  if ((hdr->typelen >> 4) != ft_voldirhdr) {
+    printf("ERROR: block 2 doesn't hold a volume directory header\n");
+    return false;
+  }
+  hdr->typelen = (ft_voldirhdr << 4) | (uint8_t)nl;
+  memset(hdr->name, 0, sizeof(hdr->name));
+  memcpy(hdr->name, newName, nl);
+
+  if (!writeBlock(2, &trackData[512 * 2]))
+    return false;
+
+  createTree(); // refresh the cached tree so ls shows the new name
+  return true;
+}
+
 bool ProdosSpector::readBlock(uint16_t blockNum, uint8_t dataOut[512])
 {
   // Caller must have prepped with createTree() call first, or we fail

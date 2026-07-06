@@ -55,6 +55,11 @@ public:
   virtual bool writeBootBlocks(const uint8_t block0[512],
                                const uint8_t block1[512]);
 
+  // Rename the volume (ProDOS: the volume directory header in block 2).
+  // Caller passes a pre-validated name. The default reports that the
+  // operation is unsupported.
+  virtual bool renameVolume(const char *newName);
+
   // Recursively delete a subdirectory and everything beneath it (contents
   // first, then the directory itself). Only filesystems with subdirectories
   // (ProDOS) override this; the default reports that the operation is
