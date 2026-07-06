@@ -473,9 +473,30 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
     return l;
                  
   case 3:
-    // tree file: 257 - 32768 data blocks
-    printf("UNIMPLEMENTED\n");
-    break;
+    // Tree file: the key block is a master index of up to 128 index
+    // blocks, each of which points at up to 256 data blocks. A zero
+    // pointer at either level is a sparse hole and reads as zeros.
+    {
+      uint32_t sizeRemaining = l;
+      uint32_t bytesCopied = 0;
+      *toWhere = (char *)malloc(l); // FIXME check for error
+      for (int mi = 0; mi < 128 && sizeRemaining; mi++) {
+        uint32_t indexBlock = trackData[512*kp + 256 + mi] * 256 + trackData[512*kp + mi];
+        for (int i = 0; i < 256 && sizeRemaining; i++) {
+          uint32_t dataBlock = indexBlock ?
+            (uint32_t)trackData[512*indexBlock + 256 + i] * 256 + trackData[512*indexBlock + i] : 0;
+          uint32_t chunk = (sizeRemaining >= 512) ? 512 : sizeRemaining;
+          if (dataBlock) {
+            memcpy((*toWhere) + bytesCopied, &trackData[512*dataBlock], chunk);
+          } else {
+            memset((*toWhere) + bytesCopied, 0, chunk);
+          }
+          bytesCopied += chunk;
+          sizeRemaining -= chunk;
+        }
+      }
+    }
+    return l;
   default:
     // deleted or reserved or something; skip it
     printf("Unimplemented file type '%d'\n", indexType);
@@ -516,7 +537,19 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   strncpy(fent.name, leaf, 15);
   // Set the low nybble of typelen to the length of the filename
   fent.typelen = leaflen;
-  uint8_t blocksUsed = (fileSize / 512)+1; // number of data blocks
+
+  // The EOF field is 24 bits, so 16MB-1 is the hard ProDOS file limit.
+  if (fileSize > 0xFFFFFF) {
+    printf("ERROR: ProDOS files may not exceed 16MB-1 bytes\n");
+    return false;
+  }
+
+  // Data blocks the content needs (an empty file still gets one); index
+  // blocks are added per storage type below. A tree file can use over
+  // 32,000 blocks, so this must be at least 16 bits wide.
+  uint32_t dataBlocks = (fileSize + 511) / 512;
+  if (dataBlocks == 0) dataBlocks = 1;
+  uint16_t blocksUsed = dataBlocks;
 
   fent.fileType = fileType;
   fent.eofLength[0] = fileSize & 0xFF;
@@ -614,7 +647,74 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
       return false;
     }
   } else {
-    // FIXME: tree not implemented
+    // Tree file entry (>128k, up to 16MB-1): KEY_POINTER names a master
+    // index block whose 128 pointers each name a sapling-style index block
+    // covering 128k of data.
+    fent.typelen |= (ft_tree<<4);
+
+    uint16_t masterBlock;
+    if (!findFreeBlock(&masterBlock)) {
+      printf("Failed to find a free block for the master index\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+    uint8_t masterData[512];
+    memset(masterData, 0, sizeof(masterData));
+    uint8_t masterPtr = 0;
+
+    fent.keyPointer[0] = masterBlock & 0xFF;
+    fent.keyPointer[1] = (masterBlock >> 8);
+    blocksUsed++; // the master index block
+
+    uint32_t bytesRemaining = fileSize;
+    uint32_t idx = 0;
+    while (bytesRemaining) {
+      uint16_t indexBlock;
+      if (!findFreeBlock(&indexBlock)) {
+        printf("Failed to find a free block for an index\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+      masterData[masterPtr] = indexBlock & 0xFF;
+      masterData[0x100 + masterPtr++] = (indexBlock >> 8);
+      blocksUsed++; // this index block
+
+      uint8_t indexBlockData[512];
+      memset(indexBlockData, 0, sizeof(indexBlockData));
+      for (int i = 0; i < 256 && bytesRemaining; i++) {
+        uint16_t nextBlock;
+        if (!findFreeBlock(&nextBlock)) {
+          printf("Failed to find next free block for the data\n");
+          reloadFreeBlockBitmap();
+          return false;
+        }
+        indexBlockData[i] = nextBlock & 0xFF;
+        indexBlockData[0x100 + i] = (nextBlock >> 8);
+
+        uint8_t paddedData[512];
+        memset(&paddedData, 0, sizeof(paddedData));
+        memcpy(paddedData, &fileContents[idx],
+               bytesRemaining >= 512 ? 512 : bytesRemaining);
+        if (!writeBlock(nextBlock, paddedData)) {
+          printf("Failed to write next data block\n");
+          reloadFreeBlockBitmap();
+          return false;
+        }
+        idx += 512;
+        bytesRemaining -= (bytesRemaining >= 512) ? 512 : bytesRemaining;
+      }
+      if (!writeBlock(indexBlock, indexBlockData)) {
+        printf("Failed to write index block\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+    }
+
+    if (!writeBlock(masterBlock, masterData)) {
+      printf("Failed to write master index block\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
   }
 
   printf("Blocks used to store this file: %d\n", blocksUsed);
@@ -813,8 +913,20 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
     markBlockFree(kp);
     return true;
   case ft_tree:
-    printf("ERROR: deleting tree-structured files is not implemented\n");
-    return false;
+    // The key block is a master index of index blocks. Free each index
+    // block's data blocks, then the index block, then the master. Zero
+    // pointers at either level are sparse holes - nothing to free.
+    for (int mi = 0; mi < 128; mi++) {
+      uint16_t ib = trackData[512 * kp + 256 + mi] * 256 + trackData[512 * kp + mi];
+      if (!ib) continue;
+      for (int i = 0; i < 256; i++) {
+        uint16_t b = trackData[512 * ib + 256 + i] * 256 + trackData[512 * ib + i];
+        if (b) markBlockFree(b);
+      }
+      markBlockFree(ib);
+    }
+    markBlockFree(kp);
+    return true;
   default:
     printf("ERROR: entry has unexpected storage type 0x%X; not deleting\n",
            storage);

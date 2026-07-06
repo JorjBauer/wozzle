@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <string.h>
+#include <strings.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -201,7 +204,7 @@ void cpinHandler(char *cmd)
   char typeStr[16];
   char auxStr[16];
   uint8_t filetype = 0x06; // ProDOS type numbers (more expressive than DOS)
-  uint16_t fileSize = 0;
+  uint32_t fileSize = 0;
   uint16_t auxTypeData = 0x2000;
   memset(fn, 0, sizeof(fn));
   memset(destfn, 0, sizeof(destfn));
@@ -239,7 +242,14 @@ void cpinHandler(char *cmd)
     printf("Unable to stat source file '%s'\n", fn);
     return;
   }
-  fileSize = s.st_size; // assume file size to copy in is the 
+  // ProDOS stores EOF in 24 bits, so a file tops out at 16MB-1. Refuse
+  // anything bigger rather than silently truncating it.
+  if (s.st_size > 0xFFFFFF) {
+    printf("ERROR: '%s' is %lld bytes; ProDOS files max out at 16MB-1\n",
+           fn, (long long)s.st_size);
+    return;
+  }
+  fileSize = (uint32_t)s.st_size;
 
   // Read the file contents to a buffer
   uint8_t *dataToCopy = NULL;
@@ -268,14 +278,16 @@ void cpinHandler(char *cmd)
         }
       }
       if (foundAppleSingle) {
+        // entryID, offset, and length are all 32-bit big-endian fields;
+        // ntohs on them would hand back the wrong half of the value.
         for (int i=0; i<ntohs(as->num_entries); i++) {
           printf("ENTRY %d:\n", i);
-          printf("  entryID: %d\n", ntohs(as->entry[i].entryID));
-          printf("  offset: %d\n", ntohs(as->entry[i].offset));
-          printf("  length: %d\n", ntohs(as->entry[i].length));
+          printf("  entryID: %u\n", ntohl(as->entry[i].entryID));
+          printf("  offset: %u\n", ntohl(as->entry[i].offset));
+          printf("  length: %u\n", ntohl(as->entry[i].length));
 
-          if (ntohs(as->entry[i].entryID) == as_prodosFileInfo) {
-            type11prodos *p = (type11prodos *)(&fileContents[ntohs(as->entry[i].offset)]);
+          if (ntohl(as->entry[i].entryID) == as_prodosFileInfo) {
+            type11prodos *p = (type11prodos *)(&fileContents[ntohl(as->entry[i].offset)]);
             printf("    Access: 0x%X\n", ntohs(p->access));
             printf("    FileType: 0x%X\n", ntohs(p->filetype));
             printf("    AuxType: 0x%X\n", ntohl(p->auxtype));
@@ -290,14 +302,14 @@ void cpinHandler(char *cmd)
             if (!explicitType) filetype = ntohs(p->filetype);
             if (!explicitAux)  auxTypeData = ntohl(p->auxtype);
           }
-          else if (ntohs(as->entry[i].entryID) == as_dataFork) {
-            fileSize = ntohs(as->entry[i].length);
+          else if (ntohl(as->entry[i].entryID) == as_dataFork) {
+            fileSize = ntohl(as->entry[i].length);
             if (dataToCopy) {
               // dunno why we'd get 2 of them but...
               free(dataToCopy);
             }
             dataToCopy = (uint8_t *)malloc(fileSize);
-            memcpy(dataToCopy, &fileContents[ntohs(as->entry[i].offset)], fileSize);
+            memcpy(dataToCopy, &fileContents[ntohl(as->entry[i].offset)], fileSize);
           } else {
             printf("ERROR: unknown entry ID type\n");
             foundAppleSingle = false;
@@ -383,12 +395,14 @@ static bool buildBlankDosDsk(uint8_t volumeNumber, uint8_t *img)
   return true;
 }
 
-// Lay down a blank ProDOS volume. Block 0 (boot) stays zeros; blocks 2-5
-// are a 4-block volume directory chain; block 6 is the volume bitmap.
-static bool buildBlankProdosPo(const char *volumeName, uint8_t *img)
+// Lay down a blank ProDOS volume of totalBlocks 512-byte blocks in the
+// provided (zeroed) buffer. Blocks 0-1 (boot) stay zeros; blocks 2-5 are
+// a 4-block volume directory chain; the volume bitmap starts at block 6
+// and spans ceil(totalBlocks/4096) blocks (1 for a floppy, 16 for a
+// 65535-block hard drive).
+static bool buildBlankProdosPo(const char *volumeName, uint8_t *img,
+                               uint32_t totalBlocks)
 {
-  const uint16_t totalBlocks = 280;
-
   uint8_t *b2 = img + 2 * 512;
   b2[0] = 0; b2[1] = 0;  // prev block = none
   b2[2] = 3; b2[3] = 0;  // next block = 3
@@ -415,11 +429,14 @@ static bool buildBlankProdosPo(const char *volumeName, uint8_t *img)
   }
 
   // Volume bitmap. MSb-first within each byte: bit 0x80 of byte 0 = block 0.
-  // Used: blocks 0 (boot), 1 (reserved), 2-5 (vol dir), 6 (bitmap).
+  // 1 = free, 0 = used. Used: blocks 0-1 (boot), 2-5 (vol dir), and the
+  // bitmap itself. Bits at or past totalBlocks stay 0 - those blocks
+  // don't exist and must be marked unavailable.
   uint8_t *bm = img + 6 * 512;
-  bm[0] = 0x01;                             // block 7 free; 0-6 used
-  for (int i = 1; i <= 34; i++) bm[i] = 0xFF; // blocks 8..279 free
-  // bytes 35..511 stay 0 - bits past block 279 must be marked unavailable
+  uint32_t bitmapBlocks = (totalBlocks + 4095) / 4096;
+  for (uint32_t b = 6 + bitmapBlocks; b < totalBlocks; b++) {
+    bm[b / 8] |= (uint8_t)(0x80 >> (b % 8));
+  }
   return true;
 }
 
@@ -473,27 +490,114 @@ void dumptrackHandler(char *cmd)
          NIBTRACKSIZE, trackNum, outPath);
 }
 
+// Parse a format-size token: a named preset or a bare ProDOS block count.
+// Presets are the sizes real devices presented; ProDOS itself accepts any
+// block count up to 65535 (total_blocks is 16 bits), so bare numbers are
+// allowed too. Returns the block count, or -1 if unparseable. Callers only
+// pass tokens that start with a digit (ProDOS volume names can't).
+static int32_t parseSizeSpec(const char *tok)
+{
+  static const struct { const char *name; uint32_t blocks; } presets[] = {
+    { "140k", 280 },    // 5.25" floppy
+    { "800k", 1600 },   // 3.5" floppy
+    { "5m",   9728 },   // ProFile 5MB
+    { "10m",  19456 },  // ProFile 10MB
+    { "32m",  65535 },  // ProDOS maximum (one block shy of 32MB)
+  };
+  for (size_t i = 0; i < sizeof(presets)/sizeof(presets[0]); i++) {
+    if (!strcasecmp(tok, presets[i].name)) return (int32_t)presets[i].blocks;
+  }
+  char *end;
+  long v = strtol(tok, &end, 10);
+  if (*tok && !*end && v >= 0 && v <= 0xFFFF) return (int32_t)v;
+  return -1;
+}
+
+static bool hasExtension(const char *fname, const char *ext)
+{
+  const char *dot = strrchr(fname, '.');
+  return dot && !strcasecmp(dot, ext);
+}
+
 void formatHandler(char *cmd)
 {
   if (!cmd || !cmd[0]) {
-    printf("Usage: format <filename> [<volume>]\n");
-    printf("  DOS mode:    <volume> is 1-254 (default 254).\n");
-    printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK).\n");
-    printf("  Image type follows the current -d/-p mode. Writes .dsk (DOS)\n");
-    printf("  or .po (ProDOS); use wozzle to convert to .woz if needed.\n");
+    printf("Usage: format <filename> [<volume>] [<size>]\n");
+    printf("  DOS mode:    <volume> is 1-254 (default 254); always 140k.\n");
+    printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK);\n");
+    printf("    <size> is 140k, 800k, 5m, 10m, 32m, or a block count\n");
+    printf("    5-65535 (default 140k). Sizes other than 140k must be\n");
+    printf("    named .hdv or .img.\n");
+    printf("  A 140k image writes .dsk (DOS) / .po (ProDOS) data; use\n");
+    printf("  wozzle to convert to .woz if needed.\n");
     return;
   }
 
-  char fname[MAXPATH + 1] = {0};
-  char vol[32] = {0};
-  char *sp = strchr(cmd, ' ');
-  if (sp) {
-    size_t fl = (size_t)(sp - cmd);
-    if (fl > MAXPATH) fl = MAXPATH;
-    memcpy(fname, cmd, fl);
-    strncpy(vol, sp + 1, sizeof(vol) - 1);
-  } else {
-    strncpy(fname, cmd, MAXPATH);
+  char *tok[4] = {0};
+  int ntok = 0;
+  for (char *t = strtok(cmd, " "); t && ntok < 4; t = strtok(NULL, " ")) {
+    tok[ntok++] = t;
+  }
+  const char *fname = tok[0];
+
+  // Sort out volume vs size arguments. In ProDOS mode sizes always start
+  // with a digit and volume names never do, so the two can appear in
+  // either order. In DOS mode there is no size argument - the numeric
+  // argument is the volume number - and images are always 140k.
+  const char *volName = NULL;
+  int32_t sizeBlocks = -1;
+  for (int i = 1; i < ntok; i++) {
+    if (!dosMode && isdigit((unsigned char)tok[i][0])) {
+      if (sizeBlocks != -1) {
+        printf("ERROR: more than one size given\n");
+        return;
+      }
+      sizeBlocks = parseSizeSpec(tok[i]);
+      if (sizeBlocks < 5) {
+        printf("ERROR: bad size '%s' (140k, 800k, 5m, 10m, 32m, or a "
+               "block count 5-65535)\n", tok[i]);
+        return;
+      }
+    } else {
+      if (volName) {
+        printf("ERROR: too many arguments\n");
+        return;
+      }
+      volName = tok[i];
+    }
+  }
+  if (sizeBlocks == -1) sizeBlocks = 280;
+
+  // Only a 280-block image round-trips through the .po/.dsk floppy
+  // loaders; anything else must be named for the raw-block HDV path.
+  if (sizeBlocks != 280 &&
+      !hasExtension(fname, ".hdv") && !hasExtension(fname, ".img")) {
+    printf("ERROR: a %d-block image must be named .hdv or .img\n",
+           sizeBlocks);
+    return;
+  }
+
+  // Validate/normalize the ProDOS volume name up front, before we touch
+  // the filesystem: 1-15 chars, letter first, then letters/digits/periods.
+  char vol[16] = {0};
+  if (!dosMode) {
+    const char *src = volName ? volName : "BLANK";
+    size_t nl = strlen(src);
+    if (nl < 1 || nl > 15) {
+      printf("ERROR: volume name must be 1-15 characters\n");
+      return;
+    }
+    for (size_t i = 0; i < nl; i++) {
+      char c = (char)toupper((unsigned char)src[i]);
+      bool okc = (i == 0) ? isalpha((unsigned char)c)
+                          : (isalnum((unsigned char)c) || c == '.');
+      if (!okc) {
+        printf("ERROR: bad volume name '%s' (letter first, then letters, "
+               "digits, or periods)\n", src);
+        return;
+      }
+      vol[i] = c;
+    }
   }
 
   // Don't clobber an existing file - the user may be formatting next to
@@ -504,8 +608,8 @@ void formatHandler(char *cmd)
     return;
   }
 
-  const size_t DISK_SIZE = 35 * 16 * 256;  // = 280 * 512
-  uint8_t *img = (uint8_t *)calloc(1, DISK_SIZE);
+  const size_t diskSize = (size_t)sizeBlocks * 512;
+  uint8_t *img = (uint8_t *)calloc(1, diskSize);
   if (!img) {
     printf("ERROR: out of memory\n");
     return;
@@ -513,24 +617,20 @@ void formatHandler(char *cmd)
 
   bool ok;
   if (dosMode) {
-    int v = vol[0] ? atoi(vol) : 254;
+    int v = volName ? atoi(volName) : 254;
     if (v < 1 || v > 254) v = 254;
     ok = buildBlankDosDsk((uint8_t)v, img);
-    if (ok) {
-      FILE *f = fopen(fname, "wb");
-      if (f) { ok = (fwrite(img, 1, DISK_SIZE, f) == DISK_SIZE); fclose(f); }
-      else   { ok = false; }
-    }
     if (ok) printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, v);
   } else {
-    const char *name = vol[0] ? vol : "BLANK";
-    ok = buildBlankProdosPo(name, img);
-    if (ok) {
-      FILE *f = fopen(fname, "wb");
-      if (f) { ok = (fwrite(img, 1, DISK_SIZE, f) == DISK_SIZE); fclose(f); }
-      else   { ok = false; }
-    }
-    if (ok) printf("Created blank ProDOS image '%s' (volume '%s')\n", fname, name);
+    ok = buildBlankProdosPo(vol, img, (uint32_t)sizeBlocks);
+    if (ok) printf("Created blank ProDOS image '%s' (volume '%s', %d blocks)\n",
+                   fname, vol, sizeBlocks);
+  }
+
+  if (ok) {
+    FILE *f = fopen(fname, "wb");
+    if (f) { ok = (fwrite(img, 1, diskSize, f) == diskSize); fclose(f); }
+    else   { ok = false; }
   }
 
   free(img);
@@ -668,7 +768,7 @@ struct _cmdInfo commands[] = {
   {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
   {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
-  {"format", formatHandler, "<fname> [<vol>]: create a blank DOS 3.3 or ProDOS image" },
+  {"format", formatHandler, "<fname> [<vol>] [<size>]: create a blank DOS 3.3 or ProDOS image" },
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
   {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },
@@ -758,38 +858,56 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (!infoname[0]) {
+  // `format` creates a brand-new image and never touches the loaded one,
+  // so one-shot runs consisting solely of format commands don't need -I:
+  //   wozit -p -c "format new.hdv MYVOL 32m"
+  // Everything else still requires an image.
+  bool needImage = true;
+  if (!infoname[0] && oneShotCount) {
+    needImage = false;
+    for (int i = 0; i < oneShotCount; i++) {
+      if (strncmp(oneShotCommands[i], "format", 6) != 0 ||
+          (oneShotCommands[i][6] != ' ' && oneShotCommands[i][6] != '\0')) {
+        needImage = true;
+        break;
+      }
+    }
+  }
+
+  if (!infoname[0] && needImage) {
     printf("Must supply an image filename\n");
     exit(1);
   }
 
-  if (dosMode) {
-    inspector = new DosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
-  } else {
-    inspector = new ProdosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
-  }
-
-  if (!inspector->readFile(infoname, true)) {
-    printf("Failed to read file; aborting\n");
-    exit(1);
-  }
-
-  // If the image doesn't smell like the filesystem we were told to use,
-  // try probing the other kind. If that looks right, warn the user.
-  if (!inspector->probe()) {
-    Wozspector *other = dosMode
-      ? (Wozspector *)new ProdosSpector(false, 0)
-      : (Wozspector *)new DosSpector(false, 0);
-    if (other->readFile(infoname, true) && other->probe()) {
-      printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
-             "in %s mode. Re-run with '%s' if you meant %s.\n",
-             infoname,
-             dosMode ? "ProDOS" : "DOS 3.3",
-             dosMode ? "DOS 3.3 (-d)" : "ProDOS (-p)",
-             dosMode ? "-p" : "-d",
-             dosMode ? "ProDOS" : "DOS 3.3");
+  if (needImage) {
+    if (dosMode) {
+      inspector = new DosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
+    } else {
+      inspector = new ProdosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
     }
-    delete other;
+
+    if (!inspector->readFile(infoname, true)) {
+      printf("Failed to read file; aborting\n");
+      exit(1);
+    }
+
+    // If the image doesn't smell like the filesystem we were told to use,
+    // try probing the other kind. If that looks right, warn the user.
+    if (!inspector->probe()) {
+      Wozspector *other = dosMode
+        ? (Wozspector *)new ProdosSpector(false, 0)
+        : (Wozspector *)new DosSpector(false, 0);
+      if (other->readFile(infoname, true) && other->probe()) {
+        printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
+               "in %s mode. Re-run with '%s' if you meant %s.\n",
+               infoname,
+               dosMode ? "ProDOS" : "DOS 3.3",
+               dosMode ? "DOS 3.3 (-d)" : "ProDOS (-p)",
+               dosMode ? "-p" : "-d",
+               dosMode ? "ProDOS" : "DOS 3.3");
+      }
+      delete other;
+    }
   }
 
   if (oneShotCount) {
