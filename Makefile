@@ -10,11 +10,11 @@ WOZOBJS=woz.o crc32.o nibutil.o wozzle.o
 FUSESRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozfuse.cpp
 FUSEOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozfuse.o
 
-WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp intbas.cpp
-WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozit.o applesoft.o intbas.o
+WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp intbas.cpp
+WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozit.o applesoft.o intbas.o
 
-WOZMOSISSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
-WOZMOSISOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozspector.o wozmosis.o
+WOZMOSISSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
+WOZMOSISOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozmosis.o
 
 .PHONY: test clean unit-tests
 
@@ -54,7 +54,7 @@ depend: .depend
 include .depend
 
 clean:
-	rm -f $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) wozzle wozit wozmosis *~ $(UNIT_BINS)
+	rm -f $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) pascalspector.o wozzle wozit wozmosis *~ $(UNIT_BINS)
 	rm -rf *.dSYM tests/*.dSYM
 	rm -f tests/nib-test tests/test-pattern tests/make-test-disk
 	rm -f tests/pattern.dsk tests/pattern-out.dsk

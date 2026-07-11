@@ -32,6 +32,7 @@
 #include "crc32.h"
 #include "dosspector.h"
 #include "prodosspector.h"
+#include "pascalspector.h"
 #include "vent.h"
 
 using namespace std;
@@ -46,9 +47,10 @@ struct CopyItem {
 
 static void usage(const char *name)
 {
-  printf("Usage: %s { -d | -p } [-f] [-v] <source image> <dest image> [path ...]\n\n", name);
+  printf("Usage: %s { -d | -p | -P } [-f] [-v] <source image> <dest image> [path ...]\n\n", name);
   printf("  -d    both images are DOS 3.3\n");
   printf("  -p    both images are ProDOS\n");
+  printf("  -P    both images are UCSD p-System / Apple Pascal\n");
   printf("  -f    overwrite files that already exist on the destination\n");
   printf("  -v    list every file as it is copied\n\n");
   printf("  With no paths, copies the whole source volume. A path may name\n");
@@ -94,12 +96,13 @@ int main(int argc, char *argv[])
 {
   preload_crc();
 
-  int mode = 0; // 'd' or 'p'
+  int mode = 0; // 'd', 'p', or 'P'
   int c;
-  while ((c = getopt(argc, argv, "dpfvh?")) != -1) {
+  while ((c = getopt(argc, argv, "dpPfvh?")) != -1) {
     switch (c) {
     case 'd': mode = 'd'; break;
     case 'p': mode = 'p'; break;
+    case 'P': mode = 'P'; break;
     case 'f': force = true; break;
     case 'v': verbose = true; break;
     case 'h':
@@ -110,8 +113,8 @@ int main(int argc, char *argv[])
   }
 
   if (!mode) {
-    printf("ERROR: specify -d (DOS 3.3) or -p (ProDOS). Cross-filesystem "
-           "copies aren't supported.\n");
+    printf("ERROR: specify -d (DOS 3.3), -p (ProDOS), or -P (Pascal). "
+           "Cross-filesystem copies aren't supported.\n");
     usage(argv[0]);
     return 1;
   }
@@ -131,8 +134,8 @@ int main(int argc, char *argv[])
     string s = argv[i];
     // Strip a leading slash; paths are volume-root relative.
     if (!s.empty() && s[0] == '/') s = s.substr(1);
-    if (mode == 'p') {
-      // ProDOS names are uppercase on disk; match the way wozit does.
+    if (mode == 'p' || mode == 'P') {
+      // ProDOS and Pascal names are uppercase on disk; match the way wozit does.
       for (size_t j = 0; j < s.size(); j++) s[j] = toupper((unsigned char)s[j]);
     }
     if (!s.empty()) selections.push_back(s);
@@ -143,11 +146,15 @@ int main(int argc, char *argv[])
   if (mode == 'd') {
     src = new DosSpector(verbose, 0);
     dst = new DosSpector(verbose, 0);
+  } else if (mode == 'P') {
+    src = new PascalSpector(verbose, 0);
+    dst = new PascalSpector(verbose, 0);
   } else {
     src = new ProdosSpector(verbose, 0);
     dst = new ProdosSpector(verbose, 0);
   }
-  const char *fsName = (mode == 'd') ? "DOS 3.3" : "ProDOS";
+  const char *fsName = (mode == 'd') ? "DOS 3.3"
+                     : (mode == 'P') ? "Pascal" : "ProDOS";
 
   struct { Wozspector *spec; const char *path; const char *role; } imgs[2] = {
     { src, srcPath, "source" }, { dst, dstPath, "destination" },
@@ -279,8 +286,8 @@ int main(int argc, char *argv[])
     // - the address/length headers some types embed ride along verbatim,
     // and types getFileContents can't even size (TXT, SYS, REL) still copy.
     char *data = NULL;
-    uint32_t len = (mode == 'p') ? src->getFileContents(e, &data)
-                                 : src->getFileAllocation(e, &data);
+    uint32_t len = (mode == 'p' || mode == 'P') ? src->getFileContents(e, &data)
+                                                : src->getFileAllocation(e, &data);
     uint8_t dummy = 0;
     uint8_t *payload = len ? (uint8_t *)data : &dummy;
 
@@ -298,6 +305,9 @@ int main(int argc, char *argv[])
     if (mode == 'p') {
       ok = ((ProdosSpector *)dst)->writeFileWithMeta(payload, path.c_str(),
                                                      len, e->getProdosFent());
+    } else if (mode == 'P') {
+      ok = ((PascalSpector *)dst)->writeFileWithMeta(payload, path.c_str(),
+                                                     len, e->getPascalFent());
     } else {
       // typeAndFlags verbatim carries the type bits and the locked flag.
       ok = ((DosSpector *)dst)->writeFileRaw(payload, path.c_str(),

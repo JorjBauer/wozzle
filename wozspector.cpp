@@ -42,6 +42,12 @@ bool Wozspector::renameVolume(const char *newName)
   return false;
 }
 
+bool Wozspector::krunch(const char *afterFile)
+{
+  printf("krunch is only supported for Pascal volumes.\n");
+  return false;
+}
+
 // Flat-namespace lookup: match the first tree entry whose leaf name equals
 // `path`. ProDOS overrides this to resolve subdirectory paths.
 Vent *Wozspector::findEntry(const char *path)

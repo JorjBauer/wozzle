@@ -95,12 +95,32 @@ Usage
 
 *$ wozzle -h*
 ```
-Usage: ./wozit -I <input image> { -d | -p }
+Usage: ./wozit -I <input image> { -d | -p | -P }
 
   -I [input filename]     input disk image to inspect/modify
-  -d                      DOS mode
+  -d                      DOS 3.3 mode
   -p                      ProDOS mode
+  -P                      UCSD p-System / Apple Pascal mode
 ```
+
+In Pascal mode wozit reads and writes UCSD p-System / Apple Pascal
+volumes (140K floppies and ProDOS-order .po/.woz images). Files are
+stored on contiguous blocks, so a `cpin` may fail if no single free
+region is large enough even when the total free space would fit. Two
+commands defragment the volume (like the Pascal Filer's "K)runch"):
+
+* *krunch* - slides every file toward the front so the free space
+  becomes one contiguous region at the end of the volume.
+* *krunchafter &lt;file&gt;* - puts the free space immediately after the
+  named file instead (files up to and including it pack toward the front;
+  the rest pack toward the end). Handy to leave room after a file you
+  expect to grow.
+
+Both refuse to run on a volume whose directory is damaged/overlapping or
+that contains a .BAD (bad-block) file, and both need a `save` afterward.
+
+`wozmosis -P` copies Pascal files between two Pascal images, preserving
+each file's type and modification date.
 
 Wozit is an interactive disk inspection tool. Once started, it expects one of these commands:
 

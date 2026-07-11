@@ -60,6 +60,15 @@ public:
   // operation is unsupported.
   virtual bool renameVolume(const char *newName);
 
+  // Defragment ("krunch") a Pascal volume so its free space becomes one
+  // contiguous region. afterFile == NULL puts the free space at the end of
+  // the volume (all files packed toward the front); a non-NULL name puts
+  // the free space immediately after that file (files up to and including
+  // it pack toward the front, the rest pack toward the end). Only Pascal
+  // has contiguous-file storage that needs this; the default reports the
+  // operation unsupported.
+  virtual bool krunch(const char *afterFile);
+
   // Recursively delete a subdirectory and everything beneath it (contents
   // first, then the directory itself). Only filesystems with subdirectories
   // (ProDOS) override this; the default reports that the operation is

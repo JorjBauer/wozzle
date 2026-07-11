@@ -25,6 +25,7 @@
 #include "nibutil.h"
 #include "prodosspector.h"
 #include "dosspector.h"
+#include "pascalspector.h"
 #include "applesoft.h"
 #include "intbas.h"
 //#include "vent.h"
@@ -36,7 +37,8 @@
 uint8_t trackData[256*16];
 char infoname[256] = {0};
 bool verbose = false;
-bool dosMode = true; // otherwise, prodos mode
+bool dosMode = true;    // DOS 3.3 mode (default)
+bool pascalMode = false; // UCSD p-System / Apple Pascal mode (-P)
 bool striphi = false;
 bool useAllocation = false; // cpout uses full on-disk allocation not hdr length
 
@@ -44,10 +46,11 @@ Wozspector *inspector = NULL;
 
 void usage(char *name)
 {
-  printf("Usage: %s -I <input image> { -d | -p } [-c <command>] [-A]\n\n", name);
+  printf("Usage: %s -I <input image> { -d | -p | -P } [-c <command>] [-A]\n\n", name);
   printf("  -I [input filename]     input disk image to inspect/modify\n");
-  printf("  -d                      DOS mode\n");
+  printf("  -d                      DOS 3.3 mode\n");
   printf("  -p                      ProDOS mode\n");
+  printf("  -P                      UCSD p-System / Apple Pascal mode\n");
   printf("  -c [command]            run a command non-interactively; repeat\n");
   printf("                          -c to run several commands in order\n");
   printf("  -A                      cpout: copy full on-disk allocation,\n");
@@ -547,8 +550,22 @@ static bool normalizeVolumeName(const char *src, char out[16])
 void volnameHandler(char *cmd)
 {
   if (!cmd || !cmd[0]) {
-    printf("Usage: volname <newname>   (1-15 chars: letter first, then "
-           "letters, digits, or periods)\n");
+    if (pascalMode)
+      printf("Usage: volname <newname>   (1-7 chars, printable ASCII, not "
+             "$=?,[#:)\n");
+    else
+      printf("Usage: volname <newname>   (1-15 chars: letter first, then "
+             "letters, digits, or periods)\n");
+    return;
+  }
+  // Pascal volume names follow different rules (1-7 chars, its own reserved
+  // set); let PascalSpector::renameVolume do the validation.
+  if (pascalMode) {
+    if (!inspector->renameVolume(cmd)) {
+      printf("ERROR: failed to rename volume\n");
+      return;
+    }
+    printf("Volume renamed; use 'save' to make it permanent.\n");
     return;
   }
   char vol[16];
@@ -619,6 +636,11 @@ void bootblocksHandler(char *cmd)
 
 void formatHandler(char *cmd)
 {
+  if (pascalMode) {
+    printf("ERROR: 'format' isn't supported in Pascal mode yet. Create the "
+           "volume with another tool, then use wozit -P to inspect/modify it.\n");
+    return;
+  }
   if (!cmd || !cmd[0]) {
     printf("Usage: format <filename> [<volume>] [<size>] [bootable]\n");
     printf("  DOS mode:    <volume> is 1-254 (default 254); always 140k.\n");
@@ -859,6 +881,24 @@ void inspectHandler(char *cmd)
   }
 }
 
+void krunchHandler(char *cmd)
+{
+  // krunch takes no arguments: consolidate free space at the end of the
+  // volume (all files pack toward the front).
+  inspector->krunch(NULL);
+}
+
+void krunchafterHandler(char *cmd)
+{
+  char name[256];
+  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
+    printf("Usage: krunchafter <filename>   (put the free space right after "
+           "<filename>)\n");
+    return;
+  }
+  inspector->krunch(name);
+}
+
 void helpHandler(char *cmd); // forward decl for commands[]
 
 struct _cmdInfo commands[] = {
@@ -872,6 +912,8 @@ struct _cmdInfo commands[] = {
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
   {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },
+  {"krunch", krunchHandler, "                : Pascal: consolidate free space at end of volume" },
+  {"krunchafter", krunchafterHandler, "<file>: Pascal: put free space right after <file>" },
   {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
   {"ls",    lsHandler,   "                   : List directory" },
   {"mkdir", mkdirHandler, "<dirname>        : create a directory (ProDOS only)" },
@@ -932,13 +974,19 @@ int main(int argc, char *argv[]) {
   char **oneShotCommands = (char **)malloc(argc * sizeof(char *));
   int oneShotCount = 0;
   int c;
-  while ( (c=getopt(argc, argv, "dpI:c:Ah?v")) != -1 ) {
+  while ( (c=getopt(argc, argv, "dpPI:c:Ah?v")) != -1 ) {
     switch (c) {
     case 'd':
       dosMode = true;
+      pascalMode = false;
       break;
     case 'p':
       dosMode = false;
+      pascalMode = false;
+      break;
+    case 'P':
+      dosMode = false;
+      pascalMode = true;
       break;
     case 'I':
       strncpy(infoname, optarg, sizeof(infoname));
@@ -981,10 +1029,13 @@ int main(int argc, char *argv[]) {
   }
 
   if (needImage) {
-    if (dosMode) {
-      inspector = new DosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
+    uint8_t dflags = verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0;
+    if (pascalMode) {
+      inspector = new PascalSpector(verbose, dflags);
+    } else if (dosMode) {
+      inspector = new DosSpector(verbose, dflags);
     } else {
-      inspector = new ProdosSpector(verbose, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
+      inspector = new ProdosSpector(verbose, dflags);
     }
 
     if (!inspector->readFile(infoname, true)) {
@@ -993,21 +1044,33 @@ int main(int argc, char *argv[]) {
     }
 
     // If the image doesn't smell like the filesystem we were told to use,
-    // try probing the other kind. If that looks right, warn the user.
+    // probe the other kinds; if one looks right, warn the user.
     if (!inspector->probe()) {
-      Wozspector *other = dosMode
-        ? (Wozspector *)new ProdosSpector(false, 0)
-        : (Wozspector *)new DosSpector(false, 0);
-      if (other->readFile(infoname, true) && other->probe()) {
-        printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
-               "in %s mode. Re-run with '%s' if you meant %s.\n",
-               infoname,
-               dosMode ? "ProDOS" : "DOS 3.3",
-               dosMode ? "DOS 3.3 (-d)" : "ProDOS (-p)",
-               dosMode ? "-p" : "-d",
-               dosMode ? "ProDOS" : "DOS 3.3");
+      const char *thisMode = pascalMode ? "Pascal (-P)"
+                           : dosMode    ? "DOS 3.3 (-d)"
+                                        : "ProDOS (-p)";
+      struct { Wozspector *s; const char *name; const char *flag; } others[2];
+      if (pascalMode) {
+        others[0] = { (Wozspector *)new ProdosSpector(false, 0), "ProDOS", "-p" };
+        others[1] = { (Wozspector *)new DosSpector(false, 0),    "DOS 3.3", "-d" };
+      } else if (dosMode) {
+        others[0] = { (Wozspector *)new ProdosSpector(false, 0), "ProDOS", "-p" };
+        others[1] = { (Wozspector *)new PascalSpector(false, 0), "Pascal", "-P" };
+      } else {
+        others[0] = { (Wozspector *)new DosSpector(false, 0),    "DOS 3.3", "-d" };
+        others[1] = { (Wozspector *)new PascalSpector(false, 0), "Pascal", "-P" };
       }
-      delete other;
+      for (int i = 0; i < 2; i++) {
+        if (others[i].s->readFile(infoname, true) && others[i].s->probe()) {
+          printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
+                 "in %s mode. Re-run with '%s' if you meant %s.\n",
+                 infoname, others[i].name, thisMode,
+                 others[i].flag, others[i].name);
+          break;
+        }
+      }
+      delete others[0].s;
+      delete others[1].s;
     }
   }
 

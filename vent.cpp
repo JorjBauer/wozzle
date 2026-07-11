@@ -7,10 +7,55 @@
 Vent::Vent()
 {
   isDos33 = false;
+  isPascal = false;
   children = next = NULL;
 
   memset(&prodosData, 0, sizeof(prodosData));
   memset(&dosData, 0, sizeof(dosData));
+  memset(&pascalData, 0, sizeof(pascalData));
+}
+
+// Little-endian 16-bit read from a raw on-disk field.
+static inline uint16_t rd16(const uint8_t p[2])
+{
+  return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+Vent::Vent(struct _pascalFent *fp)
+{
+  isDirectoryHeader = false;
+  isDos33 = false;
+  isPascal = true;
+
+  memcpy(&pascalData, fp, sizeof(pascalData));
+  memset(&prodosData, 0, sizeof(prodosData));
+  memset(&dosData, 0, sizeof(dosData));
+
+  pascalStartBlock = rd16(fp->firstBlock);
+  pascalNextBlock  = rd16(fp->nextBlock);
+  pascalType       = rd16(fp->fileType);
+  pascalByteCount  = rd16(fp->byteCount);
+
+  uint8_t nl = fp->name[0];
+  if (nl > 15) nl = 15;
+  memcpy(this->name, &fp->name[1], nl);
+  this->name[nl] = '\0';
+
+  // Present the file kind through the generic fileType field; it never
+  // collides with 0x0F (ProDOS DIR), so isDirectory() stays false.
+  this->fileType = (uint8_t)(pascalType & 0x0F);
+  this->keyPointer = pascalStartBlock;
+  this->entryType = 0;
+  // A file spans (next-start) blocks; the last one holds byteCount bytes.
+  this->blocksUsed = (pascalNextBlock > pascalStartBlock)
+                       ? (pascalNextBlock - pascalStartBlock) : 0;
+  this->eofLength = (blocksUsed ? (blocksUsed - 1) * 512 : 0) + pascalByteCount;
+  this->creationDate = 0;
+  this->lastModified = 0;
+  this->accessFlags = 0;
+  this->typeData = 0;
+  this->activeFileCount = 0;
+  this->children = this->next = NULL;
 }
 
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
@@ -36,7 +81,8 @@ Vent::Vent(struct _subdirent *di)
 {
   isDirectoryHeader = true;
   isDos33 = false;
-  
+  isPascal = false;
+
   this->entryType = (di->typelen & 0xF0) >> 4;
   memcpy(this->name, di->name, 15);
   this->name[15] = '\0';
@@ -71,6 +117,7 @@ Vent::Vent(struct _prodosFent *fi)
 {
   isDirectoryHeader = false;
   isDos33 = false;
+  isPascal = false;
 
   memcpy(&prodosData, fi, sizeof(prodosData));
   
@@ -97,6 +144,7 @@ Vent::Vent(struct _dosFdEntry *fe)
 {
   isDirectoryHeader = false;
   isDos33 = true;
+  isPascal = false;
   memcpy(&dosData, fe, sizeof(dosData));
   
   for (int i=0; i<30; i++) {
@@ -142,6 +190,15 @@ Vent::Vent(struct _dosFdEntry *fe)
 Vent::Vent(const Vent &vi)
 {
   this->isDirectoryHeader = vi.isDirectoryHeader;
+  this->isDos33 = vi.isDos33;
+  this->isPascal = vi.isPascal;
+  this->pascalStartBlock = vi.pascalStartBlock;
+  this->pascalNextBlock = vi.pascalNextBlock;
+  this->pascalByteCount = vi.pascalByteCount;
+  this->pascalType = vi.pascalType;
+  memcpy(&this->prodosData, &vi.prodosData, sizeof(prodosData));
+  memcpy(&this->dosData, &vi.dosData, sizeof(dosData));
+  memcpy(&this->pascalData, &vi.pascalData, sizeof(pascalData));
 				      
   this->entryType = vi.entryType;
   memcpy(this->name, vi.name, 16);
@@ -168,6 +225,27 @@ Vent::~Vent()
 
 void Vent::Dump(bool verbose)
 {
+  if (isPascal) {
+    static const char *kindName[] = {
+      "     ", ".BAD ", ".CODE", ".TEXT", ".INFO",
+      ".DATA", ".GRAF", ".FOTO", "SECDR"
+    };
+    uint8_t k = pascalType & 0x0F;
+    printf(" %s  %5u blk  %-15s  (blocks %u..%u, %u bytes)\n",
+           (k < 9) ? kindName[k] : "  ?  ",
+           blocksUsed, name, pascalStartBlock,
+           pascalNextBlock ? (pascalNextBlock - 1) : pascalStartBlock,
+           eofLength);
+    if (verbose) {
+      printf("  startBlock: %u\n", pascalStartBlock);
+      printf("  nextBlock:  %u\n", pascalNextBlock);
+      printf("  fileKind:   %u\n", k);
+      printf("  bytesInLastBlock: %u\n", pascalByteCount);
+      printf("  modDate (raw): 0x%04X\n", rd16(pascalData.modDate));
+    }
+    return;
+  }
+
   if (isDos33) {
     switch (fileType) {
     case FT_TXT:

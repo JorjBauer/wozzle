@@ -96,6 +96,46 @@ struct _dosFdEntry {
   uint8_t fileLength[2]; // low first
 };
 
+// UCSD p-System / Apple Pascal directory entry, exactly as it rests on
+// disk (all multi-byte fields little-endian). Every entry is 26 bytes.
+// A file's data lives on the contiguous blocks [firstBlock .. nextBlock),
+// with byteCount valid bytes in the final block.
+struct _pascalFent {
+  uint8_t firstBlock[2]; // first block of the file
+  uint8_t nextBlock[2];  // block just past the end (last block + 1)
+  uint8_t fileType[2];   // low nibble = file kind (see _pascalKind)
+  uint8_t name[16];      // length-prefixed, 1 + up to 15 chars
+  uint8_t byteCount[2];  // bytes used in the file's last block (1..512)
+  uint8_t modDate[2];    // packed Pascal date
+};
+
+// The volume header is the first 26-byte "entry" of the directory (block
+// 2). It has the same size as a file entry but a different shape.
+struct _pascalVolHdr {
+  uint8_t firstBlock[2];    // always 0
+  uint8_t nextBlock[2];     // first block after the directory (always 6)
+  uint8_t fileType[2];      // always 0
+  uint8_t name[8];          // length-prefixed, 1 + up to 7 chars
+  uint8_t volBlockCount[2]; // total blocks in the volume
+  uint8_t fileCount[2];     // number of files in the directory
+  uint8_t lastAccess[2];    // (unused; declared "integer")
+  uint8_t lastDateSet[2];   // most recently set system date
+  uint8_t reserved[4];
+};
+
+// Pascal file kinds (the low nibble of _pascalFent.fileType).
+enum _pascalKind {
+  PK_UNTYPED = 0, // volume header uses this
+  PK_BAD     = 1, // .BAD  - damaged blocks
+  PK_CODE    = 2, // .CODE - executable code
+  PK_TEXT    = 3, // .TEXT - human-readable text
+  PK_INFO    = 4, // .INFO
+  PK_DATA    = 5, // .DATA - arbitrary data
+  PK_GRAF    = 6, // .GRAF
+  PK_FOTO    = 7, // .FOTO
+  PK_SECDIR  = 8, // securedir
+};
+
 struct _tsPair {
   uint8_t track;
   uint8_t sector;
@@ -118,6 +158,7 @@ class Vent {
   Vent(struct _prodosFent *fi);
   Vent(struct _dosFdEntry *fe);
   Vent(struct _subdirent *fi);
+  Vent(struct _pascalFent *fp);
   Vent(const Vent &vi);
   ~Vent();
 
@@ -142,6 +183,14 @@ class Vent {
   // for a file entry of the matching filesystem (not directory headers).
   const struct _prodosFent *getProdosFent() const { return &prodosData; }
   const struct _dosFdEntry *getDosFent() const { return &dosData; }
+  const struct _pascalFent *getPascalFent() const { return &pascalData; }
+
+  // Pascal-specific accessors (meaningful only for a Pascal file entry).
+  bool getIsPascal() const { return isPascal; }
+  uint16_t getPascalStartBlock() const { return pascalStartBlock; }
+  uint16_t getPascalNextBlock() const { return pascalNextBlock; }
+  uint16_t getPascalByteCount() const { return pascalByteCount; }
+  uint8_t getPascalKind() const { return (uint8_t)(pascalType & 0x0F); }
 
   const char *getName();
 
@@ -167,7 +216,14 @@ class Vent {
  private:
   bool isDirectoryHeader;
   bool isDos33;
-  
+  bool isPascal;
+
+  // Pascal file geometry (contiguous blocks + bytes-in-last-block).
+  uint16_t pascalStartBlock;
+  uint16_t pascalNextBlock;
+  uint16_t pascalByteCount;
+  uint16_t pascalType;
+
   // General and file-related data
   uint8_t entryType;
   char name[31]; // dos are 30; prodos are 15
@@ -195,6 +251,7 @@ class Vent {
   // Cache for inspection
   struct _prodosFent prodosData;
   struct _dosFdEntry dosData;
+  struct _pascalFent pascalData;
 };
 
 #endif
