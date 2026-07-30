@@ -444,6 +444,41 @@ static bool buildBlankProdosPo(const char *volumeName, uint8_t *img,
   return true;
 }
 
+static inline void wrle16(uint8_t p[2], uint16_t v)
+{
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)(v >> 8);
+}
+
+// Lay down a blank UCSD Pascal volume of totalBlocks 512-byte blocks in
+// the provided (zeroed) buffer. Blocks 0-1 (boot) stay zeros; blocks 2-5
+// are the flat 4-block directory, of which only the 26-byte volume header
+// at the very start of block 2 is non-zero. fileCount = 0 is what marks
+// the volume empty: nothing past it is ever scanned.
+//
+// There is no allocation bitmap to build. Pascal free space is simply the
+// gaps between contiguous files, so a blank volume is one unbroken run
+// from block 6 to the end, and cpin has nothing to work around.
+static bool buildBlankPascal(const char *volumeName, uint8_t *img,
+                             uint32_t totalBlocks)
+{
+  struct _pascalVolHdr *h = (struct _pascalVolHdr *)(img + 2 * 512);
+  wrle16(h->firstBlock, 0);
+  wrle16(h->nextBlock, 6);   // first block past the 4-block directory
+  wrle16(h->fileType, 0);
+
+  size_t nl = strlen(volumeName);  // already validated to 1..7, upper-cased
+  h->name[0] = (uint8_t)nl;
+  memcpy(&h->name[1], volumeName, nl);  // bytes past nl stay 0 from calloc
+
+  wrle16(h->volBlockCount, (uint16_t)totalBlocks);
+  wrle16(h->fileCount, 0);
+  wrle16(h->lastAccess, 0);
+  wrle16(h->lastDateSet, PascalSpector::today());
+  // reserved[4] stays 0, as do blocks 0-1 and 3-5.
+  return true;
+}
+
 void dumptrackHandler(char *cmd)
 {
   // dumptrack <track#> <outfile>
@@ -504,8 +539,11 @@ static int32_t parseSizeSpec(const char *tok)
   static const struct { const char *name; uint32_t blocks; } presets[] = {
     { "140k", 280 },    // 5.25" floppy
     { "800k", 1600 },   // 3.5" floppy
+    { "4m",   8192 },   // round hard-disk sizes, handy for Pascal volumes
     { "5m",   9728 },   // ProFile 5MB
+    { "8m",   16384 },
     { "10m",  19456 },  // ProFile 10MB
+    { "16m",  32768 },  // practical Apple Pascal ceiling
     { "32m",  65535 },  // ProDOS maximum (one block shy of 32MB)
   };
   for (size_t i = 0; i < sizeof(presets)/sizeof(presets[0]); i++) {
@@ -617,41 +655,116 @@ static bool loadBootBlocks(const char *donor, uint8_t b0[512], uint8_t b1[512])
   return true;
 }
 
+// Copy the embedded p-System bootstrap that matches this volume's device
+// class into b0/b1. Pascal has no one-size bootstrap the way ProDOS does:
+// a 5.25" volume boots through the Disk II controller and needs both
+// blocks, while a 3.5" or hard-disk volume boots through the slot's
+// ProDOS block-driver entry point and fits entirely in block 0.
+static void embeddedPascalBoot(uint32_t totalBlocks, uint8_t b0[512],
+                               uint8_t b1[512])
+{
+  if (totalBlocks == 280) {
+    memcpy(b0, pascalDiskIIBootBlock0, 512);
+    memcpy(b1, pascalDiskIIBootBlock1, 512);
+  } else {
+    memcpy(b0, pascalBlockDevBootBlock, 512);
+    memset(b1, 0, 512);
+  }
+}
+
+// Fill b0/b1 with p-System boot code copied from a donor Pascal volume,
+// for the case where the embedded blocks aren't what the user wants (a
+// different p-System release, or a patched bootstrap).
+static bool loadPascalBootBlocks(const char *donor, uint8_t b0[512],
+                                 uint8_t b1[512])
+{
+  PascalSpector d(false, 0);
+  if (!d.readFile((char *)donor, true)) {
+    printf("ERROR: can't read boot donor image '%s'\n", donor);
+    return false;
+  }
+  if (!d.probe()) {
+    printf("ERROR: '%s' doesn't look like a Pascal volume; refusing to "
+           "take boot code from it\n", donor);
+    return false;
+  }
+  if (!d.readBootBlocks(b0, b1)) {
+    printf("ERROR: can't read boot blocks from '%s'\n", donor);
+    return false;
+  }
+  if (b0[0] != 0x01) {
+    // Every Apple II boot sector/block starts with $01. Refuse rather than
+    // install something that certainly won't boot.
+    printf("ERROR: '%s' block 0 doesn't look like boot code "
+           "(first byte 0x%02X, not 0x01)\n", donor, b0[0]);
+    return false;
+  }
+  return true;
+}
+
 void bootblocksHandler(char *cmd)
 {
+  const bool fromDonor = (cmd && cmd[0]);
   uint8_t b0[512], b1[512];
-  if (!loadBootBlocks(cmd, b0, b1))
-    return;
+
+  if (pascalMode) {
+    if (fromDonor) {
+      if (!loadPascalBootBlocks(cmd, b0, b1))
+        return;
+    } else {
+      // Which embedded bootstrap applies depends on how the finished
+      // volume will be read, so ask the volume how big it is.
+      uint16_t blocks = ((PascalSpector *)inspector)->volumeBlocks();
+      if (!blocks) {
+        printf("ERROR: can't determine the volume size\n");
+        return;
+      }
+      embeddedPascalBoot(blocks, b0, b1);
+    }
+  } else {
+    if (!loadBootBlocks(cmd, b0, b1))
+      return;
+  }
 
   if (!inspector->writeBootBlocks(b0, b1)) {
     printf("ERROR: failed to write boot blocks\n");
     return;
   }
   printf("Boot blocks installed%s%s; use 'save' to make it permanent.\n",
-         (cmd && cmd[0]) ? " from " : " (embedded ProDOS boot code)",
-         (cmd && cmd[0]) ? cmd : "");
-  printf("Note: booting also needs PRODOS and a .SYSTEM file (e.g. "
-         "BASIC.SYSTEM) in the volume root.\n");
+         fromDonor ? " from " : (pascalMode ? " (embedded p-System boot code)"
+                                            : " (embedded ProDOS boot code)"),
+         fromDonor ? cmd : "");
+  if (pascalMode)
+    printf("Note: booting also needs SYSTEM.APPLE and SYSTEM.PASCAL (plus "
+           "SYSTEM.FILER, SYSTEM.EDITOR and friends for a usable system) "
+           "on the volume.\n");
+  else
+    printf("Note: booting also needs PRODOS and a .SYSTEM file (e.g. "
+           "BASIC.SYSTEM) in the volume root.\n");
 }
 
 void formatHandler(char *cmd)
 {
-  if (pascalMode) {
-    printf("ERROR: 'format' isn't supported in Pascal mode yet. Create the "
-           "volume with another tool, then use wozit -P to inspect/modify it.\n");
-    return;
-  }
   if (!cmd || !cmd[0]) {
     printf("Usage: format <filename> [<volume>] [<size>] [bootable]\n");
     printf("  DOS mode:    <volume> is 1-254 (default 254); always 140k.\n");
     printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK);\n");
-    printf("    <size> is 140k, 800k, 5m, 10m, 32m, or a block count\n");
-    printf("    5-65535 (default 140k). Sizes other than 140k must be\n");
+    printf("    <size> is 140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m, or a block\n");
+    printf("    count 5-65535 (default 140k). Sizes other than 140k must be\n");
     printf("    named .hdv or .img. 'bootable' (a reserved word, not\n");
     printf("    usable as a volume name here) installs the standard ProDOS\n");
     printf("    boot block; booting also needs PRODOS and a .SYSTEM file.\n");
-    printf("  A 140k image writes .dsk (DOS) / .po (ProDOS) data; use\n");
-    printf("  wozzle to convert to .woz if needed.\n");
+    printf("  Pascal mode: <volume> is a name 1-7 chars, printable ASCII\n");
+    printf("    but not space or any of  $ = ? , [ # :  (default BLANK).\n");
+    printf("    <size> is any of the above presets or a block count 6-65535\n");
+    printf("    (default 140k); .po up to 800k, .hdv/.img above that.\n");
+    printf("    'bootable' installs the embedded p-System bootstrap that\n");
+    printf("    suits the size; booting also needs SYSTEM.APPLE and\n");
+    printf("    SYSTEM.PASCAL on the volume.\n");
+    printf("    A token that looks like a size is taken as the size, so a\n");
+    printf("    volume named e.g. '12' has to be set afterward with volname.\n");
+    printf("  A 140k image writes .dsk (DOS) / .po (ProDOS, Pascal) data;\n");
+    printf("  use wozzle to convert to .woz if needed.\n");
     return;
   }
 
@@ -666,6 +779,14 @@ void formatHandler(char *cmd)
   // with a digit and volume names never do, so the two can appear in
   // either order. In DOS mode there is no size argument - the numeric
   // argument is the volume number - and images are always 140k.
+  //
+  // Pascal names *may* start with a digit, so that invariant doesn't hold
+  // there: a leading-digit token is read as the size, and a volume whose
+  // name looks like one has to be set afterward with volname. The help
+  // text says so; the alternative (strict positional arguments) makes the
+  // far more common 'format disk.po 800k' silently produce a 140k volume
+  // named 800K, which is worse.
+  const uint32_t minBlocks = pascalMode ? 6 : 5;
   const char *volName = NULL;
   int32_t sizeBlocks = -1;
   bool bootable = false;
@@ -683,9 +804,9 @@ void formatHandler(char *cmd)
         return;
       }
       sizeBlocks = parseSizeSpec(tok[i]);
-      if (sizeBlocks < 5) {
-        printf("ERROR: bad size '%s' (140k, 800k, 5m, 10m, 32m, or a "
-               "block count 5-65535)\n", tok[i]);
+      if (sizeBlocks < (int32_t)minBlocks) {
+        printf("ERROR: bad size '%s' (140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m, "
+               "or a block count %u-65535)\n", tok[i], minBlocks);
         return;
       }
     } else {
@@ -698,19 +819,42 @@ void formatHandler(char *cmd)
   }
   if (sizeBlocks == -1) sizeBlocks = 280;
 
-  // Only a 280-block image round-trips through the .po/.dsk floppy
-  // loaders; anything else must be named for the raw-block HDV path.
-  if (sizeBlocks != 280 &&
-      !hasExtension(fname, ".hdv") && !hasExtension(fname, ".img")) {
+  if (pascalMode) {
+    // A Pascal image is raw ProDOS-order blocks either way. A .po is read
+    // back through the 5.25" floppy loader at exactly 280 blocks, and
+    // through the raw-block path above that (woz.cpp promotes any .po
+    // bigger than a floppy), so .po covers real 5.25" and 3.5" media and
+    // nothing outside that range. Note .dsk is deliberately not accepted:
+    // it forces DOS sector order, which would scramble the blocks.
+    bool po  = hasExtension(fname, ".po");
+    bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img");
+    bool poOk = (sizeBlocks >= 280 && sizeBlocks <= 1600);
+    if (!hdv && !(po && poOk)) {
+      printf("ERROR: a %d-block Pascal image must be named %s\n", sizeBlocks,
+             poOk ? ".po, .hdv or .img" : ".hdv or .img");
+      return;
+    }
+    if (sizeBlocks > 32768) {
+      printf("WARNING: %d blocks is past the 16MB (32768-block) practical "
+             "Apple Pascal volume limit, and a flat 77-file directory "
+             "can't usefully fill even that.\n", sizeBlocks);
+    }
+  } else if (sizeBlocks != 280 &&
+             !hasExtension(fname, ".hdv") && !hasExtension(fname, ".img")) {
+    // Only a 280-block image round-trips through the .po/.dsk floppy
+    // loaders; anything else must be named for the raw-block HDV path.
     printf("ERROR: a %d-block image must be named .hdv or .img\n",
            sizeBlocks);
     return;
   }
 
-  // Validate/normalize the ProDOS volume name up front, before we touch
-  // the filesystem.
+  // Validate/normalize the volume name up front, before we touch the
+  // filesystem. vol[] is sized for ProDOS; Pascal needs only 8 bytes.
   char vol[16] = {0};
-  if (!dosMode) {
+  if (pascalMode) {
+    if (!PascalSpector::normalizeVolumeName(volName ? volName : "BLANK", vol))
+      return;
+  } else if (!dosMode) {
     if (!normalizeVolumeName(volName ? volName : "BLANK", vol))
       return;
   }
@@ -736,6 +880,25 @@ void formatHandler(char *cmd)
     if (v < 1 || v > 254) v = 254;
     ok = buildBlankDosDsk((uint8_t)v, img);
     if (ok) printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, v);
+  } else if (pascalMode) {
+    ok = buildBlankPascal(vol, img, (uint32_t)sizeBlocks);
+    if (ok && bootable) {
+      // The bootstrap that fits this size, straight into blocks 0-1. The
+      // volume boots once the SYSTEM.* files are copied in.
+      embeddedPascalBoot((uint32_t)sizeBlocks, img, img + 512);
+    }
+    if (ok) {
+      printf("Created blank Pascal image '%s' (volume '%s', %d blocks%s)\n",
+             fname, vol, sizeBlocks, bootable ? ", bootable" : "");
+      if (bootable) {
+        printf("Note: booting also needs SYSTEM.APPLE and SYSTEM.PASCAL "
+               "(plus SYSTEM.FILER, SYSTEM.EDITOR and friends for a usable "
+               "system) on the volume.\n");
+        if (sizeBlocks == 280)
+          printf("Note: a 5.25\" image has to be converted to .woz with "
+                 "wozzle before an emulator will boot it.\n");
+      }
+    }
   } else {
     ok = buildBlankProdosPo(vol, img, (uint32_t)sizeBlocks);
     if (ok && bootable) {
@@ -902,13 +1065,13 @@ void krunchafterHandler(char *cmd)
 void helpHandler(char *cmd); // forward decl for commands[]
 
 struct _cmdInfo commands[] = {
-  {"bootblocks", bootblocksHandler, "[<donor>]  : install ProDOS boot code (embedded, or copied from a donor image)" },
+  {"bootblocks", bootblocksHandler, "[<donor>]  : install boot code (embedded, or from a donor image)" },
   {"cat",   catHandler,   "<filename>        : Dump file contents" },
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
   {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },
   {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
   {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
-  {"format", formatHandler, "<fname> [<vol>] [<size>]: create a blank DOS 3.3 or ProDOS image" },
+  {"format", formatHandler, "<fname> [<vol>] [<size>]: create a blank DOS 3.3, ProDOS or Pascal image" },
   {"help",  helpHandler,  "                 : this text" },
   {"info",  infoHandler,  "                 : show filesystem meta-information" },
   {"inspect", inspectHandler, "<filename>   : show meta-info about <filename>" },

@@ -6,6 +6,11 @@
 #include "wozspector.h"
 #include "vent.h"
 
+// Longest Pascal volume name. The name field is a length byte plus 7
+// characters; wozit's formatter needs this too, so it lives here rather
+// than in the .cpp.
+#define MAX_VOL_NAME_LEN 7
+
 // UCSD p-System / Apple Pascal filesystem inspector.
 //
 // Pascal disks use 512-byte blocks in the same interleave as ProDOS, so
@@ -33,6 +38,27 @@ class PascalSpector : public Wozspector {
   virtual bool removeFile(const char *fileName);
   virtual bool renameVolume(const char *newName);
   virtual bool krunch(const char *afterFile);
+
+  virtual bool writeBootBlocks(const uint8_t block0[512],
+                               const uint8_t block1[512]);
+  // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
+  bool readBootBlocks(uint8_t block0[512], uint8_t block1[512]);
+
+  // Total blocks in the loaded volume, or 0 if it won't load. Callers use
+  // this to tell a 5.25" volume from a 3.5"/hard-disk one, since the two
+  // take different p-System bootstraps.
+  uint16_t volumeBlocks();
+
+  // Validate and upper-case a Pascal volume name into out[], which must
+  // hold MAX_VOL_NAME_LEN+1 bytes. Names are 1-7 characters of printable
+  // ASCII, excluding space and the p-System's own wildcard/separator set
+  // ($ = ? , [ # :). Prints the reason on failure. Shared by renameVolume
+  // and wozit's formatter so the rule has exactly one definition.
+  static bool normalizeVolumeName(const char *src, char *out);
+
+  // Today's date packed into the 16-bit Pascal directory date format, for
+  // stamping newly created volumes and files.
+  static uint16_t today();
 
   // Case-insensitive leaf-name lookup (Pascal is case-insensitive and
   // stores names upper-cased).

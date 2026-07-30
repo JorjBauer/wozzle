@@ -183,6 +183,11 @@ class Woz {
   // destructor frees it.
   uint8_t *hdvData;
   uint32_t hdvByteSize;
+  // True when this HDV image came from a .po/.dsk that was larger than a
+  // floppy, rather than from a genuine .hdv/.img. Such an image is raw
+  // blocks under a floppy extension, so writeFile may write it back the
+  // same way; a real hard-disk image still refuses floppy-format output.
+  bool hdvPromotedFromFloppyExt;
 };
 
 #endif

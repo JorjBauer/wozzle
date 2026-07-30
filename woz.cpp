@@ -50,6 +50,7 @@ Woz::Woz(bool verbose, uint8_t dumpflags)
   trackByteFromDataTrack = 255;
   trackLoopCounter = 0;
   imageType = T_AUTO;
+  hdvPromotedFromFloppyExt = false;
   metaData = NULL;
   this->verbose = verbose;
   this->dumpflags = dumpflags;
@@ -427,8 +428,19 @@ bool Woz::writeFile(const char *filename, uint8_t forceType)
     }
   }
 
-  // HDV images can't be represented in any floppy-oriented format. Let
-  // the caller know, rather than silently producing truncated garbage.
+  // Mirror the promotion readFile does. An oversized .po/.dsk was read as
+  // raw blocks, so write it back as raw blocks instead of refusing:
+  // otherwise an 800K .po (how real Apple Pascal 3.5" disks and plenty of
+  // ProDOS volumes ship) could be read and modified but never saved,
+  // except by renaming it .hdv. This deliberately does not apply to a
+  // genuine .hdv/.img, so asking to convert a hard-disk image into a
+  // floppy format is still the error it always was.
+  if (imageType == T_HDV && hdvPromotedFromFloppyExt &&
+      (forceType == T_PO || forceType == T_DSK))
+    forceType = T_HDV;
+
+  // Anything genuinely floppy-oriented (.woz, .nib) still can't represent
+  // a hard-disk image. Say so rather than write truncated garbage.
   if (imageType == T_HDV && forceType != T_HDV) {
     fprintf(stderr, "ERROR: can't convert a hard-disk image to a floppy format\n");
     return false;
@@ -1148,6 +1160,7 @@ bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
                (long long)st.st_size);
       }
       forceType = T_HDV;
+      hdvPromotedFromFloppyExt = true;
     }
   }
 

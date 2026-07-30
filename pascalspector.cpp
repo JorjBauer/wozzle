@@ -17,8 +17,8 @@ const static uint8_t s2map[8] = { 2, 6, 10, 14, 3, 7, 11, 15 };
 
 #define VOL_DIR_START_BLOCK 2
 #define DIR_ENTRY_LEN       26
-#define MAX_VOL_NAME_LEN     7
 #define MAX_FILE_NAME_LEN   15
+// MAX_VOL_NAME_LEN comes from pascalspector.h (wozit's formatter needs it).
 
 static inline uint16_t rd16(const uint8_t p[2])
 {
@@ -31,12 +31,27 @@ static inline void wr16(uint8_t p[2], uint16_t v)
 }
 
 // Pack a Gregorian date into the 16-bit Pascal form: YYYYYYY DDDDD MMMM.
+//
+// The year field nominally holds 0-99 meaning 1900-1999, and it can't just
+// be extended: the Filer writes year 100 to mark a file as "creation in
+// progress", and the p-System silently deletes anything dated 100 or more
+// on the assumption that it's debris from a failed create. So modern dates
+// use Apple's preferred ProDOS windowing, which CiderPress2 applies to
+// Pascal volumes too: 1940-1999 encode as 40-99, and 2000-2039 as 0-39.
+//
+// Outside 1940-2039 there is no encoding at all. Return a zero month, the
+// documented "meaningless date" marker, rather than silently stamping the
+// wrong year (which is what clamping into 1999 used to do for every date
+// from 2000 on).
 static uint16_t packPascalDate(int year, int month, int day)
 {
-  int y = year - 1900;
-  if (y < 0) y = 0;
-  if (y > 100) y = 100;      // 100 is the "in progress" flag; clamp below
-  if (y == 100) y = 99;
+  int y;
+  if (year >= 1940 && year <= 1999)
+    y = year - 1900;
+  else if (year >= 2000 && year <= 2039)
+    y = year - 2000;
+  else
+    return 0;
   if (month < 1 || month > 12) month = 0;
   if (day < 1 || day > 31) day = 1;
   return (uint16_t)(((y & 0x7F) << 9) | ((day & 0x1F) << 4) | (month & 0x0F));
@@ -48,6 +63,34 @@ static uint16_t todayPascalDate()
   struct tm *lt = localtime(&now);
   if (!lt) return 0;
   return packPascalDate(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
+}
+
+uint16_t PascalSpector::today()
+{
+  return todayPascalDate();
+}
+
+bool PascalSpector::normalizeVolumeName(const char *src, char *out)
+{
+  size_t vlen = 0;
+  memset(out, 0, MAX_VOL_NAME_LEN + 1);
+  for (const char *s = src; *s; s++) {
+    if (vlen >= MAX_VOL_NAME_LEN) {
+      printf("ERROR: volume name max %d chars\n", MAX_VOL_NAME_LEN);
+      return false;
+    }
+    char c = (char)toupper((unsigned char)*s);
+    if (c <= 0x20 || (unsigned char)c >= 0x7f || strchr("$=?,[#:", c)) {
+      printf("ERROR: '%c' not allowed in a Pascal volume name\n", *s);
+      return false;
+    }
+    out[vlen++] = c;
+  }
+  if (vlen == 0) {
+    printf("ERROR: empty volume name\n");
+    return false;
+  }
+  return true;
 }
 
 static const char *kindSuffix(uint8_t kind)
@@ -704,23 +747,9 @@ bool PascalSpector::renameVolume(const char *newName)
 
   // Upper-case, validate 1..7 printable chars, none reserved.
   char vn[MAX_VOL_NAME_LEN + 1] = {0};
-  size_t vlen = 0;
-  for (const char *s = newName; *s; s++) {
-    if (vlen >= MAX_VOL_NAME_LEN) {
-      printf("ERROR: volume name max %d chars\n", MAX_VOL_NAME_LEN);
-      return false;
-    }
-    char c = (char)toupper((unsigned char)*s);
-    if (c <= 0x20 || (unsigned char)c >= 0x7f || strchr("$=?,[#:", c)) {
-      printf("ERROR: '%c' not allowed in a Pascal volume name\n", *s);
-      return false;
-    }
-    vn[vlen++] = c;
-  }
-  if (vlen == 0) {
-    printf("ERROR: empty volume name\n");
+  if (!normalizeVolumeName(newName, vn))
     return false;
-  }
+  size_t vlen = strlen(vn);
 
   uint8_t block[512];
   if (!readBlock(VOL_DIR_START_BLOCK, block)) return false;
@@ -734,6 +763,29 @@ bool PascalSpector::renameVolume(const char *newName)
 
   createTree();
   return true;
+}
+
+uint16_t PascalSpector::volumeBlocks()
+{
+  if (!ensureLoaded())
+    return 0;
+  return volBlockCount;
+}
+
+bool PascalSpector::readBootBlocks(uint8_t block0[512], uint8_t block1[512])
+{
+  if (!ensureLoaded())
+    return false;
+  return readBlock(0, block0) && readBlock(1, block1);
+}
+
+bool PascalSpector::writeBootBlocks(const uint8_t block0[512],
+                                    const uint8_t block1[512])
+{
+  if (!ensureLoaded())
+    return false;
+  // writeBlock takes its input const, so no copy is needed here.
+  return writeBlock(0, block0) && writeBlock(1, block1);
 }
 
 bool PascalSpector::moveFileBlocks(uint16_t src, uint16_t dst, uint16_t count)
