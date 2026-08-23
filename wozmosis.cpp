@@ -9,8 +9,9 @@
 // creating intermediate directories as needed).
 //
 // ProDOS files keep their file type, aux type, access flags, creation and
-// modification dates, and version bytes. DOS 3.3 files keep their type and
-// locked flag. Existing destination files are refused unless -f is given.
+// modification dates, and version bytes; a GS/OS extended file keeps both
+// of its forks and its Finder information. DOS 3.3 files keep their type
+// and locked flag. Existing destination files are refused unless -f is given.
 // The destination image file is rewritten only if every copy succeeds.
 //
 // Known limits: ProDOS sparse files are materialized (holes become real
@@ -291,18 +292,47 @@ int main(int argc, char *argv[])
     uint8_t dummy = 0;
     uint8_t *payload = len ? (uint8_t *)data : &dummy;
 
+    // A GS/OS extended file carries a second (resource) fork and a block of
+    // Finder information alongside its data; all three come across too.
+    bool extended = (mode == 'p') && ProdosSpector::isExtendedFile(e);
+    char *rdata = NULL;
+    uint32_t rlen = 0;
+    ProdosFork dataInfo, resInfo;
+    uint8_t extKeyBlock[512];
+    bool haveExtKeyBlock = false;
+    if (extended) {
+      ProdosSpector *psrc = (ProdosSpector *)src;
+      rlen = psrc->getForkContents(e, true, &rdata);
+      psrc->getForkInfo(e, false, &dataInfo);
+      psrc->getForkInfo(e, true, &resInfo);
+      haveExtKeyBlock = psrc->readExtendedKeyBlock(e, extKeyBlock);
+    }
+
     if (force && dst->findEntry(path.c_str())) {
       if (!dst->removeFile(path.c_str())) {
         printf("ERROR: couldn't replace '%s'; destination not modified\n",
                path.c_str());
         free(data);
+        free(rdata);
         return 1;
       }
       if (verbose) printf("(replacing %s)\n", path.c_str());
     }
 
     bool ok;
-    if (mode == 'p') {
+    if (extended) {
+      // A fork the source doesn't have at all stays absent on the copy; a
+      // fork it has but which is empty is recreated empty, so pass a
+      // non-NULL pointer to tell those two cases apart.
+      static const uint8_t emptyFork = 0;
+      const uint8_t *dptr = len ? (const uint8_t *)data
+                          : (dataInfo.storageType ? &emptyFork : NULL);
+      const uint8_t *rptr = rlen ? (const uint8_t *)rdata
+                          : (resInfo.storageType ? &emptyFork : NULL);
+      ok = ((ProdosSpector *)dst)->writeExtendedFileWithMeta(
+             dptr, len, rptr, rlen, path.c_str(), e->getProdosFent(),
+             haveExtKeyBlock ? extKeyBlock : NULL);
+    } else if (mode == 'p') {
       ok = ((ProdosSpector *)dst)->writeFileWithMeta(payload, path.c_str(),
                                                      len, e->getProdosFent());
     } else if (mode == 'P') {
@@ -315,14 +345,21 @@ int main(int argc, char *argv[])
                                              len);
     }
     free(data);
+    free(rdata);
 
     if (!ok) {
       printf("ERROR: failed to copy '%s'; destination not modified\n",
              path.c_str());
       return 1;
     }
-    if (verbose) printf("  %s (%u bytes)\n", path.c_str(), len);
-    bytes += len;
+    if (verbose) {
+      if (extended)
+        printf("  %s (%u bytes data + %u bytes resource)\n", path.c_str(),
+               len, rlen);
+      else
+        printf("  %s (%u bytes)\n", path.c_str(), len);
+    }
+    bytes += len + rlen;
   }
 
   // ---- persist: only reached when every copy succeeded ----

@@ -98,6 +98,11 @@ class Woz {
   bool isHdv() const { return imageType == T_HDV; }
   uint32_t hdvByteCount() const { return hdvByteSize; }
   uint8_t *hdvBuffer() { return hdvData; }
+  // Drop the tail of a hard-drive image: the buffer keeps its first
+  // newByteSize bytes, and writeFile() then emits a file that much
+  // smaller. Shrinking only - growing an image isn't something a
+  // filesystem edit can ask for here.
+  bool truncateHdv(uint32_t newByteSize);
 
  protected:
   bool writeWozFile(const char *filename, uint8_t subtype);

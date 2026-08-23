@@ -136,13 +136,48 @@ Dumps the contents of the given file to stdout. Note that this is affected by th
 
 Turns on or off high-bit stripping when using *cat* on a file. Useful for inspecting TXT files.
 
-*cpout <inputname> <outputname>*
+*cpout [-r] <inputname> <outputname>*
 
-Copies a file from inside the image to a file outside the image.
+Copies a file from inside the image to a file outside the image. With
+*-r*, it copies the resource fork of a GS/OS extended file instead of its
+data fork.
+
+GS/OS extended (forked) files, ProDOS storage type 5, are supported in
+ProDOS mode: *ls* marks them with a `+` after the name, *inspect* reports
+the shape and size of each fork, and *rm* frees both forks along with the
+extended key block. *cpin* creates one when the host file is an
+AppleSingle file carrying a resource fork, taking the ProDOS type and aux
+type from the AppleSingle metadata. `wozmosis -p` copies extended files
+between images with both forks and their GS/OS Finder information intact.
 
 *list <filename>*
 
 De-tokenize and show the given Applesoft BASIC program.
+
+*resize [-n] <blocks>*
+
+Shrinks a ProDOS volume in place - the volume directory header, the volume
+bitmap, and the image file itself - so an oversized image can be cut down
+to the size a device or partition actually offers, without formatting a
+new volume and copying everything across. The size is a block count or one
+of the *format* presets (140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m).
+
+Anything still allocated at or past the new end is moved down into free
+space below it: the blocks are copied and every pointer that named them is
+corrected - directory entries' key pointers, sapling and tree index
+blocks, the mini-entries of an extended file's key block, directory chain
+links, subdirectory parent pointers, and each entry's header pointer. Free
+space is counted first, so if the volume's contents simply won't fit in
+the smaller size it says how many more blocks would be needed and changes
+nothing. A block marked allocated that no file or directory claims is
+released, with a warning. *-n* skips relocation entirely: the resize is
+then refused whenever the tail is occupied, which is the way to ask
+whether a volume can be shrunk without rewriting anything.
+
+Bitmap blocks the smaller volume no longer needs become free space. Raw
+block images only (.img/.hdv, or a .po larger than a floppy), and it only
+shrinks: growing a volume still means formatting a bigger image and
+copying into it. Takes effect on *save*.
 
 
 Limitations

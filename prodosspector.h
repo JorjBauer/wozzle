@@ -6,15 +6,47 @@
 #include "wozspector.h"
 #include "vent.h"
 
+// ProDOS storage type 5 is an "extended" file: the GS/OS forked file. Its
+// key block is neither data nor an index but an extended key block holding
+// two mini-entries - one per fork - each describing an ordinary
+// seedling/sapling/tree structure of its own.
+#define PRODOS_STORAGE_EXTENDED 0x05
+
+// One fork of an extended file, as described by its mini-entry. A fork
+// GS/OS never wrote is absent, and reads back with storageType 0.
+struct ProdosFork {
+  uint8_t storageType;  // seedling/sapling/tree, for this fork alone
+  uint16_t keyBlock;
+  uint16_t blocksUsed;
+  uint32_t eof;
+};
+
 class ProdosSpector : public Wozspector {
  public:
   ProdosSpector(bool verbose, uint8_t dumpflags);
   ~ProdosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
-  virtual uint32_t getAllocatedByteCount(Vent *e) {
-    return (uint32_t)e->getBlocksUsed() * 512;
-  }
+  virtual uint32_t getAllocatedByteCount(Vent *e);
+
+  // True if `e` is an extended (forked) file. Its getFileContents() and
+  // getEofLength() describe the data fork only; the resource fork is
+  // reachable through getForkContents().
+  static bool isExtendedFile(Vent *e);
+
+  // Contents of one fork of an extended file. For a file that isn't
+  // extended, the data fork is the whole file and the resource fork is
+  // empty. Malloc()s into *toWhere like getFileContents(); returns the
+  // length (0, with *toWhere NULL, for an absent or empty fork).
+  uint32_t getForkContents(Vent *e, bool resourceFork, char **toWhere);
+
+  // Describe one fork of an extended file without reading its contents.
+  bool getForkInfo(Vent *e, bool resourceFork, struct ProdosFork *out);
+
+  // Copy out an extended file's raw extended key block. The bytes past the
+  // two mini-entries carry GS/OS Finder information, which an image-to-
+  // image copy preserves verbatim.
+  bool readExtendedKeyBlock(Vent *e, uint8_t out[512]);
   virtual uint8_t applesoftHeaderBytes() { return 0; };
 
   virtual bool writeFileToImage(uint8_t *fileContents,
@@ -39,11 +71,31 @@ class ProdosSpector : public Wozspector {
   // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
   bool readBootBlocks(uint8_t block0[512], uint8_t block1[512]);
   virtual bool renameVolume(const char *newName);
+  // Shrink the volume (and the image file behind it) to `newBlocks`,
+  // rewriting the volume directory header and bitmap. Raw block images
+  // only, and shrinking only. With `relocate`, blocks still allocated at
+  // or past the new end are moved into free space below it and every
+  // pointer to them corrected; without it (or when there isn't enough
+  // free space below), the resize is refused and nothing changes.
+  bool resizeVolume(uint32_t newBlocks, bool relocate);
+  // Total blocks the volume directory header currently claims.
+  uint32_t volumeBlockCount() const { return numBlocksTotal; }
   // Write a file preserving the metadata (type, aux, access, dates,
   // versions) of an existing directory entry - for image-to-image copies.
   bool writeFileWithMeta(uint8_t *fileContents, const char *fileName,
                          uint32_t fileSize,
                          const struct _prodosFent *meta);
+  // Create an extended (forked) file: both forks are stored with ordinary
+  // seedling/sapling/tree structures and described by mini-entries in a
+  // fresh extended key block. Metadata comes from `meta` exactly as in
+  // writeFileWithMeta. `srcKeyBlock`, when non-NULL, is a donor extended
+  // key block whose Finder-information bytes (everything outside the two
+  // mini-entries) are carried over; the pointers in it are ignored.
+  bool writeExtendedFileWithMeta(const uint8_t *dataFork, uint32_t dataLen,
+                                 const uint8_t *resFork, uint32_t resLen,
+                                 const char *fileName,
+                                 const struct _prodosFent *meta,
+                                 const uint8_t *srcKeyBlock);
 protected:
   virtual Vent *createTree();
 
@@ -73,8 +125,45 @@ protected:
   // Mark a single block free in the in-RAM volume bitmap (no-op for the
   // boot blocks / out-of-range values). Call flushFreeBlockList() after.
   void markBlockFree(uint16_t block);
-  // Free every data/index block belonging to a seedling or sapling entry.
+  // Free every data/index block belonging to an entry, forks included.
   bool freeFileBlocks(const struct _prodosFent *fe);
+  // Free the blocks of one seedling/sapling/tree structure rooted at `kp`.
+  // (freeFileBlocks handles the directory-entry level on top of this.)
+  bool freeForkBlocks(uint8_t storageType, uint16_t kp);
+  // Read one seedling/sapling/tree structure of `len` bytes rooted at
+  // `kp` into a fresh malloc()ed buffer. `name` only labels warnings about
+  // pointers that leave the volume.
+  uint32_t readForkBlocks(uint8_t storageType, uint16_t kp, uint32_t len,
+                          const char *name, char **toWhere);
+  // Store `size` bytes as a seedling, sapling, or tree, reporting which
+  // shape was used, the key block naming it, and the blocks consumed
+  // (data plus index). On failure the caller must reloadFreeBlockBitmap().
+  bool writeForkBlocks(const uint8_t *contents, uint32_t size,
+                       uint8_t *storageTypeOut, uint16_t *keyBlockOut,
+                       uint16_t *blocksUsedOut);
+  // Highest block number a seedling/sapling/tree (or, for storage type 5,
+  // an extended file and both its forks) references, index blocks
+  // included. 0 if the structure can't be read.
+  uint32_t highestBlockInFork(uint8_t storageType, uint16_t kp);
+  // Look for any directory or file block at or past `limit`. Returns true
+  // and describes the first one found in `what`.
+  bool findBlockUseAtOrAbove(uint32_t limit, char *what, size_t whatSz);
+  // Move every allocated block at or past `limit` into free space below
+  // it, repointing everything that named them, and report how many moved.
+  // Refuses without changing anything if there isn't room below.
+  bool relocateBlocksBelow(uint32_t limit, uint32_t *movedOut);
+  // Index every stored block pointer in the volume, so relocation knows
+  // what to correct. `refsOut` is a RefMap (an implementation detail of
+  // prodosspector.cpp, hence void * here rather than dragging the STL
+  // container into this header).
+  void collectBlockRefs(void *refsOut);
+  void collectForkRefs(void *refsOut, uint8_t storageType, uint16_t kp);
+  // Read/write one mini-entry (fork descriptor) inside an extended key
+  // block image held in `keyBlockData`.
+  static void readForkEntry(const uint8_t keyBlockData[512], bool resourceFork,
+                            struct ProdosFork *out);
+  static void writeForkEntry(uint8_t keyBlockData[512], bool resourceFork,
+                             const struct ProdosFork *f);
   // Locate an entry by name within the directory whose key block is dirKey.
   // On success, returns the block holding it and the byte offset of the
   // entry within the flat trackData buffer.

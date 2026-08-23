@@ -280,8 +280,12 @@ void Vent::Dump(bool verbose)
 	printf("*");
       }
       
-      printf("%15s  ", name);
-      
+      // A '+' after the name marks a GS/OS extended file - one that has a
+      // resource fork as well as a data fork. Its listed byte size is the
+      // 512 bytes of its extended key block, which is all the directory
+      // entry records; 'inspect' shows what each fork really holds.
+      printf("%15s%s ", name, entryType == 0x05 ? "+" : " ");
+
       char auxData[16] = "";
       switch (fileType) {
       case FT_TYP:

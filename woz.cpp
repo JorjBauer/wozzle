@@ -896,6 +896,30 @@ bool Woz::readHdvFile(const char *filename)
   return true;
 }
 
+bool Woz::truncateHdv(uint32_t newByteSize)
+{
+  if (imageType != T_HDV || !hdvData) {
+    fprintf(stderr, "Not a hard-drive image; can't truncate it\n");
+    return false;
+  }
+  if (newByteSize > hdvByteSize) {
+    fprintf(stderr, "Can't grow an image from %u to %u bytes\n",
+            hdvByteSize, newByteSize);
+    return false;
+  }
+  if (!newByteSize || (newByteSize % 512)) {
+    fprintf(stderr, "Image size must be a nonzero multiple of 512 bytes\n");
+    return false;
+  }
+  // Hand the tail back if the allocator will take it. Keeping the bigger
+  // buffer is harmless either way: hdvByteSize is what gets written.
+  uint8_t *smaller = (uint8_t *)realloc(hdvData, newByteSize);
+  if (smaller)
+    hdvData = smaller;
+  hdvByteSize = newByteSize;
+  return true;
+}
+
 bool Woz::writeHdvFile(const char *filename)
 {
   if (!hdvData || !hdvByteSize) {

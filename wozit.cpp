@@ -39,6 +39,8 @@ char infoname[256] = {0};
 bool verbose = false;
 bool dosMode = true;    // DOS 3.3 mode (default)
 bool pascalMode = false; // UCSD p-System / Apple Pascal mode (-P)
+// ProDOS (-p) is the mode that is neither of the other two.
+static inline bool prodosMode() { return !dosMode && !pascalMode; }
 bool striphi = false;
 bool useAllocation = false; // cpout uses full on-disk allocation not hdr length
 
@@ -124,11 +126,20 @@ void cat7Handler(char *cmd)
 void cpoutHandler(char *cmd)
 {
   // cpout: copy from a file in the image to a file outside the image
-  // cpout <image filename> <output filename>  (source may be a ProDOS path)
+  // cpout [-r] <image filename> <output filename>
+  //   (source may be a ProDOS path; -r takes the resource fork of a GS/OS
+  //    extended file instead of its data fork)
+  bool wantResourceFork = false;
+  if (!strncmp(cmd, "-r ", 3)) {
+    wantResourceFork = true;
+    cmd += 3;
+    while (*cmd == ' ') cmd++;
+  }
+
   char buf[256];
   char *p = strstr(cmd, " ");
   if (!p) {
-    printf("Error parsing arguments. Usage: cpout <SOURCE> <DEST>\n");
+    printf("Error parsing arguments. Usage: cpout [-r] <SOURCE> <DEST>\n");
     return;
   }
   uint32_t len = p-cmd;
@@ -151,9 +162,30 @@ void cpoutHandler(char *cmd)
     return;
   }
 
+  bool isExtended = prodosMode() && ProdosSpector::isExtendedFile(fp);
+  if (wantResourceFork && !isExtended) {
+    printf("'%s' has no resource fork (it isn't a GS/OS extended file)\n",
+           buf);
+    return;
+  }
+
   char *dat = NULL;
   uint32_t s;
-  if (useAllocation) {
+  if (isExtended) {
+    // Each fork is its own seedling/sapling/tree, so the whole-allocation
+    // (-A) reading of the file is the fork's allocation.
+    ProdosSpector *ps = (ProdosSpector *)inspector;
+    s = ps->getForkContents(fp, wantResourceFork, &dat);
+    if (useAllocation) {
+      ProdosFork f;
+      if (ps->getForkInfo(fp, wantResourceFork, &f) && f.storageType &&
+          (uint32_t)f.blocksUsed * 512 > s) {
+        fprintf(stderr,
+                "WARNING: -A can't extend a fork past its recorded length; "
+                "copying '%s' as %u bytes.\n", buf, s);
+      }
+    }
+  } else if (useAllocation) {
     s = inspector->getFileAllocation(fp, &dat);
   } else {
     s = inspector->getFileContents(fp, &dat);
@@ -197,6 +229,8 @@ void cpinHandler(char *cmd)
   // If it's an AppleSingle file, then the type comes from the AppleSingle
   //   ProDOS file format data; if it's not an AppleSingle file, then it's
   //   assumed it's an as-is binary file
+  // An AppleSingle resource fork entry makes the destination a GS/OS
+  //   extended (forked) file, which needs a ProDOS image.
 
   // Parse arguments:
   //   cpin <source> <dest> [type [aux]]
@@ -257,6 +291,8 @@ void cpinHandler(char *cmd)
 
   // Read the file contents to a buffer
   uint8_t *dataToCopy = NULL;
+  uint8_t *resourceToCopy = NULL; // set only by an AppleSingle resource fork
+  uint32_t resourceSize = 0;
   uint8_t *fileContents = (uint8_t *)malloc(fileSize);
   FILE *in = fopen(fn, "r");
   if (!in) {
@@ -314,6 +350,16 @@ void cpinHandler(char *cmd)
             }
             dataToCopy = (uint8_t *)malloc(fileSize);
             memcpy(dataToCopy, &fileContents[ntohl(as->entry[i].offset)], fileSize);
+          }
+          else if (ntohl(as->entry[i].entryID) == as_resourceFork) {
+            // A resource fork makes this a GS/OS extended file on the
+            // image: two forks described by an extended key block.
+            resourceSize = ntohl(as->entry[i].length);
+            if (resourceToCopy)
+              free(resourceToCopy);
+            resourceToCopy = (uint8_t *)malloc(resourceSize ? resourceSize : 1);
+            memcpy(resourceToCopy, &fileContents[ntohl(as->entry[i].offset)],
+                   resourceSize);
           } else {
             printf("ERROR: unknown entry ID type\n");
             foundAppleSingle = false;
@@ -351,12 +397,39 @@ void cpinHandler(char *cmd)
     inspector->removeFile(destfn);
   }
 
+  // An AppleSingle file carrying a resource fork becomes a GS/OS extended
+  // file. Only ProDOS has those; anywhere else the resource fork has no
+  // home, so say so rather than dropping it silently.
+  bool wantExtended = (foundAppleSingle && resourceToCopy);
+  if (wantExtended && !prodosMode()) {
+    printf("ERROR: '%s' has a resource fork, which only ProDOS images can "
+           "store\n", fn);
+    if (dataToCopy) free(dataToCopy);
+    free(resourceToCopy);
+    free(fileContents);
+    return;
+  }
+
   // Write the file into the image
-  if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents, destfn,
-                                   filetype, auxTypeData, fileSize)) {
+  if (wantExtended) {
+    struct _prodosFent meta;
+    memset(&meta, 0, sizeof(meta));
+    meta.fileType = filetype;
+    meta.accessFlags = 0xC3; // destroy/rename/write/read, as cpin always sets
+    meta.typeData[0] = auxTypeData & 0xFF;
+    meta.typeData[1] = (auxTypeData >> 8);
+    if (!((ProdosSpector *)inspector)->writeExtendedFileWithMeta(
+           dataToCopy ? dataToCopy : fileContents, fileSize,
+           resourceToCopy, resourceSize, destfn, &meta, NULL)) {
+      printf("ERROR: Failed to write file\n");
+    }
+  } else if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents,
+                                          destfn, filetype, auxTypeData,
+                                          fileSize)) {
     printf("ERROR: Failed to write file\n");
   }
   if (dataToCopy) free(dataToCopy);
+  if (resourceToCopy) free(resourceToCopy);
   free(fileContents);
 }
 
@@ -553,6 +626,46 @@ static int32_t parseSizeSpec(const char *tok)
   long v = strtol(tok, &end, 10);
   if (*tok && !*end && v >= 0 && v <= 0xFFFF) return (int32_t)v;
   return -1;
+}
+
+void resizeHandler(char *cmd)
+{
+  // resize <blocks>: shrink a ProDOS volume, and the image file holding
+  // it, to the given size. Refuses if anything is allocated up there.
+  if (!prodosMode()) {
+    printf("ERROR: resize is ProDOS-only\n");
+    return;
+  }
+  // -n: don't move anything; refuse if the tail is occupied.
+  bool relocate = true;
+  if (cmd && !strncmp(cmd, "-n ", 3)) {
+    relocate = false;
+    cmd += 3;
+    while (*cmd == ' ') cmd++;
+  }
+
+  char tok[32];
+  if (!cmd || sscanf(cmd, "%31s", tok) != 1) {
+    printf("Usage: resize [-n] <blocks>   (a block count, or 140k/800k/4m/"
+           "5m/8m/10m/16m/32m; -n: refuse rather than move blocks down)\n");
+    return;
+  }
+  int32_t blocks = parseSizeSpec(tok);
+  if (blocks < 1) {
+    printf("ERROR: bad size '%s' (a block count 1-65535, or 140k, 800k, "
+           "4m, 5m, 8m, 10m, 16m, 32m)\n", tok);
+    return;
+  }
+
+  ProdosSpector *ps = (ProdosSpector *)inspector;
+  ps->getTree(); // the volume's real block count isn't known until it loads
+  uint32_t before = ps->volumeBlockCount();
+  if (!ps->resizeVolume((uint32_t)blocks, relocate))
+    return;
+  if ((uint32_t)blocks != before) {
+    printf("Volume resized from %u to %d blocks (%d bytes); "
+           "'save' to write it out\n", before, blocks, blocks * 512);
+  }
 }
 
 static bool hasExtension(const char *fname, const char *ext)
@@ -1069,7 +1182,7 @@ struct _cmdInfo commands[] = {
   {"cat",   catHandler,   "<filename>        : Dump file contents" },
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
   {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },
-  {"cpout", cpoutHandler, "<SOURCE> <DEST> : copy image file <SOURCE> out to host filesystem <DEST>" },
+  {"cpout", cpoutHandler, "[-r] <SRC> <DEST>: copy <SRC> out to the host (-r: resource fork)" },
   {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
   {"format", formatHandler, "<fname> [<vol>] [<size>]: create a blank DOS 3.3, ProDOS or Pascal image" },
   {"help",  helpHandler,  "                 : this text" },
@@ -1080,6 +1193,7 @@ struct _cmdInfo commands[] = {
   {"list",  listHandler,  "<filename>       : Applesoft basic program detokenizer" },
   {"ls",    lsHandler,   "                   : List directory" },
   {"mkdir", mkdirHandler, "<dirname>        : create a directory (ProDOS only)" },
+  {"resize", resizeHandler, "[-n] <blocks>  : shrink a ProDOS volume and its image file" },
   {"rm",    rmHandler,    "[-r] <filename>  : delete a file (-r: a directory tree)" },
   {"rmdir", rmdirHandler, "<dirname>        : delete an empty directory (ProDOS only)" },
   {"save",  saveHandler, "[filename]       : save disk image (default: overwrite the loaded image)" },

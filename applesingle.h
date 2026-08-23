@@ -1,12 +1,17 @@
 #include <stdint.h>
 
-typedef struct _asEntry {
+// These describe bytes as they rest in an AppleSingle file, so they must
+// be packed: num_entries ends on an odd 2-byte boundary and the entry
+// descriptors follow it immediately at offset 26. Left unpacked, the
+// compiler aligns the entry array to 4 and every entry is read two bytes
+// late.
+typedef struct __attribute__((packed)) _asEntry {
   uint32_t entryID;
   uint32_t offset;
   uint32_t length;
 } asEntry;
 
-typedef struct _applesingle {
+typedef struct __attribute__((packed)) _applesingle {
   uint32_t magic; // 0x00051600
   uint32_t version; // 0x000020000
   uint8_t filler[16]; // all zeroes
@@ -15,7 +20,7 @@ typedef struct _applesingle {
 } applesingle;
 
 // Structure of as_prodosFileInfo type
-typedef struct _type11prodos {
+typedef struct __attribute__((packed)) _type11prodos {
   uint16_t access;
   uint16_t filetype;
   uint32_t auxtype;

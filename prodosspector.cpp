@@ -10,6 +10,8 @@
 
 #include <stack>
 #include <set>
+#include <map>
+#include <vector>
 using namespace std;
 
 struct _idxHeader {
@@ -33,6 +35,8 @@ enum {
   ft_seedling  = 0x01,
   ft_sapling   = 0x02,
   ft_tree      = 0x03,
+  ft_pascal    = 0x04,
+  ft_extended  = 0x05,
   ft_subdir    = 0x0D,
   ft_subdirhdr = 0x0E,
   ft_voldirhdr = 0x0F
@@ -478,6 +482,484 @@ bool ProdosSpector::renameVolume(const char *newName)
   return true;
 }
 
+// The highest block number one seedling/sapling/tree structure touches -
+// index blocks included. Pointers that leave the volume are ignored here;
+// they're corruption, and the resize check that calls this reports on
+// blocks that are real but too high. Returns 0 for an unreadable shape.
+uint32_t ProdosSpector::highestBlockInFork(uint8_t storage, uint16_t kp)
+{
+  if (!validBlock(kp))
+    return 0;
+  uint32_t hi = kp;
+
+  if (storage == ft_sapling) {
+    for (int i = 0; i < 256; i++) {
+      uint16_t b = trackData[512 * kp + 256 + i] * 256 + trackData[512 * kp + i];
+      if (b && validBlock(b) && b > hi) hi = b;
+    }
+  } else if (storage == ft_tree) {
+    for (int mi = 0; mi < 128; mi++) {
+      uint16_t ib = trackData[512 * kp + 256 + mi] * 256 + trackData[512 * kp + mi];
+      if (!ib || !validBlock(ib)) continue;
+      if (ib > hi) hi = ib;
+      for (int i = 0; i < 256; i++) {
+        uint16_t b = trackData[512 * ib + 256 + i] * 256 + trackData[512 * ib + i];
+        if (b && validBlock(b) && b > hi) hi = b;
+      }
+    }
+  } else if (storage == ft_extended) {
+    uint8_t keyBlockData[512];
+    if (!readBlock(kp, keyBlockData))
+      return hi;
+    for (int pass = 0; pass < 2; pass++) {
+      struct ProdosFork f;
+      readForkEntry(keyBlockData, pass == 1, &f);
+      if (!f.storageType) continue;
+      uint32_t fh = highestBlockInFork(f.storageType, f.keyBlock);
+      if (fh > hi) hi = fh;
+    }
+  }
+  // ft_seedling (and anything else) is just the key block itself.
+  return hi;
+}
+
+// Walk every directory chain and file, reporting the first thing found at
+// or past `limit`. Returns true if something is up there, and fills `what`
+// with a description of it.
+bool ProdosSpector::findBlockUseAtOrAbove(uint32_t limit, char *what,
+                                          size_t whatSz)
+{
+  if (!tree)
+    createTree();
+  if (!tree)
+    return false;
+
+  for (Vent *p = tree; p; p = p->nextEnt()) {
+    if (p->isHeader()) {
+      // Directory blocks are a chain hanging off the header's key block.
+      set<uint16_t> visited;
+      uint16_t b = p->keyPointerVal();
+      while (b && validBlock(b) && !visited.count(b)) {
+        if (b >= limit) {
+          snprintf(what, whatSz, "directory '%s' occupies block %u",
+                   p->getName(), b);
+          return true;
+        }
+        visited.insert(b);
+        b = trackData[512 * b + 2] + trackData[512 * b + 3] * 256;
+      }
+      continue;
+    }
+    if (p->isDirectory())
+      continue; // counted through its own header above
+
+    uint32_t hi = highestBlockInFork(p->getStorageType(), p->keyPointerVal());
+    if (hi >= limit) {
+      snprintf(what, whatSz, "file '%s' occupies block %u", p->getName(), hi);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Where a block number is stored. ProDOS writes block pointers two ways:
+// as two adjacent bytes (a directory entry's key pointer) and split across
+// the halves of an index block (low byte at i, high byte at 256+i). One
+// pair of offsets covers both.
+namespace {
+  struct BlockRef {
+    uint16_t container;  // block the pointer lives in
+    uint16_t offLow;     // byte offset of the low half within that block
+    uint16_t offHigh;    // byte offset of the high half
+  };
+  typedef map<uint16_t, vector<BlockRef> > RefMap;
+}
+
+// Record every stored pointer to every block, so a block can be moved and
+// everything naming it corrected. Walks the directory tree from block 2:
+// directory chain links, each entry's key and header pointers, a
+// subdirectory header's parent pointer, and the index blocks of every
+// file (both forks of an extended one). Deliberately skips the volume
+// header's bitmap pointer: the bitmap never moves, because resize refuses
+// any size that wouldn't leave room for it where it is.
+void ProdosSpector::collectBlockRefs(void *refsOut)
+{
+  RefMap &refs = *(RefMap *)refsOut;
+
+  // A stack of directories still to walk, so a deep tree can't recurse
+  // this function past its welcome.
+  stack<uint16_t> pending;
+  set<uint16_t> walked;
+  pending.push(2);
+
+  while (!pending.empty()) {
+    uint16_t dirKey = pending.top();
+    pending.pop();
+    if (walked.count(dirKey) || !validBlock(dirKey))
+      continue;
+    walked.insert(dirKey);
+
+    set<uint16_t> chainSeen;
+    uint16_t b = dirKey;
+    while (b && validBlock(b) && !chainSeen.count(b)) {
+      chainSeen.insert(b);
+      uint8_t *blk = &trackData[512 * b];
+
+      uint16_t prev = blk[0] + blk[1] * 256;
+      uint16_t next = blk[2] + blk[3] * 256;
+      if (prev) {
+        BlockRef r = { b, 0, 1 };
+        refs[prev].push_back(r);
+      }
+      if (next) {
+        BlockRef r = { b, 2, 3 };
+        refs[next].push_back(r);
+      }
+
+      for (int i = 0; i < 13; i++) {
+        uint16_t off = 4 + i * 0x27;
+        uint8_t *e = blk + off;
+        uint8_t st = e[0] >> 4;
+
+        if (b == dirKey && i == 0) {
+          // Directory header. A subdirectory's points back at the block
+          // holding its entry in the parent.
+          if (st == ft_subdirhdr) {
+            uint16_t parent = e[0x23] + e[0x24] * 256;
+            if (parent) {
+              BlockRef r = { b, (uint16_t)(off + 0x23), (uint16_t)(off + 0x24) };
+              refs[parent].push_back(r);
+            }
+          }
+          continue;
+        }
+        if (!st || !(e[0] & 0x0F))
+          continue; // empty or deleted slot
+
+        uint16_t kp = e[0x11] + e[0x12] * 256;
+        if (kp) {
+          BlockRef r = { b, (uint16_t)(off + 0x11), (uint16_t)(off + 0x12) };
+          refs[kp].push_back(r);
+        }
+        uint16_t hp = e[0x25] + e[0x26] * 256;
+        if (hp) {
+          BlockRef r = { b, (uint16_t)(off + 0x25), (uint16_t)(off + 0x26) };
+          refs[hp].push_back(r);
+        }
+
+        if (st == ft_subdir)
+          pending.push(kp);
+        else
+          collectForkRefs(refsOut, st, kp);
+      }
+
+      b = blk[2] + blk[3] * 256;
+    }
+  }
+}
+
+// The index-block pointers of one file structure (recursing into both
+// forks for an extended file). The structure's own key block is pointed at
+// by the directory entry, which the caller already recorded.
+void ProdosSpector::collectForkRefs(void *refsOut, uint8_t storage,
+                                    uint16_t kp)
+{
+  RefMap &refs = *(RefMap *)refsOut;
+  if (!kp || !validBlock(kp))
+    return;
+
+  if (storage == ft_sapling) {
+    for (int i = 0; i < 256; i++) {
+      uint16_t b = trackData[512 * kp + 256 + i] * 256 + trackData[512 * kp + i];
+      if (!b) continue; // sparse hole
+      BlockRef r = { kp, (uint16_t)i, (uint16_t)(256 + i) };
+      refs[b].push_back(r);
+    }
+  } else if (storage == ft_tree) {
+    for (int mi = 0; mi < 128; mi++) {
+      uint16_t ib = trackData[512 * kp + 256 + mi] * 256 + trackData[512 * kp + mi];
+      if (!ib) continue;
+      BlockRef r = { kp, (uint16_t)mi, (uint16_t)(256 + mi) };
+      refs[ib].push_back(r);
+      if (!validBlock(ib)) continue;
+      for (int i = 0; i < 256; i++) {
+        uint16_t b = trackData[512 * ib + 256 + i] * 256 + trackData[512 * ib + i];
+        if (!b) continue;
+        BlockRef dr = { ib, (uint16_t)i, (uint16_t)(256 + i) };
+        refs[b].push_back(dr);
+      }
+    }
+  } else if (storage == ft_extended) {
+    for (int pass = 0; pass < 2; pass++) {
+      uint16_t mini = pass ? 0x100 : 0x000;
+      uint8_t *m = &trackData[512 * kp + mini];
+      uint8_t fst = m[0];
+      uint16_t fkp = m[1] + m[2] * 256;
+      if (!fst || !fkp) continue;
+      BlockRef r = { kp, (uint16_t)(mini + 1), (uint16_t)(mini + 2) };
+      refs[fkp].push_back(r);
+      collectForkRefs(refsOut, fst, fkp);
+    }
+  }
+  // A seedling's key block *is* its data; nothing else points at anything.
+}
+
+// Move every allocated block at or past `limit` down into free space below
+// it, correcting every pointer that named the moved block. Refuses up
+// front, changing nothing, if there isn't enough free space below the
+// limit to hold them all.
+bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
+{
+  *movedOut = 0;
+
+  // What has to move, and what there is to move it into.
+  vector<uint16_t> toMove;
+  uint32_t freeBelow = 0;
+  for (uint32_t b = 0; b < numBlocksTotal; b++) {
+    uint32_t byteIdx = b / 8;
+    if (byteIdx >= freeBlockBitmapBytes)
+      break;
+    bool isFree = (freeBlockBitmap[byteIdx] & (0x80 >> (b % 8))) != 0;
+    if (b < limit) {
+      if (isFree) freeBelow++;
+    } else if (!isFree) {
+      toMove.push_back((uint16_t)b);
+    }
+  }
+  if (toMove.empty())
+    return true;
+
+  if (toMove.size() > freeBelow) {
+    printf("ERROR: %zu block%s sit%s at or past block %u, but only %u free "
+           "block%s below it - %zu more needed. Nothing changed.\n",
+           toMove.size(), toMove.size() == 1 ? "" : "s",
+           toMove.size() == 1 ? "s" : "", limit, freeBelow,
+           freeBelow == 1 ? "" : "s", toMove.size() - freeBelow);
+    return false;
+  }
+
+  RefMap refs;
+  collectBlockRefs(&refs);
+
+  printf("Moving %zu block%s out of the last %u block%s of the volume...\n",
+         toMove.size(), toMove.size() == 1 ? "" : "s",
+         (unsigned)(numBlocksTotal - limit),
+         numBlocksTotal - limit == 1 ? "" : "s");
+
+  // A block only ever moves down into free space below the limit, so a
+  // destination is never itself moved: this map stays one level deep.
+  map<uint16_t, uint16_t> moved;
+  set<uint16_t> dirty; // blocks whose contents we changed and must flush
+  uint32_t orphans = 0;
+
+  for (size_t i = 0; i < toMove.size(); i++) {
+    uint16_t src = toMove[i];
+    RefMap::iterator it = refs.find(src);
+    if (it == refs.end()) {
+      // Marked allocated, but nothing in the volume points at it. It can't
+      // stay (it's about to be outside the volume) and no file loses
+      // anything by its going, so release it and say so.
+      markBlockFree(src);
+      orphans++;
+      continue;
+    }
+
+    uint16_t dst;
+    if (!findFreeBlock(&dst) || dst >= limit) {
+      printf("ERROR: ran out of free blocks below %u while moving block "
+             "%u; the volume in memory is now inconsistent - do NOT save "
+             "it\n", limit, src);
+      return false;
+    }
+
+    memcpy(&trackData[512 * dst], &trackData[512 * src], 512);
+    dirty.insert(dst);
+    markBlockFree(src);
+    moved[src] = dst;
+
+    // Point everything that named the old block at the new one. A pointer
+    // living in a block that has itself already moved is patched in its
+    // new home; the copy above carried the old contents along.
+    for (size_t r = 0; r < it->second.size(); r++) {
+      uint16_t container = it->second[r].container;
+      map<uint16_t, uint16_t>::iterator m = moved.find(container);
+      if (m != moved.end())
+        container = m->second;
+      if (!validBlock(container))
+        continue;
+      trackData[512 * container + it->second[r].offLow]  = dst & 0xFF;
+      trackData[512 * container + it->second[r].offHigh] = (dst >> 8);
+      dirty.insert(container);
+    }
+    (*movedOut)++;
+  }
+
+  if (orphans) {
+    printf("WARNING: %u block%s past block %u %s marked allocated but "
+           "belonged to no file or directory; released\n",
+           orphans, orphans == 1 ? "" : "s", limit,
+           orphans == 1 ? "was" : "were");
+  }
+
+  // Flush every block we rewrote. (A block that moved and was then patched
+  // is in `dirty` under its new number, which is the one that matters.)
+  for (set<uint16_t>::iterator d = dirty.begin(); d != dirty.end(); ++d) {
+    if (!writeBlock(*d, &trackData[512 * (*d)])) {
+      printf("ERROR: couldn't write block %u; the volume in memory is now "
+             "inconsistent - do NOT save it\n", *d);
+      return false;
+    }
+  }
+
+  // The bitmap goes out with them: it records every move, and this is the
+  // point where the volume is coherent again. If the caller gives up after
+  // this, what's in hand is still a valid volume - just not a shrunk one.
+  if (!flushFreeBlockList()) {
+    printf("ERROR: couldn't write the volume bitmap after moving blocks\n");
+    return false;
+  }
+
+  // Key pointers all over the tree may have just changed; the cached
+  // entries (which the resize checks consult) have to be rebuilt.
+  createTree();
+  return true;
+}
+
+// Shrink the volume to `newBlocks`, updating the volume directory header
+// and the bitmap and truncating the image itself. Refuses to do anything
+// at all if any block at or past the new end is in use - by the bitmap's
+// account or by any directory or file we can walk. Growing isn't handled:
+// that needs the image file to gain blocks, which is what `format` plus a
+// copy is for.
+bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
+{
+  if (!tree)
+    createTree();
+  if (!tree)
+    return false;
+
+  if (!isHdv()) {
+    printf("ERROR: only raw block images (.img/.hdv/.po) can be resized; a "
+           "floppy image is a fixed 280 blocks\n");
+    return false;
+  }
+
+  struct _subdirent *hdr = (struct _subdirent *)(&trackData[512 * 2 + 4]);
+  if ((hdr->typelen >> 4) != ft_voldirhdr) {
+    printf("ERROR: block 2 doesn't hold a volume directory header\n");
+    return false;
+  }
+
+  uint32_t oldBlocks = numBlocksTotal;
+  if (newBlocks == oldBlocks) {
+    printf("Volume is already %u blocks; nothing to do\n", newBlocks);
+    return true;
+  }
+  if (newBlocks > oldBlocks) {
+    printf("ERROR: this volume is %u blocks; resize only shrinks a volume "
+           "(growing one means formatting a bigger image and copying into "
+           "it)\n", oldBlocks);
+    return false;
+  }
+
+  // The bitmap has to keep describing the volume from inside it, and the
+  // boot blocks and volume directory have to survive.
+  uint32_t newBitmapBlocks = (newBlocks + 4095) / 4096;
+  uint32_t lastReserved = (uint32_t)volBitmapBlock + newBitmapBlocks;
+  if (newBlocks < 6 || newBlocks <= lastReserved) {
+    printf("ERROR: %u blocks is too small; the boot blocks, volume "
+           "directory and bitmap need at least %u\n",
+           newBlocks, lastReserved + 1);
+    return false;
+  }
+
+  // Anything still living up there has to come down first, if the caller
+  // allows it and there's room. relocateBlocksBelow() refuses without
+  // touching anything when there isn't.
+  if (relocate) {
+    uint32_t moved = 0;
+    if (!relocateBlocksBelow(newBlocks, &moved))
+      return false;
+    if (moved)
+      printf("Moved %u block%s below block %u\n", moved,
+             moved == 1 ? "" : "s", newBlocks);
+  }
+
+  // Nothing may live at or past the new end. Check the bitmap first (it's
+  // what ProDOS itself believes), then the directories and files, which
+  // catches a volume whose bitmap under-reports what's really allocated.
+  uint32_t inUse = 0, firstInUse = 0;
+  for (uint32_t b = newBlocks; b < oldBlocks; b++) {
+    uint32_t byteIdx = b / 8;
+    if (byteIdx >= freeBlockBitmapBytes)
+      break;
+    bool free_ = (freeBlockBitmap[byteIdx] & (0x80 >> (b % 8))) != 0;
+    if (!free_) {
+      if (!inUse) firstInUse = b;
+      inUse++;
+    }
+  }
+  if (inUse) {
+    printf("ERROR: %u block%s at or past block %u %s still allocated (first "
+           "is block %u); nothing changed\n",
+           inUse, inUse == 1 ? "" : "s", newBlocks,
+           inUse == 1 ? "is" : "are", firstInUse);
+    return false;
+  }
+
+  char what[128];
+  if (findBlockUseAtOrAbove(newBlocks, what, sizeof(what))) {
+    printf("ERROR: %s, at or past the requested new end of %u blocks; "
+           "nothing changed\n", what, newBlocks);
+    return false;
+  }
+
+  // Safe to shrink. Bitmap blocks the smaller volume no longer needs
+  // become ordinary free blocks.
+  uint32_t oldBitmapBlocks = (oldBlocks + 4095) / 4096;
+  for (uint32_t b = (uint32_t)volBitmapBlock + newBitmapBlocks;
+       b < (uint32_t)volBitmapBlock + oldBitmapBlocks; b++) {
+    if (b < newBlocks)
+      freeBlockBitmap[b / 8] |= (uint8_t)(0x80 >> (b % 8));
+  }
+
+  // Blocks that no longer exist are marked unavailable (0), matching what
+  // format writes; everything past the new bitmap's blocks goes too.
+  for (uint32_t b = newBlocks; b < oldBlocks; b++) {
+    uint32_t byteIdx = b / 8;
+    if (byteIdx < freeBlockBitmapBytes)
+      freeBlockBitmap[byteIdx] &= (uint8_t)~(0x80 >> (b % 8));
+  }
+
+  numBlocksTotal = newBlocks;
+  hdr->volBlocks.total[0] = (uint8_t)(newBlocks & 0xFF);
+  hdr->volBlocks.total[1] = (uint8_t)(newBlocks >> 8);
+  if (!writeBlock(2, &trackData[512 * 2])) {
+    printf("ERROR: couldn't write the volume directory header\n");
+    return false;
+  }
+  if (!flushFreeBlockList()) {
+    printf("ERROR: couldn't write the volume bitmap\n");
+    return false;
+  }
+
+  // Drop the tail of the image. The in-RAM copies shrink with it so no
+  // later write can reach past the volume's new end.
+  uint32_t newBytes = newBlocks * 512;
+  if (!truncateHdv(newBytes)) {
+    printf("ERROR: couldn't shrink the image buffer\n");
+    return false;
+  }
+  if (newBytes < trackDataBytes)
+    trackDataBytes = newBytes;
+
+  // The bitmap array shrinks too, so the freed tail bytes can't come back.
+  freeBlockBitmapBytes = newBitmapBlocks * 512;
+
+  createTree();
+  return true;
+}
+
 bool ProdosSpector::readBlock(uint16_t blockNum, uint8_t dataOut[512])
 {
   // Caller must have prepped with createTree() call first, or we fail
@@ -570,12 +1052,118 @@ Vent *ProdosSpector::createTree()
   return tree;
 }
 
+bool ProdosSpector::isExtendedFile(Vent *e)
+{
+  return e && e->getStorageType() == PRODOS_STORAGE_EXTENDED;
+}
+
+void ProdosSpector::readForkEntry(const uint8_t keyBlockData[512],
+                                  bool resourceFork, struct ProdosFork *out)
+{
+  // The data fork's mini-entry sits at the top of the extended key block
+  // and the resource fork's at the halfway mark. Each is:
+  //   +0     storage type of the fork
+  //   +1..2  key block (little-endian)
+  //   +3..4  blocks used
+  //   +5..7  EOF (24 bits)
+  const uint8_t *m = keyBlockData + (resourceFork ? 0x100 : 0x000);
+  out->storageType = m[0];
+  out->keyBlock    = m[1] + m[2] * 256;
+  out->blocksUsed  = m[3] + m[4] * 256;
+  out->eof         = (uint32_t)m[5] + m[6] * 256 + (uint32_t)m[7] * 65536;
+}
+
+void ProdosSpector::writeForkEntry(uint8_t keyBlockData[512],
+                                   bool resourceFork,
+                                   const struct ProdosFork *f)
+{
+  uint8_t *m = keyBlockData + (resourceFork ? 0x100 : 0x000);
+  m[0] = f->storageType;
+  m[1] = f->keyBlock & 0xFF;
+  m[2] = (f->keyBlock >> 8);
+  m[3] = f->blocksUsed & 0xFF;
+  m[4] = (f->blocksUsed >> 8);
+  m[5] = f->eof & 0xFF;
+  m[6] = (f->eof >> 8) & 0xFF;
+  m[7] = (f->eof >> 16) & 0xFF;
+}
+
+bool ProdosSpector::readExtendedKeyBlock(Vent *e, uint8_t out[512])
+{
+  if (!isExtendedFile(e))
+    return false;
+  return readBlock(e->keyPointerVal(), out);
+}
+
+bool ProdosSpector::getForkInfo(Vent *e, bool resourceFork,
+                                struct ProdosFork *out)
+{
+  memset(out, 0, sizeof(*out));
+
+  if (!isExtendedFile(e)) {
+    // An ordinary file is all data fork and has no resource fork.
+    if (resourceFork)
+      return true;
+    out->storageType = e->getStorageType();
+    out->keyBlock    = e->keyPointerVal();
+    out->blocksUsed  = e->getBlocksUsed();
+    out->eof         = e->getEofLength();
+    return true;
+  }
+
+  uint8_t keyBlockData[512];
+  if (!readBlock(e->keyPointerVal(), keyBlockData)) {
+    fprintf(stderr,
+            "WARNING: '%s' is an extended file whose key block %u can't be "
+            "read; treating the fork as empty.\n",
+            e->getName(), e->keyPointerVal());
+    return false;
+  }
+  readForkEntry(keyBlockData, resourceFork, out);
+  return true;
+}
+
+uint32_t ProdosSpector::getAllocatedByteCount(Vent *e)
+{
+  // For an extended file the entry's blocksUsed covers both forks and the
+  // extended key block; the caller is asking about the contents it gets
+  // from getFileContents(), which is the data fork alone.
+  if (isExtendedFile(e)) {
+    struct ProdosFork f;
+    if (getForkInfo(e, false, &f))
+      return (uint32_t)f.blocksUsed * 512;
+  }
+  return (uint32_t)e->getBlocksUsed() * 512;
+}
+
+uint32_t ProdosSpector::getForkContents(Vent *e, bool resourceFork,
+                                        char **toWhere)
+{
+  *toWhere = NULL;
+
+  struct ProdosFork f;
+  if (!getForkInfo(e, resourceFork, &f))
+    return 0;
+  // An absent fork (never written by GS/OS) has no storage type at all.
+  if (!f.storageType || !f.eof)
+    return 0;
+
+  return readForkBlocks(f.storageType, f.keyBlock, f.eof, e->getName(),
+                        toWhere);
+}
+
 uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
 {
   // Given the virtual entry 'e', find the file's contents and return
   //them in *toWhere. We malloc() that result, and the caller will
   //free it.
-    
+
+  // An extended file's directory entry describes the extended key block,
+  // not any contents: its storage type is 5 and its EOF is the block size.
+  // The file's ordinary contents are its data fork.
+  if (isExtendedFile(e))
+    return getForkContents(e, false, toWhere);
+
   uint8_t indexType = e->getStorageType();
   uint16_t kp = e->keyPointerVal();
   // eofLength is the authoritative file size for every ProDOS entry,
@@ -588,7 +1176,19 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
       *toWhere = NULL;
       return 0;
   }
-  
+
+  return readForkBlocks(indexType, kp, l, e->getName(), toWhere);
+}
+
+// Read the seedling/sapling/tree structure rooted at `kp`, whose logical
+// length is `len`. This is the whole of an ordinary file and one fork of
+// an extended one - the block shapes are identical either way.
+uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
+                                       uint32_t len, const char *name,
+                                       char **toWhere)
+{
+  uint32_t l = len;
+
   // On a corrupt volume the key block or any pointer inside an index can
   // aim outside the image. Read what's real, substitute zeros for the
   // rest, and say how much was substituted - the caller still gets a
@@ -601,6 +1201,15 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
     *toWhere = (char *)malloc(l); // FIXME check for error
     if (!validBlock(kp)) {
       memset(*toWhere, 0, l);
+      badPointers++;
+      break;
+    }
+    // A seedling holds one block; an EOF claiming more than that is a
+    // corrupt entry, and the excess reads as zeros rather than as
+    // whatever follows the block in the image.
+    if (l > 512) {
+      memset(*toWhere, 0, l);
+      memcpy(*toWhere, &trackData[512 * kp], 512);
       badPointers++;
       break;
     }
@@ -675,8 +1284,10 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
     }
     break;
   default:
-    // deleted or reserved or something; skip it
-    printf("Unimplemented file type '%d'\n", indexType);
+    // deleted, a Pascal area (type 4), or corruption. Extended files never
+    // arrive here: getFileContents() resolves them to a fork first.
+    fprintf(stderr, "WARNING: '%s' has unreadable storage type %d; "
+            "skipping it.\n", name, indexType);
     *toWhere = NULL;
     return 0;
   }
@@ -685,7 +1296,7 @@ uint32_t ProdosSpector::getFileContents(Vent *e, char **toWhere)
     fprintf(stderr,
             "WARNING: '%s' has %u block pointer%s outside the volume; "
             "those parts read as zeros.\n",
-            e->getName(), badPointers, badPointers == 1 ? "" : "s");
+            name, badPointers, badPointers == 1 ? "" : "s");
   }
   return l;
 }
@@ -705,6 +1316,178 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
   meta.typeData[0] = auxTypeData & 0xFF;
   meta.typeData[1] = (auxTypeData >> 8);
   return writeFileWithMeta(fileContents, fileName, fileSize, &meta);
+}
+
+// Store `size` bytes of `contents` as a ProDOS seedling, sapling, or tree,
+// and report the shape chosen, the key block that names it, and how many
+// blocks it consumed (data plus index). This is the block-level half of
+// writing a file: an ordinary file has exactly one of these structures,
+// and an extended file has one per fork. On failure some blocks may be
+// marked used in the in-RAM bitmap, so the caller must roll back with
+// reloadFreeBlockBitmap().
+bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
+                                    uint8_t *storageTypeOut,
+                                    uint16_t *keyBlockOut,
+                                    uint16_t *blocksUsedOut)
+{
+  // The EOF field is 24 bits, so 16MB-1 is the hard ProDOS file limit.
+  if (size > 0xFFFFFF) {
+    printf("ERROR: ProDOS files may not exceed 16MB-1 bytes\n");
+    return false;
+  }
+
+  // Data blocks the content needs (an empty file still gets one); index
+  // blocks are added per storage type below. A tree file can use over
+  // 32,000 blocks, so this must be at least 16 bits wide.
+  uint32_t dataBlocks = (size + 511) / 512;
+  if (dataBlocks == 0) dataBlocks = 1;
+  uint16_t blocksUsed = dataBlocks;
+
+  // Create the file structure - seedling for <= 512 bytes; sapling for <=128k;
+  // or tree for >128k.
+  if (size <= 512) {
+    // Seedling file entry
+    // The KEY_POINTER in the directory block points directly to the file
+    // data
+    *storageTypeOut = ft_seedling;
+    
+    // Allocate one block for the file
+    uint16_t firstBlock;
+    if (!findFreeBlock(&firstBlock)) {
+      printf("Failed to find a free block for the data\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+    uint8_t paddedData[512];
+    memset(&paddedData, 0, sizeof(paddedData));
+    memcpy(paddedData, contents, size);
+    if (!writeBlock(firstBlock, paddedData)) {
+      printf("Failed to write data block\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+
+    *keyBlockOut = firstBlock;
+  } else if (size <= 128*1024) {
+    // Sapling file entry
+    // We need an index block that points to all of the data blocks, and the
+    // index block number is stored in KEY_POINTER.
+    *storageTypeOut = ft_sapling;
+    blocksUsed++;
+    uint16_t indexBlock;
+    if (!findFreeBlock(&indexBlock)) {
+      printf("Failed to find a free block for the index\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+    uint8_t indexBlockData[512];
+    uint8_t indexBlockPtr = 0;
+    memset(indexBlockData, 0, sizeof(indexBlockData));
+
+    *keyBlockOut = indexBlock;
+
+    
+    // Allocate the blocks for the file data and start copying it in
+    uint32_t bytesRemaining = size;
+    for (int idx = 0; idx < size; idx+= 512, bytesRemaining -= 512) {
+      uint16_t nextBlock;
+      if (!findFreeBlock(&nextBlock)) {
+        printf("Failed to find next free block for the data\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+
+      indexBlockData[indexBlockPtr] = nextBlock & 0xFF;
+      indexBlockData[0x100 + indexBlockPtr++] = (nextBlock >> 8);
+
+      uint8_t paddedData[512];
+      memset(&paddedData, 0, sizeof(paddedData));
+      memcpy(paddedData, &contents[idx],
+             bytesRemaining >= 512 ? 512 : bytesRemaining);
+      if (!writeBlock(nextBlock, paddedData)) {
+        printf("Failed to write next data block\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+    }
+
+    if (!writeBlock(indexBlock, indexBlockData)) {
+      printf("Failed to write index block\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+  } else {
+    // Tree file entry (>128k, up to 16MB-1): KEY_POINTER names a master
+    // index block whose 128 pointers each name a sapling-style index block
+    // covering 128k of data.
+    *storageTypeOut = ft_tree;
+
+    uint16_t masterBlock;
+    if (!findFreeBlock(&masterBlock)) {
+      printf("Failed to find a free block for the master index\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+    uint8_t masterData[512];
+    memset(masterData, 0, sizeof(masterData));
+    uint8_t masterPtr = 0;
+
+    *keyBlockOut = masterBlock;
+    blocksUsed++; // the master index block
+
+    uint32_t bytesRemaining = size;
+    uint32_t idx = 0;
+    while (bytesRemaining) {
+      uint16_t indexBlock;
+      if (!findFreeBlock(&indexBlock)) {
+        printf("Failed to find a free block for an index\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+      masterData[masterPtr] = indexBlock & 0xFF;
+      masterData[0x100 + masterPtr++] = (indexBlock >> 8);
+      blocksUsed++; // this index block
+
+      uint8_t indexBlockData[512];
+      memset(indexBlockData, 0, sizeof(indexBlockData));
+      for (int i = 0; i < 256 && bytesRemaining; i++) {
+        uint16_t nextBlock;
+        if (!findFreeBlock(&nextBlock)) {
+          printf("Failed to find next free block for the data\n");
+          reloadFreeBlockBitmap();
+          return false;
+        }
+        indexBlockData[i] = nextBlock & 0xFF;
+        indexBlockData[0x100 + i] = (nextBlock >> 8);
+
+        uint8_t paddedData[512];
+        memset(&paddedData, 0, sizeof(paddedData));
+        memcpy(paddedData, &contents[idx],
+               bytesRemaining >= 512 ? 512 : bytesRemaining);
+        if (!writeBlock(nextBlock, paddedData)) {
+          printf("Failed to write next data block\n");
+          reloadFreeBlockBitmap();
+          return false;
+        }
+        idx += 512;
+        bytesRemaining -= (bytesRemaining >= 512) ? 512 : bytesRemaining;
+      }
+      if (!writeBlock(indexBlock, indexBlockData)) {
+        printf("Failed to write index block\n");
+        reloadFreeBlockBitmap();
+        return false;
+      }
+    }
+
+    if (!writeBlock(masterBlock, masterData)) {
+      printf("Failed to write master index block\n");
+      reloadFreeBlockBitmap();
+      return false;
+    }
+  }
+
+  *blocksUsedOut = blocksUsed;
+  return true;
 }
 
 // Like writeFileToImage, but the caller supplies a full directory-entry
@@ -740,19 +1523,6 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   // Set the low nybble of typelen to the length of the filename
   fent.typelen = leaflen;
 
-  // The EOF field is 24 bits, so 16MB-1 is the hard ProDOS file limit.
-  if (fileSize > 0xFFFFFF) {
-    printf("ERROR: ProDOS files may not exceed 16MB-1 bytes\n");
-    return false;
-  }
-
-  // Data blocks the content needs (an empty file still gets one); index
-  // blocks are added per storage type below. A tree file can use over
-  // 32,000 blocks, so this must be at least 16 bits wide.
-  uint32_t dataBlocks = (fileSize + 511) / 512;
-  if (dataBlocks == 0) dataBlocks = 1;
-  uint16_t blocksUsed = dataBlocks;
-
   fent.fileType = meta->fileType;
   fent.eofLength[0] = fileSize & 0xFF;
   fent.eofLength[1] = (fileSize >> 8) & 0xFF;
@@ -768,152 +1538,19 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   // headerPointer is the key block of the directory that holds this entry.
   fent.headerPointer[0] = dirKey & 0xFF;
   fent.headerPointer[1] = (dirKey >> 8);
-  
-  // Create the file structure - seedling for <= 512 bytes; sapling for <=128k;
-  // or tree for >128k.
-  if (fileSize <= 512) {
-    // Seedling file entry
-    // The KEY_POINTER in the directory block points directly to the file
-    // data
-    fent.typelen |= (ft_seedling<<4);
-    
-    // Allocate one block for the file
-    uint16_t firstBlock;
-    if (!findFreeBlock(&firstBlock)) {
-      printf("Failed to find a free block for the data\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
-    uint8_t paddedData[512];
-    memset(&paddedData, 0, sizeof(paddedData));
-    memcpy(paddedData, fileContents, fileSize);
-    if (!writeBlock(firstBlock, paddedData)) {
-      printf("Failed to write data block\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
 
-    fent.keyPointer[0] = firstBlock & 0xFF;
-    fent.keyPointer[1] = (firstBlock >> 8);
-  } else if (fileSize <= 128*1024) {
-    // Sapling file entry
-    // We need an index block that points to all of the data blocks, and the
-    // index block number is stored in KEY_POINTER.
-    fent.typelen |= (ft_sapling<<4);
-    blocksUsed++;
-    uint16_t indexBlock;
-    if (!findFreeBlock(&indexBlock)) {
-      printf("Failed to find a free block for the index\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
-    uint8_t indexBlockData[512];
-    uint8_t indexBlockPtr = 0;
-    memset(indexBlockData, 0, sizeof(indexBlockData));
-
-    fent.keyPointer[0] = indexBlock & 0xFF;
-    fent.keyPointer[1] = (indexBlock >> 8);
-
-    
-    // Allocate the blocks for the file data and start copying it in
-    uint32_t bytesRemaining = fileSize;
-    for (int idx = 0; idx < fileSize; idx+= 512, bytesRemaining -= 512) {
-      uint16_t nextBlock;
-      if (!findFreeBlock(&nextBlock)) {
-        printf("Failed to find next free block for the data\n");
-        reloadFreeBlockBitmap();
-        return false;
-      }
-
-      indexBlockData[indexBlockPtr] = nextBlock & 0xFF;
-      indexBlockData[0x100 + indexBlockPtr++] = (nextBlock >> 8);
-
-      uint8_t paddedData[512];
-      memset(&paddedData, 0, sizeof(paddedData));
-      memcpy(paddedData, &fileContents[idx],
-             bytesRemaining >= 512 ? 512 : bytesRemaining);
-      if (!writeBlock(nextBlock, paddedData)) {
-        printf("Failed to write next data block\n");
-        reloadFreeBlockBitmap();
-        return false;
-      }
-    }
-
-    if (!writeBlock(indexBlock, indexBlockData)) {
-      printf("Failed to write index block\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
-  } else {
-    // Tree file entry (>128k, up to 16MB-1): KEY_POINTER names a master
-    // index block whose 128 pointers each name a sapling-style index block
-    // covering 128k of data.
-    fent.typelen |= (ft_tree<<4);
-
-    uint16_t masterBlock;
-    if (!findFreeBlock(&masterBlock)) {
-      printf("Failed to find a free block for the master index\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
-    uint8_t masterData[512];
-    memset(masterData, 0, sizeof(masterData));
-    uint8_t masterPtr = 0;
-
-    fent.keyPointer[0] = masterBlock & 0xFF;
-    fent.keyPointer[1] = (masterBlock >> 8);
-    blocksUsed++; // the master index block
-
-    uint32_t bytesRemaining = fileSize;
-    uint32_t idx = 0;
-    while (bytesRemaining) {
-      uint16_t indexBlock;
-      if (!findFreeBlock(&indexBlock)) {
-        printf("Failed to find a free block for an index\n");
-        reloadFreeBlockBitmap();
-        return false;
-      }
-      masterData[masterPtr] = indexBlock & 0xFF;
-      masterData[0x100 + masterPtr++] = (indexBlock >> 8);
-      blocksUsed++; // this index block
-
-      uint8_t indexBlockData[512];
-      memset(indexBlockData, 0, sizeof(indexBlockData));
-      for (int i = 0; i < 256 && bytesRemaining; i++) {
-        uint16_t nextBlock;
-        if (!findFreeBlock(&nextBlock)) {
-          printf("Failed to find next free block for the data\n");
-          reloadFreeBlockBitmap();
-          return false;
-        }
-        indexBlockData[i] = nextBlock & 0xFF;
-        indexBlockData[0x100 + i] = (nextBlock >> 8);
-
-        uint8_t paddedData[512];
-        memset(&paddedData, 0, sizeof(paddedData));
-        memcpy(paddedData, &fileContents[idx],
-               bytesRemaining >= 512 ? 512 : bytesRemaining);
-        if (!writeBlock(nextBlock, paddedData)) {
-          printf("Failed to write next data block\n");
-          reloadFreeBlockBitmap();
-          return false;
-        }
-        idx += 512;
-        bytesRemaining -= (bytesRemaining >= 512) ? 512 : bytesRemaining;
-      }
-      if (!writeBlock(indexBlock, indexBlockData)) {
-        printf("Failed to write index block\n");
-        reloadFreeBlockBitmap();
-        return false;
-      }
-    }
-
-    if (!writeBlock(masterBlock, masterData)) {
-      printf("Failed to write master index block\n");
-      reloadFreeBlockBitmap();
-      return false;
-    }
-  }
+  // Lay the contents down as a seedling, sapling, or tree; the helper
+  // reports which shape it used and where the structure starts. (It also
+  // enforces the 16MB-1 ProDOS file ceiling.)
+  uint8_t storageType;
+  uint16_t keyBlock;
+  uint16_t blocksUsed;
+  if (!writeForkBlocks(fileContents, fileSize, &storageType, &keyBlock,
+                       &blocksUsed))
+    return false;
+  fent.typelen |= (storageType << 4);
+  fent.keyPointer[0] = keyBlock & 0xFF;
+  fent.keyPointer[1] = (keyBlock >> 8);
 
   if (verbose) printf("Blocks used to store this file: %d\n", blocksUsed);
   fent.blocksUsed[0] = blocksUsed & 0xFF;
@@ -930,6 +1567,126 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   flushFreeBlockList();
 
   // re-read the catalog
+  createTree();
+
+  // Caller is responsible for updating the on-disk image
+  return true;
+}
+
+// Create an extended (GS/OS forked) file. The two forks are stored just
+// like ordinary files; what makes the file extended is that its key block
+// is an extended key block holding a mini-entry describing each fork.
+bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
+                                              uint32_t dataLen,
+                                              const uint8_t *resFork,
+                                              uint32_t resLen,
+                                              const char *fileName,
+                                              const struct _prodosFent *meta,
+                                              const uint8_t *srcKeyBlock)
+{
+  if (!tree)
+    createTree();
+
+  uint16_t dirKey;
+  char leaf[16];
+  if (!resolveDirAndLeaf(fileName, &dirKey, leaf, sizeof(leaf)))
+    return false;
+
+  struct _prodosFent fent;
+  memset(&fent, 0, sizeof(fent));
+  size_t leaflen = strlen(leaf);
+  if (leaflen < 1 || leaflen > 15) {
+    printf("ERROR: file names may not exceed 15 chars in ProDOS\n");
+    return false;
+  }
+  strncpy(fent.name, leaf, 15);
+  fent.typelen = (ft_extended << 4) | leaflen;
+
+  fent.fileType = meta->fileType;
+  // An extended file's directory entry describes its extended key block,
+  // so its EOF is that block's size; each fork's real length lives in the
+  // mini-entry. (This is what GS/OS itself records.)
+  fent.eofLength[0] = 0x00;
+  fent.eofLength[1] = 0x02;
+  fent.eofLength[2] = 0x00;
+
+  fent.accessFlags = meta->accessFlags;
+  memcpy(fent.creationDate, meta->creationDate, sizeof(fent.creationDate));
+  memcpy(fent.lastModified, meta->lastModified, sizeof(fent.lastModified));
+  fent.creatorVersion = meta->creatorVersion;
+  fent.minRequiredVersion = meta->minRequiredVersion;
+  memcpy(fent.typeData, meta->typeData, sizeof(fent.typeData));
+
+  fent.headerPointer[0] = dirKey & 0xFF;
+  fent.headerPointer[1] = (dirKey >> 8);
+
+  // The extended key block comes first so it lands ahead of the fork data.
+  uint16_t extKeyBlock;
+  if (!findFreeBlock(&extKeyBlock)) {
+    printf("Failed to find a free block for the extended key block\n");
+    reloadFreeBlockBitmap();
+    return false;
+  }
+  fent.keyPointer[0] = extKeyBlock & 0xFF;
+  fent.keyPointer[1] = (extKeyBlock >> 8);
+
+  // Everything outside the two mini-entries is GS/OS Finder information.
+  // A copy carries the donor's bytes over; a fresh file has none.
+  uint8_t keyBlockData[512];
+  if (srcKeyBlock)
+    memcpy(keyBlockData, srcKeyBlock, sizeof(keyBlockData));
+  else
+    memset(keyBlockData, 0, sizeof(keyBlockData));
+
+  // A fork with no content at all gets no storage: GS/OS reads a zeroed
+  // mini-entry as an absent fork, which is how resource-less and
+  // data-less files are stored.
+  uint16_t totalBlocks = 1; // the extended key block itself
+  static const uint8_t emptyByte = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    bool resourceFork = (pass == 1);
+    const uint8_t *contents = resourceFork ? resFork : dataFork;
+    uint32_t len = resourceFork ? resLen : dataLen;
+
+    struct ProdosFork f;
+    memset(&f, 0, sizeof(f));
+    if (contents || len) {
+      uint8_t storageType;
+      uint16_t keyBlock, blocksUsed;
+      if (!writeForkBlocks(contents ? contents : &emptyByte, len,
+                           &storageType, &keyBlock, &blocksUsed)) {
+        printf("Failed to write the %s fork of '%s'\n",
+               resourceFork ? "resource" : "data", leaf);
+        reloadFreeBlockBitmap();
+        return false;
+      }
+      f.storageType = storageType;
+      f.keyBlock = keyBlock;
+      f.blocksUsed = blocksUsed;
+      f.eof = len;
+      totalBlocks += blocksUsed;
+    }
+    writeForkEntry(keyBlockData, resourceFork, &f);
+  }
+
+  if (!writeBlock(extKeyBlock, keyBlockData)) {
+    printf("Failed to write extended key block\n");
+    reloadFreeBlockBitmap();
+    return false;
+  }
+
+  if (verbose)
+    printf("Blocks used to store this extended file: %d\n", totalBlocks);
+  fent.blocksUsed[0] = totalBlocks & 0xFF;
+  fent.blocksUsed[1] = (totalBlocks >> 8);
+
+  if (!addDirectoryEntryForFile(dirKey, &fent)) {
+    printf("Error writing directory entry for file\n");
+    reloadFreeBlockBitmap();
+    return false;
+  }
+
+  flushFreeBlockList();
   createTree();
 
   // Caller is responsible for updating the on-disk image
@@ -1111,6 +1868,35 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
   uint8_t storage = (fe->typelen & 0xF0) >> 4;
   uint16_t kp = fe->keyPointer[1] * 256 + fe->keyPointer[0];
 
+  if (storage == ft_extended) {
+    // An extended file owns two fork structures plus the extended key
+    // block that describes them. If the key block itself is unreadable
+    // there's no way to find the forks; free what we can name and let the
+    // rest leak rather than freeing blocks that may belong to something
+    // else.
+    uint8_t keyBlockData[512];
+    if (!validBlock(kp) || !readBlock(kp, keyBlockData)) {
+      printf("WARNING: extended key block %u is unreadable; freeing only "
+             "the directory entry\n", kp);
+      return true;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+      struct ProdosFork f;
+      readForkEntry(keyBlockData, pass == 1, &f);
+      if (f.storageType)
+        freeForkBlocks(f.storageType, f.keyBlock);
+    }
+    markBlockFree(kp);
+    return true;
+  }
+
+  return freeForkBlocks(storage, kp);
+}
+
+// Free the blocks of one seedling/sapling/tree structure. Used for an
+// ordinary file's single structure and for each fork of an extended one.
+bool ProdosSpector::freeForkBlocks(uint8_t storage, uint16_t kp)
+{
   switch (storage) {
   case ft_seedling:
     // The key block *is* the single data block.
@@ -1642,6 +2428,33 @@ bool ProdosSpector::probe()
 
 void ProdosSpector::inspectFile(const char *fileName, Vent *fp)
 {
+  if (isExtendedFile(fp)) {
+    // The entry describes the extended key block; the forks describe
+    // themselves, in mini-entries inside it.
+    printf("extended (GS/OS forked file)\n");
+    printf("extended key block: %d (0x%X)\n", fp->keyPointerVal(),
+           fp->keyPointerVal());
+    for (int pass = 0; pass < 2; pass++) {
+      bool resourceFork = (pass == 1);
+      struct ProdosFork f;
+      if (!getForkInfo(fp, resourceFork, &f))
+        return;
+      const char *which = resourceFork ? "resource" : "data";
+      if (!f.storageType) {
+        printf("  %s fork: absent\n", which);
+        continue;
+      }
+      const char *shape = (f.storageType == ft_seedling) ? "seedling"
+                        : (f.storageType == ft_sapling)  ? "sapling"
+                        : (f.storageType == ft_tree)     ? "tree"
+                        : "unknown storage type";
+      printf("  %s fork: %s, %u bytes in %u block%s, key block %u (0x%X)\n",
+             which, shape, f.eof, f.blocksUsed,
+             f.blocksUsed == 1 ? "" : "s", f.keyBlock, f.keyBlock);
+    }
+    return;
+  }
+
   uint32_t fileSize = fp->getEofLength();
   if (fileSize <= 512) {
     printf("seedling\n");

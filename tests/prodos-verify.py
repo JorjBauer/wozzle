@@ -129,6 +129,17 @@ def main(path):
                         for j in range(256):
                             p = ib[j] | (ib[j+256] << 8)
                             if p: claim(p, f"{owner} data[{i}][{j}]")
+        elif st == 5:    # extended: key is an extended key block, one
+                         # mini-entry per fork at +0x000 and +0x100
+            if claim(key, f"{owner} extended key"):
+                kb = blk(key)
+                for base, fork in ((0x000, "data"), (0x100, "resource")):
+                    m = kb[base:base+8]
+                    fst = m[0]
+                    fkey = m[1] | (m[2] << 8)
+                    feof = m[5] | (m[6] << 8) | (m[7] << 16)
+                    if fst and fkey:
+                        walk_file(fst, name, fkey, feof, f"{owner}:{fork}")
         elif st == 0xD:  # subdirectory
             for sub in walk_dir(key, f"dir {owner}"):
                 walk_file(sub[0], sub[1], sub[2], sub[3], f"{owner}/{sub[1]}")
