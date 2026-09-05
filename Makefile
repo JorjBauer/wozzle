@@ -40,7 +40,7 @@ wozfuse: $(FUSEOBJS)
 	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) 
 
 wozit: $(WOZITOBJS)
-	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -lreadline -o wozit $(WOZITOBJS)
+	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -o wozit $(WOZITOBJS) -lreadline -lncurses
 
 wozmosis: $(WOZMOSISOBJS)
 	$(CXX) $(CFLAGS) -o wozmosis $(WOZMOSISOBJS)
