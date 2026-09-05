@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
 
 #if defined(__APPLE__)
   #include <machine/endian.h>
