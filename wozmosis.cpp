@@ -1,12 +1,19 @@
 // wozmosis: copy files between two disk images of the same filesystem,
 // preserving metadata - the osmosis of the woz tool family.
 //
-//   wozmosis { -d | -p } [-f] [-v] <source image> <dest image> [path ...]
+//   wozmosis { -d | -p } [-f] [-v] [-D dir] <source image> <dest image> [path ...]
 //
 // With no paths, the entire source volume is copied into the destination
 // root, directory structure intact. With paths, just those files or
 // directory subtrees are copied (to the same paths on the destination,
 // creating intermediate directories as needed).
+//
+// -D relocates the whole copy under a directory on the destination, which
+// is created if it doesn't exist: the source's FOO/BAR lands at DIR/FOO/BAR.
+// ProDOS only, since neither DOS 3.3 nor Pascal has directories. Besides
+// being how you file a disk's worth of software away in one place, it is
+// the way past a full ProDOS volume directory: the root holds a fixed 51
+// entries and cannot grow, while a subdirectory grows as needed.
 //
 // ProDOS files keep their file type, aux type, access flags, creation and
 // modification dates, and version bytes; a GS/OS extended file keeps both
@@ -40,6 +47,7 @@ using namespace std;
 
 static bool force = false;
 static bool verbose = false;
+static string destPrefix; // -D: destination directory every copy lands under
 
 struct CopyItem {
   Vent *ent;
@@ -48,15 +56,17 @@ struct CopyItem {
 
 static void usage(const char *name)
 {
-  printf("Usage: %s { -d | -p | -P } [-f] [-v] <source image> <dest image> [path ...]\n\n", name);
+  printf("Usage: %s { -d | -p | -P } [-f] [-v] [-D <dir>] <source image> <dest image> [path ...]\n\n", name);
   printf("  -d    both images are DOS 3.3\n");
   printf("  -p    both images are ProDOS\n");
   printf("  -P    both images are UCSD p-System / Apple Pascal\n");
   printf("  -f    overwrite files that already exist on the destination\n");
-  printf("  -v    list every file as it is copied\n\n");
+  printf("  -v    list every file as it is copied\n");
+  printf("  -D    put the copy under <dir> on the destination, creating it\n");
+  printf("        if needed (ProDOS only)\n\n");
   printf("  With no paths, copies the whole source volume. A path may name\n");
   printf("  a file or (ProDOS) a directory subtree; it is copied to the\n");
-  printf("  same path on the destination.\n");
+  printf("  same path on the destination, or under -D's directory.\n");
 }
 
 // Walk one ProDOS directory group in the flat tree (its entries run from
@@ -99,13 +109,14 @@ int main(int argc, char *argv[])
 
   int mode = 0; // 'd', 'p', or 'P'
   int c;
-  while ((c = getopt(argc, argv, "dpPfvh?")) != -1) {
+  while ((c = getopt(argc, argv, "dpPfvD:h?")) != -1) {
     switch (c) {
     case 'd': mode = 'd'; break;
     case 'p': mode = 'p'; break;
     case 'P': mode = 'P'; break;
     case 'f': force = true; break;
     case 'v': verbose = true; break;
+    case 'D': destPrefix = optarg; break;
     case 'h':
     case '?':
       usage(argv[0]);
@@ -122,6 +133,39 @@ int main(int argc, char *argv[])
   if (argc - optind < 2) {
     usage(argv[0]);
     return 1;
+  }
+
+  // Normalize -D: volume-root relative, no leading or trailing slashes,
+  // uppercased the way ProDOS stores names.
+  if (!destPrefix.empty()) {
+    if (mode != 'p') {
+      printf("ERROR: -D needs -p; neither DOS 3.3 nor Pascal has directories\n");
+      return 1;
+    }
+    while (!destPrefix.empty() && destPrefix[0] == '/')
+      destPrefix.erase(0, 1);
+    while (!destPrefix.empty() && destPrefix[destPrefix.size() - 1] == '/')
+      destPrefix.erase(destPrefix.size() - 1);
+    for (size_t i = 0; i < destPrefix.size(); i++)
+      destPrefix[i] = toupper((unsigned char)destPrefix[i]);
+    if (destPrefix.empty()) {
+      printf("ERROR: -D needs a directory name\n");
+      return 1;
+    }
+    // Catch an unusable name here rather than partway through a copy.
+    size_t start = 0;
+    while (start <= destPrefix.size()) {
+      size_t slash = destPrefix.find('/', start);
+      size_t end = (slash == string::npos) ? destPrefix.size() : slash;
+      string comp = destPrefix.substr(start, end - start);
+      if (comp.empty() || comp.size() > 15) {
+        printf("ERROR: '%s' isn't a usable ProDOS directory name (each part "
+               "must be 1 to 15 characters)\n", destPrefix.c_str());
+        return 1;
+      }
+      if (slash == string::npos) break;
+      start = slash + 1;
+    }
   }
   const char *srcPath = argv[optind];
   const char *dstPath = argv[optind + 1];
@@ -224,6 +268,17 @@ int main(int argc, char *argv[])
     }
   }
 
+  // Relocate the whole copy under -D's directory. From here on the paths
+  // in dirs/files name destination locations only; the source side is done
+  // with (file contents come from the Vent, not from a path lookup). The
+  // prefix's own components get picked up by the parent-prefix pass below.
+  if (!destPrefix.empty()) {
+    for (size_t i = 0; i < dirs.size(); i++)
+      dirs[i] = destPrefix + "/" + dirs[i];
+    for (size_t i = 0; i < files.size(); i++)
+      files[i].path = destPrefix + "/" + files[i].path;
+  }
+
   // Every parent prefix of everything we copy must exist on the
   // destination; add them to the directory list. (A lexical sort later
   // guarantees parents are created before children.)
@@ -232,6 +287,14 @@ int main(int argc, char *argv[])
     const string &p = files[i].path;
     for (size_t pos = p.find('/'); pos != string::npos; pos = p.find('/', pos + 1))
       needDirs.insert(p.substr(0, pos));
+  }
+  // -D's own directory needs to exist even when the copy is nothing but
+  // empty directories, in which case no file path names it above.
+  if (!destPrefix.empty()) {
+    needDirs.insert(destPrefix);
+    for (size_t pos = destPrefix.find('/'); pos != string::npos;
+         pos = destPrefix.find('/', pos + 1))
+      needDirs.insert(destPrefix.substr(0, pos));
   }
   dirs.assign(needDirs.begin(), needDirs.end()); // sorted: parents first
 

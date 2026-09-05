@@ -221,16 +221,52 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   }
   */
 
+  // Build the on-disk form first. DOS 3.3 prefixes most file types with a
+  // short header, and that header has to be counted when we allocate
+  // sectors - otherwise a file whose length is an exact multiple of 256
+  // spills its last few bytes into a sector nobody reserved.
+  uint8_t *adulteratedData = NULL;
+  uint32_t writeSize = 0;
+  switch (fileType) {
+  case FT_BIN:
+    // 4-byte header: load address (L/H) then length (L/H).
+    writeSize = fileSize + 4;
+    adulteratedData = (uint8_t *)malloc(writeSize);
+    if (!adulteratedData) return false;
+    adulteratedData[0] = fileStart & 0xFF;
+    adulteratedData[1] = (fileStart >> 8) & 0xFF;
+    adulteratedData[2] = fileSize & 0xFF;
+    adulteratedData[3] = (fileSize >> 8) & 0xFF;
+    memcpy(&adulteratedData[4], fileContents, fileSize);
+    break;
+  case FT_BAS:
+  case FT_INT:
+    // 2-byte header: the program length. The caller hands us the bare
+    // program image, the same way it hands us bare data for a BIN file.
+    writeSize = fileSize + 2;
+    adulteratedData = (uint8_t *)malloc(writeSize);
+    if (!adulteratedData) return false;
+    adulteratedData[0] = fileSize & 0xFF;
+    adulteratedData[1] = (fileSize >> 8) & 0xFF;
+    memcpy(&adulteratedData[2], fileContents, fileSize);
+    break;
+  }
+  if (!adulteratedData) {
+    printf("ERROR: don't know how to set up the file header for this file type\n");
+    return false;
+  }
+
   // We need a TSList
   struct _dosTsList tsList;
   memset(&tsList, 0, sizeof(tsList));
   int tsPairPtr = 0;
 
-  int32_t remainingSize = fileSize;
+  int32_t remainingSize = writeSize;
   while (tsPairPtr < 122 && remainingSize > 0) {
     int t,s;
     if (!findFreeSector(&t, &s)) {
       printf("ERROR: unable to find enough free sectors\n");
+      free(adulteratedData);
       return false;
     }
     if (verbose) printf("Using track %d sector %d for data\n", t, s);
@@ -240,37 +276,16 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
     remainingSize -= 256;
   }
 
-  // Write the file to those blocks. DOS 3.3 inserts a short header before
-  // most file types, so we need to take the file type in to account when
-  // figuring out the data & size.
-  uint8_t *adulteratedData = NULL;
-  uint16_t writeSize = 0;
-  switch (fileType) {
-  case 0x06:
-    writeSize = fileSize + 4;
-    adulteratedData = (uint8_t *)malloc(writeSize);
-    memcpy(&adulteratedData[4], fileContents, fileSize);
-    // The first 4 bytes are L/H address and L/H length.
-    adulteratedData[0] = fileStart & 0xFF;
-    adulteratedData[1] = (fileStart >> 8) & 0xFF;
-    adulteratedData[2] = fileSize & 0xFF;
-    adulteratedData[3] = (fileSize >> 8) & 0xFF;
-    break;
-  }
-  if (!adulteratedData) {
-    printf("ERROR: don't know how to set up the file header for this file type\n");
-    return false;
-  }
-
+  // Write the file to those blocks.
   remainingSize = writeSize;
   uint16_t dataPtr = 0;
   uint8_t sectorData[256];
   for (int b=0; b<tsPairPtr; b++) {
     int t = tsList.tsPair[b].track;
     int s = tsList.tsPair[b].sector;
+    uint32_t chunk = (remainingSize >= 256) ? 256 : (uint32_t)remainingSize;
     memset(sectorData, 0, sizeof(sectorData));
-    memcpy(sectorData, &adulteratedData[dataPtr],
-           remainingSize >= 256 ? 256 : remainingSize);
+    memcpy(sectorData, &adulteratedData[dataPtr], chunk);
     if (verbose) printf("Writing data to track %d sector %d\n", t, s);
     if (!encodeWozTrackSector(t, enphys[s], sectorData)) {
       printf("ERROR: failed to encodeWozTrackSector\n");
@@ -278,6 +293,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
       return false;
     }
     dataPtr += 256;
+    remainingSize -= chunk;
   }
   free(adulteratedData);
   adulteratedData = NULL;
@@ -297,6 +313,7 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
 
   // Prep the directory entry
   struct _dosFdEntry newEntry;
+  memset(&newEntry, 0, sizeof(newEntry));
   newEntry.firstTrack = t;
   newEntry.firstSector = s;
 
@@ -331,8 +348,10 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
   snprintf(buf, sizeof(buf), "%-30s", fileName);
   if (verbose) printf("new entry name: '%s'\n", buf);
   memcpy(newEntry.fileName, buf, 30); // no terminator copied
-  newEntry.fileLength[0] = fileSize & 0xFF;
-  newEntry.fileLength[1] = (fileSize >> 8) & 0xFF;
+  // The catalog length field is a sector count, including the T/S list.
+  uint16_t sectorCount = (uint16_t)(tsPairPtr + 1);
+  newEntry.fileLength[0] = sectorCount & 0xFF;
+  newEntry.fileLength[1] = (sectorCount >> 8) & 0xFF;
 
   // Flush the updated free blocks list before we write the directory entry
   if (!flushFreeSectorList()) {
@@ -449,7 +468,12 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
   uint32_t fileLength = 0;
   switch (e->getFileType()) {
     case FT_BIN:
-      fileLength = dataPtr[2] + 256*dataPtr[3];
+      // The 4-byte header (load address, then length) sits in front of the
+      // data, and the length counts only what follows it - so the file we
+      // hand back is 4 bytes longer than the field says. Leaving the +4 off
+      // returned the header plus the first length-4 bytes, quietly chopping
+      // the last 4 bytes off every BIN file copied out.
+      fileLength = dataPtr[2] + 256*dataPtr[3] + 4;
       break;
     case FT_BAS:
     case FT_INT:

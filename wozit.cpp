@@ -57,6 +57,8 @@ void usage(char *name)
   printf("                          -c to run several commands in order\n");
   printf("  -A                      cpout: copy full on-disk allocation,\n");
   printf("                          not the directory-reported length\n");
+  printf("  -B                      cpin: tokenize an Applesoft listing;\n");
+  printf("                          cpout: detokenize Applesoft or Integer BASIC\n");
   printf("  -v                      verbose operation\n");
   printf("\n");
 }
@@ -123,6 +125,47 @@ void cat7Handler(char *cmd)
   dumpFileContents(cmd, true);
 }
 
+// Detokenize an Applesoft or Integer BASIC file to a host text file. The
+// listers write to stdout, so redirect it for the duration rather than
+// growing a second, subtly different copy of each of them.
+static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
+                                const char *destPath)
+{
+  uint8_t ft = fp->getFileType();
+  if (ft != FT_BAS && ft != FT_INT) {
+    printf("File is not BASIC (Applesoft or Integer)\n");
+    return false;
+  }
+
+  FILE *outf = fopen(destPath, "w");
+  if (!outf) {
+    printf("ERROR: failed to open '%s' for write\n", destPath);
+    return false;
+  }
+
+  fflush(stdout);
+  int saved = dup(STDOUT_FILENO);
+  dup2(fileno(outf), STDOUT_FILENO);
+
+  bool ok;
+  if (ft == FT_BAS) {
+    ApplesoftLister l;
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+  } else {
+    IntegerLister l;
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+  }
+
+  fflush(stdout);
+  dup2(saved, STDOUT_FILENO);
+  close(saved);
+  fclose(outf);
+
+  if (!ok)
+    printf("Failed to list file\n");
+  return ok;
+}
+
 void cpoutHandler(char *cmd)
 {
   // cpout: copy from a file in the image to a file outside the image
@@ -130,16 +173,24 @@ void cpoutHandler(char *cmd)
   //   (source may be a ProDOS path; -r takes the resource fork of a GS/OS
   //    extended file instead of its data fork)
   bool wantResourceFork = false;
-  if (!strncmp(cmd, "-r ", 3)) {
-    wantResourceFork = true;
-    cmd += 3;
+  bool wantBasicListing = false;
+  // Accept leading -r and -B flags in any order (e.g. "-B -r SRC DST")
+  while (cmd && cmd[0] == '-' && cmd[1] &&
+         (cmd[2] == ' ' || cmd[2] == '\0')) {
+    if (cmd[1] == 'r')
+      wantResourceFork = true;
+    else if (cmd[1] == 'B')
+      wantBasicListing = true;
+    else
+      break; // unrecognized flag; let the argument parse report it
+    cmd += 2;
     while (*cmd == ' ') cmd++;
   }
 
   char buf[256];
   char *p = strstr(cmd, " ");
   if (!p) {
-    printf("Error parsing arguments. Usage: cpout [-r] <SOURCE> <DEST>\n");
+    printf("Error parsing arguments. Usage: cpout [-r|-B] <SOURCE> <DEST>\n");
     return;
   }
   uint32_t len = p-cmd;
@@ -205,10 +256,20 @@ void cpoutHandler(char *cmd)
   }
 
   if (s && dat) {
-    FILE *out = fopen(p, "w");
-    fwrite(dat, 1, s, out);
-    fclose(out);
-    free(dat);
+    if (wantBasicListing) {
+      listBasicToHostFile(fp, (uint8_t *)dat, s, p);
+      free(dat);
+    } else {
+      FILE *out = fopen(p, "w");
+      if (!out) {
+        printf("ERROR: failed to open '%s' for write\n", p);
+        free(dat);
+        return;
+      }
+      fwrite(dat, 1, s, out);
+      fclose(out);
+      free(dat);
+    }
   } else {
     printf("Empty file; skipping\n");
     return;
@@ -249,15 +310,25 @@ void cpinHandler(char *cmd)
   memset(typeStr, 0, sizeof(typeStr));
   memset(auxStr, 0, sizeof(auxStr));
 
+  bool wantTokenize = false;
   if (!cmd) {
-    printf("Usage: cpin <source> <dest> [type [aux]]\n");
+    printf("Usage: cpin [-B] <source> <dest> [type [aux]]\n");
     return;
+  }
+  // Support a leading -B flag: tokenize an Applesoft text listing on the
+  // way in, rather than copying the bytes through untouched.
+  while (cmd[0] == '-' && cmd[1] && (cmd[2] == ' ' || cmd[2] == '\0')) {
+    if (cmd[1] != 'B')
+      break; // unrecognized flag; let the argument parse report it
+    wantTokenize = true;
+    cmd += 2;
+    while (*cmd == ' ') cmd++;
   }
   // Width must match MAXPATH: a narrower %s silently splits a long host
   // path across the following tokens instead of failing.
   int nargs = sscanf(cmd, "%1023s %255s %15s %15s", fn, destfn, typeStr, auxStr);
   if (nargs < 2) {
-    printf("Usage: cpin <source> <dest> [type [aux]]   (type/aux are hex)\n");
+    printf("Usage: cpin [-B] <source> <dest> [type [aux]]   (type/aux are hex)\n");
     return;
   }
   if (strlen(fn) >= MAXPATH && cmd[MAXPATH] && cmd[MAXPATH] != ' ') {
@@ -303,10 +374,46 @@ void cpinHandler(char *cmd)
   fread(fileContents, 1, fileSize, in);
   fclose(in);
 
+  // -B: the host file is an Applesoft listing, not a binary. Tokenize it
+  // into the program image the Apple II expects. This works for DOS 3.3 and
+  // ProDOS alike; the 2-byte length header a DOS 3.3 'A' file carries is
+  // added by the filesystem layer, not here.
+  if (wantTokenize) {
+    if (explicitType && filetype == FT_INT) {
+      // Integer BASIC's tokens are context-dependent (three different PRINT
+      // tokens, a dozen commas), so tokenizing it means reimplementing the
+      // interpreter's grammar. cpout -B lists Integer programs; cpin -B
+      // can't write them yet.
+      printf("ERROR: cpin -B can't tokenize Integer BASIC, only Applesoft\n");
+      free(fileContents);
+      return;
+    }
+    if (explicitType && filetype != FT_BAS) {
+      printf("ERROR: cpin -B writes an Applesoft (BAS, $FC) file; drop the "
+             "explicit type or pass FC\n");
+      free(fileContents);
+      return;
+    }
+    uint32_t tokSize = 0;
+    uint8_t *tokBuf = tokenizeApplesoft((const char *)fileContents, fileSize,
+                                        &tokSize);
+    if (!tokBuf) {
+      // tokenizeApplesoft() already said which line was at fault
+      free(fileContents);
+      return;
+    }
+    free(fileContents);
+    fileContents = tokBuf;
+    fileSize = tokSize;
+    filetype = FT_BAS;
+    // ProDOS records an Applesoft program's load address in the aux type.
+    if (!explicitAux) auxTypeData = APPLESOFT_LOAD_ADDR;
+  }
+
   // Look for an AppleSingle header
   bool foundAppleSingle = false;
   bool foundMetadata = false;
-  if (fileSize >= sizeof(applesingle)) {
+  if (!wantTokenize && fileSize >= sizeof(applesingle)) {
     applesingle *as = (applesingle *)fileContents;
     if (ntohl(as->magic) == 0x51600 && ntohl(as->version) == 0x20000) {
       foundAppleSingle = true;
@@ -1181,8 +1288,8 @@ struct _cmdInfo commands[] = {
   {"bootblocks", bootblocksHandler, "[<donor>]  : install boot code (embedded, or from a donor image)" },
   {"cat",   catHandler,   "<filename>        : Dump file contents" },
   {"cat7",  cat7Handler,  "<filename>       : Dump file contents, stripping the high bit" },
-  {"cpin",  cpinHandler,  "<SRC> <DEST> [type [aux]] : copy host file in; type/aux hex" },
-  {"cpout", cpoutHandler, "[-r] <SRC> <DEST>: copy <SRC> out to the host (-r: resource fork)" },
+  {"cpin",  cpinHandler,  "[-B] <SRC> <DEST> [type [aux]]: copy host file in (-B: tokenize)" },
+  {"cpout", cpoutHandler, "[-r|-B] <SRC> <DEST>: copy out (-r: resource fork, -B: detokenize BASIC)" },
   {"dumptrack", dumptrackHandler, "<trk> <file>: raw nibble dump of one track to a binary file" },
   {"format", formatHandler, "<fname> [<vol>] [<size>]: create a blank DOS 3.3, ProDOS or Pascal image" },
   {"help",  helpHandler,  "                 : this text" },

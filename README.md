@@ -122,6 +122,14 @@ that contains a .BAD (bad-block) file, and both need a `save` afterward.
 `wozmosis -P` copies Pascal files between two Pascal images, preserving
 each file's type and modification date.
 
+`wozmosis -p -D <dir>` puts the whole copy under a directory on the
+destination, creating it (and any missing parents) if it isn't there: the
+source's `FOO/BAR` lands at `<dir>/FOO/BAR`. Besides filing a disk's worth
+of software away in one place, this is the way past a full volume
+directory. A ProDOS root holds a fixed 51 entries and cannot grow, so a
+copy that overflows it still fits under a subdirectory, which can. `-D`
+needs `-p`; neither DOS 3.3 nor Pascal has directories.
+
 Wozit is an interactive disk inspection tool. Once started, it expects one of these commands:
 
 *ls*
@@ -136,11 +144,12 @@ Dumps the contents of the given file to stdout. Note that this is affected by th
 
 Turns on or off high-bit stripping when using *cat* on a file. Useful for inspecting TXT files.
 
-*cpout [-r] <inputname> <outputname>*
+*cpout [-r|-B] <inputname> <outputname>*
 
 Copies a file from inside the image to a file outside the image. With
 *-r*, it copies the resource fork of a GS/OS extended file instead of its
-data fork.
+data fork. With *-B*, it de-tokenizes an Applesoft or Integer BASIC
+program into a text listing instead of copying the raw bytes.
 
 GS/OS extended (forked) files, ProDOS storage type 5, are supported in
 ProDOS mode: *ls* marks them with a `+` after the name, *inspect* reports
@@ -150,9 +159,39 @@ AppleSingle file carrying a resource fork, taking the ProDOS type and aux
 type from the AppleSingle metadata. `wozmosis -p` copies extended files
 between images with both forks and their GS/OS Finder information intact.
 
+*cpin [-B] <inputname> <outputname> [type [aux]]*
+
+Copies a host file into the image. *type* and *aux* are ProDOS values in
+hex; without them the type comes from AppleSingle metadata if the host
+file has any, then from a *.SYSTEM* name heuristic, then defaults to
+BIN/$2000.
+
+With *-B*, the host file is read as an Applesoft text listing and
+tokenized on the way in, producing a BAS file that loads and runs on a
+real Apple II. This works in both DOS 3.3 and ProDOS mode; the 2-byte
+length header a DOS 3.3 'A' file carries is added by the filesystem layer.
+Line numbers must be in ascending order with no duplicates, and no larger
+than 63999; anything else is an error naming the offending source line.
+Blank lines and lines starting with `#` are ignored, so a listing can
+carry comments that aren't part of the program.
+
+Tokenizing follows the ROM's own parser: whitespace outside quotes is
+discarded, the longest matching keyword wins (so `ONERR` beats `ON`),
+keywords may be split by spaces (which is the only reason `PR #3` works),
+and the text after *REM* - or after *DATA*, up to the next unquoted colon
+- is left alone rather than having keywords substituted into it. `?` is
+accepted as shorthand for *PRINT*. Because whitespace is discarded,
+*cpout -B* followed by *cpin -B* is a fixed point: a program can make the
+round trip repeatedly without drifting.
+
+Integer BASIC can be listed with *cpout -B* but not yet tokenized with
+*cpin -B*: its tokens are context-dependent (three different *PRINT*
+tokens, a dozen different commas), so writing them means reimplementing
+the interpreter's grammar rather than looking keywords up in a table.
+
 *list <filename>*
 
-De-tokenize and show the given Applesoft BASIC program.
+De-tokenize and show the given Applesoft or Integer BASIC program.
 
 *resize [-n] <blocks>*
 
