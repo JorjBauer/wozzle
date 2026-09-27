@@ -58,15 +58,28 @@ Vent::Vent(struct _pascalFent *fp)
   this->children = this->next = NULL;
 }
 
+// Returned by prodosDateToEpoch() when the entry has no date set. A real
+// ProDOS date always has zero seconds, so it can never convert to -1.
+#define NO_DATE ((time_t)-1)
+
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
 {
+  // ProDOS treats a zero date word as "no date" (CAT shows <NO DATE>)
+  if (prodosDate[0] == 0 && prodosDate[1] == 0)
+    return NO_DATE;
+
   uint8_t year = prodosDate[1] >> 1;
   uint8_t month = ((prodosDate[1] & 0x01) << 3) | ((prodosDate[0] & 0xE0) >> 5);
   uint8_t day = prodosDate[0] & 0x1F;
   uint8_t hour = prodosDate[3] & 0x1F;
   uint8_t minute = prodosDate[2] & 0x3F;
 
+  // Zero the struct and let mktime() work out DST itself. Leaving tm_isdst
+  // uninitialized makes mktime() read stack garbage and shift some dates by
+  // an hour when ls converts them back with localtime().
   struct tm t;
+  memset(&t, 0, sizeof(t));
+  t.tm_isdst = -1;
   t.tm_year = year; // 1900 + whatever. FIXME.
   t.tm_mon = month - 1; // 0 for Jan
   t.tm_mday = day;
@@ -75,6 +88,19 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
   t.tm_sec = 0;
   
   return mktime(&t);
+}
+
+// Format a date for the ls listing, padded to the width of a real date so
+// the columns stay aligned.
+static void formatDate(time_t when, char *buf, size_t len)
+{
+  if (when == NO_DATE) {
+    snprintf(buf, len, "%-15s", "<NO DATE>");
+    return;
+  }
+  struct tm ts = *localtime(&when);
+  // FIXME uc() that
+  strftime(buf, len, "%d-%b-%y %H:%M", &ts);
 }
 
 Vent::Vent(struct _subdirent *di)
@@ -357,15 +383,10 @@ void Vent::Dump(bool verbose)
       }
       
       printf("  %6d  ", blocksUsed);
-      struct tm ts;
-      ts = *localtime(&lastModified);
       char buf[255];
-      strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-      // FIXME uc() that 
+      formatDate(lastModified, buf, sizeof(buf));
       printf("%s   ", buf);
-      ts = *localtime(&creationDate);
-      strftime(buf, sizeof(buf), "%d-%b-%y %H:%M", &ts);
-      // FIXME uc() that 
+      formatDate(creationDate, buf, sizeof(buf));
       printf("%s  %5d %s\n", buf, eofLength, auxData);
     }
   }
