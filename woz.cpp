@@ -147,7 +147,6 @@ uint8_t Woz::getNextWozBit(uint8_t datatrack)
   if (datatrack >= 160) {
     if (datatrack != 255) {
       fprintf(stderr, "datatrack %d out of range\n", datatrack);
-      exit(1);
     }
     return 0;
   }
@@ -604,7 +603,7 @@ bool Woz::writeDskFile(const char *filename, uint8_t subtype)
   int fdout = open(filename, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
   if (fdout == -1) {
     perror("Failed to open output file");
-    exit(1);
+    return false;
   }
 
   bool retval = writeDskFile(fdout, subtype);
@@ -623,12 +622,12 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
   for (int phystrack=0; phystrack<35; phystrack++) {
     if (!decodeWozTrackToDsk(phystrack, subtype, sectorData)) {
       fprintf(stderr, "Failed to decode track %d; aborting\n", phystrack);
-      exit(1);
+      return false;
     }
     ssize_t numWritten = write(fdout, sectorData, 256*16);
     if (numWritten != 256*16) {
       perror("Failed[2] to write to track; aborting");
-      exit(1);
+      return false;
     }
   }
 
@@ -644,7 +643,7 @@ bool Woz::writeNibFile(const char *filename)
   int fdout = open(filename, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
   if (fdout == -1) {
     perror("Failed to open output file");
-    exit(1);
+    return false;
   }
 
   bool retval = writeNibFile(fdout);
@@ -663,11 +662,11 @@ bool Woz::writeNibFile(int fdout)
   for (int phystrack=0; phystrack<35; phystrack++) {
     if (!decodeWozTrackToNibFromDataTrack(quarterTrackMap[phystrack*4], nibData)) {
       fprintf(stderr, "Failed to decode track %d; aborting\n", phystrack);
-      exit(1);
+      return false;
     }
     if (write(fdout, nibData, NIBTRACKSIZE) != NIBTRACKSIZE) {
       fprintf(stderr, "Failed[1] to write track %d; aborting\n", phystrack);
-      exit(1);
+      return false;
     }
   }
 
@@ -1055,7 +1054,9 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     read32(fd, &chunkDataSize);
     if ((int32_t)chunkDataSize < 0) {
       printf("ERROR: data size < 0?\n");
-      exit(1);
+      if (preloadTracks && fd != -1)
+	close(fd);
+      return false;
     }
 
     bool isOk;
@@ -1137,8 +1138,8 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
 
 #ifndef LAZYFD
   if (preloadTracks && fd != -1) {
-    fd = -1;
     close(fd);
+    fd = -1;
   }
 #endif
   return true;
