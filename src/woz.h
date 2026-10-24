@@ -73,6 +73,7 @@ class Woz {
                                   uint8_t maxOut);
 
   bool isSynchronized();
+  bool isVerbose() const { return verbose; }
 
   // INFO chunk write-protect flag. Most copy-protected WOZ images
   // have this set (the originals were WP-tabbed); some protection

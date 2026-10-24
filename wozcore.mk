@@ -17,6 +17,8 @@
 # which is how a Teensy build gets it.
 
 WOZCORE_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
-WOZCORE_SRCS := $(addprefix $(WOZCORE_DIR)/src/,woz.cpp nibutil.cpp crc32.c wozmsg.c wozhost.c)
+WOZCORE_SRCS := $(addprefix $(WOZCORE_DIR)/src/,woz.cpp nibutil.cpp crc32.c wozmsg.c wozhost.c \
+	wozspector.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp \
+	vent.cpp applesoft.cpp intbas.cpp wozops.cpp wozlib.cpp)
 WOZCORE_OBJS := $(addsuffix .o,$(basename $(WOZCORE_SRCS)))
 WOZCORE_CFLAGS := -I$(WOZCORE_DIR)/src

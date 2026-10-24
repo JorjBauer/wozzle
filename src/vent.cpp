@@ -3,7 +3,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 
 Vent::Vent()
 {
@@ -156,14 +155,31 @@ Vent::Vent(struct _dosFdEntry *fe)
   isDos33 = true;
   isPascal = false;
   memcpy(&dosData, fe, sizeof(dosData));
-  
+  memset(&prodosData, 0, sizeof(prodosData));
+  memset(&pascalData, 0, sizeof(pascalData));
+
+  // A DOS 3.3 catalog entry carries none of these, but a caller asking
+  // for them should get something defined
+  entryType = 0;
+  keyPointer = 0;
+  eofLength = 0;
+  creationDate = lastModified = NO_DATE;
+  creatorVersion = minRequiredVersion = 0;
+  accessFlags = 0;
+  typeData = 0;
+  headerPointer = 0;
+  activeFileCount = 0;
+  pascalStartBlock = pascalNextBlock = pascalByteCount = pascalType = 0;
+
+  // Names are padded with spaces, but a space inside one is part of the
+  // name ("BAS BIG"), so only the padding comes off
   for (int i=0; i<30; i++) {
     name[i] = fe->fileName[i] ^ 0x80;
-    if (name[i] == ' ') {
-      name[i] = '\0';
-    }
   }
   name[30] = '\0';
+  for (int i=29; i>=0 && name[i] == ' '; i--) {
+    name[i] = '\0';
+  }
   switch (fe->fileTypeAndFlags & 0x7F) {
   case 0:
     fileType = FT_TXT;

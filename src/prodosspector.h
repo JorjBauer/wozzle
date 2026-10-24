@@ -42,7 +42,7 @@ class ProdosSpector : public Wozspector {
 
   // Contents of one fork of an extended file. For a file that isn't
   // extended, the data fork is the whole file and the resource fork is
-  // empty. Malloc()s into *toWhere like getFileContents(); returns the
+  // empty. Allocates *toWhere like getFileContents(); returns the
   // length (0, with *toWhere NULL, for an absent or empty fork).
   uint32_t getForkContents(Vent *e, bool resourceFork, char **toWhere);
 
@@ -53,7 +53,6 @@ class ProdosSpector : public Wozspector {
   // two mini-entries carry GS/OS Finder information, which an image-to-
   // image copy preserves verbatim.
   bool readExtendedKeyBlock(Vent *e, uint8_t out[512]);
-  virtual uint8_t applesoftHeaderBytes() { return 0; };
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
@@ -85,6 +84,7 @@ class ProdosSpector : public Wozspector {
   static const char *storageTypeName(uint8_t storageType);
 
   virtual bool probe();
+  virtual wozFsType fsType() const { return WOZ_FS_PRODOS; }
   virtual bool writeBootBlocks(const uint8_t block0[512],
                                const uint8_t block1[512]);
   // Read this volume's boot blocks (e.g. to use it as a boot-code donor).
@@ -146,8 +146,8 @@ protected:
   // (freeFileBlocks handles the directory-entry level on top of this.)
   bool freeForkBlocks(uint8_t storageType, uint16_t kp);
   // Read one seedling/sapling/tree structure of `len` bytes rooted at
-  // `kp` into a fresh malloc()ed buffer. `name` only labels warnings about
-  // pointers that leave the volume.
+  // `kp` into a fresh wozMalloc()ed buffer. `name` only labels warnings
+  // about pointers that leave the volume.
   uint32_t readForkBlocks(uint8_t storageType, uint16_t kp, uint32_t len,
                           const char *name, char **toWhere);
   // Store `size` bytes as a seedling, sapling, or tree, reporting which

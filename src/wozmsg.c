@@ -1,6 +1,8 @@
 #include "wozmsg.h"
+#include "wozhost.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void defaultSink(wozMsgLevel level, const char *msg, void *ctx)
 {
@@ -16,6 +18,32 @@ static void defaultSink(wozMsgLevel level, const char *msg, void *ctx)
 
 static wozMsgSink currentSink = defaultSink;
 static void *currentCtx = NULL;
+static char lastError[256];
+
+static void deliver(wozMsgLevel level, const char *msg)
+{
+  if (level == WOZ_MSG_ERROR) {
+    strncpy(lastError, msg, sizeof(lastError) - 1);
+    lastError[sizeof(lastError) - 1] = '\0';
+  }
+  currentSink(level, msg, currentCtx);
+}
+
+void wozGetMsgSink(wozMsgSink *sink, void **ctx)
+{
+  *sink = currentSink;
+  *ctx = currentCtx;
+}
+
+const char *wozLastError(void)
+{
+  return lastError;
+}
+
+void wozClearError(void)
+{
+  lastError[0] = '\0';
+}
 
 void wozSetMsgSink(wozMsgSink sink, void *ctx)
 {
@@ -34,14 +62,14 @@ void wozMsgV(wozMsgLevel level, const char *fmt, va_list ap)
     return;
   }
   if ((size_t)len < sizeof(buf)) {
-    currentSink(level, buf, currentCtx);
+    deliver(level, buf);
   } else {
     // Long enough to need the heap (a multi-line explanation, say)
-    char *big = (char *)malloc(len + 1);
+    char *big = (char *)wozMalloc(len + 1);
     if (big) {
       vsnprintf(big, len + 1, fmt, ap2);
-      currentSink(level, big, currentCtx);
-      free(big);
+      deliver(level, big);
+      wozFree(big);
     }
   }
   va_end(ap2);

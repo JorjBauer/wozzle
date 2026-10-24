@@ -26,9 +26,9 @@ public:
 // Apple II expects: a chain of lines, each [next-line address][line number]
 // [tokens...][0x00], ending with a 0x0000 link. The returned image contains
 // no filesystem header - DOS 3.3's 2-byte length prefix is the disk layer's
-// job - and is malloc'd for the caller to free.
+// job - and is wozMalloc'd for the caller to wozFree.
 //
-// Returns NULL (and sets *outSize to 0) on error, after printing a message
-// naming the offending source line.
+// Returns NULL (and sets *outSize to 0) on error, after a wozMsg naming
+// the offending source line.
 uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
                            uint32_t *outSize);

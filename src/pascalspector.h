@@ -41,7 +41,6 @@ class PascalSpector : public Wozspector {
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
   virtual uint32_t getAllocatedByteCount(Vent *e);
   virtual uint32_t getFileAllocation(Vent *e, char **toWhere);
-  virtual uint8_t applesoftHeaderBytes() { return 0; }
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
@@ -66,8 +65,8 @@ class PascalSpector : public Wozspector {
   // Validate and upper-case a Pascal volume name into out[], which must
   // hold MAX_VOL_NAME_LEN+1 bytes. Names are 1-7 characters of printable
   // ASCII, excluding space and the p-System's own wildcard/separator set
-  // ($ = ? , [ # :). Prints the reason on failure. Shared by renameVolume
-  // and wozit's formatter so the rule has exactly one definition.
+  // ($ = ? , [ # :). Says why through wozMsg on failure. Shared by
+  // renameVolume and the formatter so the rule has exactly one definition.
   static bool normalizeVolumeName(const char *src, char *out);
 
   // Today's date packed into the 16-bit Pascal directory date format, for
@@ -83,6 +82,7 @@ class PascalSpector : public Wozspector {
   // or "" for a kind that has none.
   static const char *kindSuffix(uint8_t kind);
   virtual bool probe();
+  virtual wozFsType fsType() const { return WOZ_FS_PASCAL; }
 
   // Write a file preserving the source entry's Pascal file kind and
   // modification date - for image-to-image copies (wozmosis).

@@ -112,18 +112,25 @@ assert_eq "$hex" "$(img_hex "$TMP/c.po" -p CTX2)" \
 
 # --------------------------------------------------------------- DOS 3.3
 
-# The same program image, behind DOS 3.3's 2-byte length header.
+# The same program image. DOS 3.3 stores it behind a 2-byte length
+# header, which the contents leave out, so they match ProDOS's exactly.
 ./wozit -I dos33.dsk -d -c "format $TMP/d.dsk 254" >/dev/null 2>&1
 out=$(./wozit -I "$TMP/d.dsk" -d -c "cpin -B $TMP/ctx.txt CTX" -c "save $TMP/d.dsk" 2>&1)
 assert_no_match "ERROR" "$out" "cpin -B works on a DOS 3.3 image"
 assert_regex " A +0*2 CTX" "$(./wozit -I "$TMP/d.dsk" -d -c ls 2>&1)" \
              "DOS catalog shows an 'A' file of 2 sectors"
 
-doshex=$(img_hex "$TMP/d.dsk" -d CTX)
+assert_eq "$hex" "$(img_hex "$TMP/d.dsk" -d CTX)" \
+          "DOS 3.3 contents are the same program as on ProDOS"
+
+# With -A it's the file as stored: the header, then the program, then
+# whatever is left of the last sector
+./wozit -I "$TMP/d.dsk" -d -A -c "cpout CTX $TMP/raw.bin" >/dev/null 2>&1
+rawhex=$(hexdump -ve '1/1 "%02x"' "$TMP/raw.bin")
 proglen=$(( ${#hex} / 2 ))
 printf -v lenhdr "%02x%02x" $(( proglen & 255 )) $(( proglen >> 8 ))
-assert_eq "${lenhdr}${hex}" "$doshex" \
-          "DOS 3.3 file is the same program behind a 2-byte length header"
+assert_eq "${lenhdr}${hex}" "${rawhex:0:$(( ${#hex} + 4 ))}" \
+          "the raw DOS 3.3 file is the program behind a 2-byte length header"
 
 # --------------------------------------------------------- bad input
 

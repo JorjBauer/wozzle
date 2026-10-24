@@ -17,7 +17,9 @@ Wozzle is written in C++, and expects to find g++ for compilation.
 Using the library in another program
 ------------------------------------
 
-The disk image code itself (woz, nibutil, crc32, wozmsg, wozhost) lives in src/. The tools here link it as libwozcore.a, and I also use it in my Aiie emulator, on both the Mac and a Teensy 4.1. That's why it's laid out the way it is.
+Everything but the command line front ends lives in src/. That's the disk image code (woz, nibutil, crc32, wozmsg, wozhost), the DOS 3.3, ProDOS and Pascal filesystems (the *spector classes and vent), the BASIC listers and tokenizer, and the operations the tools are built from (wozops: format, cpin, cpout, boot blocks, and wozmosis's image-to-image copy). The tools here link it as libwozcore.a, and I also use it in my Aiie emulator, on both the Mac and a Teensy 4.1. That's why it's laid out the way it is.
+
+There are two ways in. C++ programs can use the classes and wozops.h directly. Anything else (a GUI in another language, a WebAssembly build) can use wozlib.h, which is plain C: open an image, list a directory, read and write files, make a blank image, copy between images. tests/unit-capi.c is written in C and runs through most of it, if you want an example.
 
 If you're building with make, include wozcore.mk and use its variables instead of naming the files, so you don't have to chase my file list:
 
@@ -29,7 +31,11 @@ myprogram: $(MYOBJS) $(WOZCORE_OBJS)
 
 If you're building with Arduino, the top of this repository is an Arduino library (library.properties plus src/). Hand it to arduino-cli with `--library path/to/wozzle`.
 
-The library never touches files, memory or the terminal directly. File I/O and allocation go through hooks in wozhost.h, and messages go through wozmsg.h. On a POSIX system the defaults just work. Arduino has no POSIX file layer, so there you have to install file hooks (wozSetHost) before you open an image. wozhost.h also has two settings for slow storage: keepFilesOpen, and skipChecksum (which writes a 0 CRC, which the WOZ spec allows).
+The library never touches files, memory or the terminal directly. File I/O and allocation go through hooks in wozhost.h, and messages go through wozmsg.h. On a POSIX system the defaults just work. Arduino has no POSIX file layer, so there you have to install file hooks (wozSetHost) before you open an image. wozhost.h also has two settings for slow storage: keepFilesOpen, and skipChecksum (which writes a 0 CRC, which the WOZ spec allows). There's a clock hook too (now), for dating new Pascal files; on Arduino it defaults to "don't know", and they get no date.
+
+Buffers the library hands back (file contents, for instance) come from the allocator hook, so give them back with wozFree, not free. On a POSIX system with the default hooks it's the same thing, but it isn't on a Teensy with its allocator pointed at PSRAM.
+
+None of this is thread safe. The hooks and the message sink are global, and nothing is locked. If you're calling it from a GUI, do all of it from one thread.
 
 Usage
 -----
@@ -168,6 +174,20 @@ Copies a file from inside the image to a file outside the image. With
 data fork. With *-B*, it de-tokenizes an Applesoft or Integer BASIC
 program into a text listing instead of copying the raw bytes.
 
+What comes out is the file's contents, and that means the same thing on
+every filesystem: what *cpin* put in comes back out. DOS 3.3 stores a
+header in front of I, A and B files (the length, and for B the load
+address before it); that isn't part of the contents, so it's left off,
+and the header's length says where the file ends. A DOS 3.3 T file ends
+at its first $00, the way a sequential text file does.
+
+Start wozit with *-A* and *cpout* copies everything the file has
+allocated instead, read as it lies on disk: DOS 3.3 headers included, and
+past whatever length the directory or the header gives. That's the way to
+recover a file whose length is a stub hiding a bigger payload, and the way
+to get at a random-access text file, which can have $00s anywhere. Sparse
+sectors come out as zeros, so the records stay where they were written.
+
 GS/OS extended (forked) files, ProDOS storage type 5, are supported in
 ProDOS mode: *ls* marks them with a `+` after the name, *inspect* reports
 the shape and size of each fork, and *rm* frees both forks along with the
@@ -245,4 +265,44 @@ Limitations
 * In ProDOS mode, it only references files by filename - not by directory. So two files
   with the same name in different directories won't be readable (it will pick the first
   one it finds).
+* Arguments are split at spaces, so a DOS 3.3 file whose name has a space in it can't
+  be named on the command line. It shows up in *ls*, and wozfuse can read it.
   
+
+
+Wozfuse
+=======
+
+Wozfuse mounts a disk image as a read-only filesystem, so you can browse
+it and copy files out with whatever you normally use (Finder, Explorer, a
+shell).
+
+```
+wozfuse [-d | -p | -P] [-c] [-v] <image> <mountpoint>
+```
+
+With none of *-d*, *-p* or *-P*, it works out the filesystem from the
+image. It runs in the foreground; Ctrl-C or *umount* unmounts it.
+
+Files read as their contents, the same bytes *cpout* copies out. The
+Apple II file type, aux type, and (on ProDOS) access bits come along as
+extended attributes: *user.apple2.filetype*, *user.apple2.auxtype* and
+*user.apple2.access*, as hex. On a Mac, *xattr -l* shows them; on Linux,
+*getfattr -d*. With *-c*, every directory also gets a generated
+*_CATALOG.TXT* that lists them, for anywhere attributes are awkward to
+get at.
+
+DOS 3.3 names can hold characters a host filename can't (a '/', say), so
+those turn into %XX: *A/B* shows up as *A%2FB*.
+
+It's built on FUSE 3, and make only builds it when pkg-config can find
+fuse3. As of this writing I've run it with macFUSE 5.1.2 on macOS 26.
+Linux's libfuse3 uses the same interface. On Windows it would be WinFsp's
+FUSE layer, which I haven't tried; the code has a few lines for WinFsp's
+type names, but that's as far as it's been.
+
+Limitations
+-----------
+
+* Read-only. Writing is planned.
+* A GS/OS extended file shows only its data fork.

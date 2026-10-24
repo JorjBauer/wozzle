@@ -2,12 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 // Prodos disk map parser
 
 #include "vent.h"
 #include "wozmsg.h"
+#include "wozhost.h"
 
 #include <stack>
 #include <set>
@@ -52,29 +52,6 @@ enum {
   at_read      = 0x01
 };
 
-#if 0
-void dumpFent(struct _prodosFent *e)
-{
-  if (!e->fileType)
-    return;
-  char name[16];
-  memset(name, 0, sizeof(name));
-  strncpy(name, e->name, 15);
-  printf("Name: '%s'\n", name);
-  printf("Type: 0x%X\n", e->fileType);
-  printf("KeyPtr: %.2X %.2X\n", e->keyPointer[0], e->keyPointer[1]);
-  printf("BlocksUsed: %.2X %.2X\n", e->blocksUsed[0], e->blocksUsed[1]);
-  printf("eofLen: %.2X %.2X %.2X\n", e->eofLength[0], e->eofLength[1], e->eofLength[2]);
-  printf("creation: %.2X %.2X %.2X %.2X\n", e->creationDate[0], e->creationDate[1], e->creationDate[2], e->creationDate[3]);
-  printf("creatorVerison: %.2X\n", e->creatorVersion);
-  printf("minRequiredVersion: %.2X\n", e->minRequiredVersion);
-  printf("accessFlags: %.2X\n", e->accessFlags);
-  printf("typeData: %.2X %.2X\n", e->typeData[0], e->typeData[1]);
-  printf("lastModified: %.2X %.2X %.2X %.2X\n", e->lastModified[0], e->lastModified[1], e->lastModified[2], e->lastModified[3]);
-  printf("headerPointer: %.2X %.2X\n", e->headerPointer[0], e->headerPointer[1]);
-}
-#endif
-
 ProdosSpector::ProdosSpector(bool verbose) : Wozspector(verbose)
 {
   volBitmapBlock = 6; // safe default; it's usually in block 6
@@ -88,11 +65,11 @@ ProdosSpector::ProdosSpector(bool verbose) : Wozspector(verbose)
 ProdosSpector::~ProdosSpector()
 {
   if (trackData) {
-    free(trackData);
+    wozFree(trackData);
     trackData = NULL;
   }
   if (freeBlockBitmap) {
-    free(freeBlockBitmap);
+    wozFree(freeBlockBitmap);
     freeBlockBitmap = NULL;
   }
 }
@@ -103,14 +80,14 @@ ProdosSpector::~ProdosSpector()
 bool ProdosSpector::loadBlockBuffer()
 {
   if (trackData) {
-    free(trackData);
+    wozFree(trackData);
     trackData = NULL;
     trackDataBytes = 0;
   }
 
   if (isHdv()) {
     trackDataBytes = hdvByteCount();
-    trackData = (uint8_t *)malloc(trackDataBytes);
+    trackData = (uint8_t *)wozMalloc(trackDataBytes);
     if (!trackData) return false;
     memcpy(trackData, hdvBuffer(), trackDataBytes);
     return true;
@@ -118,7 +95,7 @@ bool ProdosSpector::loadBlockBuffer()
 
   // Floppy case: 35 tracks × 16 sectors × 256 bytes = 140 KB.
   trackDataBytes = 35 * 256 * 16;
-  trackData = (uint8_t *)calloc(trackDataBytes, 1);
+  trackData = (uint8_t *)wozCalloc(trackDataBytes, 1);
   if (!trackData) return false;
 
   for (int i = 0; i < 35; i++) {
@@ -278,8 +255,8 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 		 currentBlock, md->entryLength, md->entriesPerBlock);
 	  return ret; // ret is still NULL here
 	}
+	// Only the first block of the chain gets here, so ret is still NULL
 	Vent *sde = new Vent(md);
-	assert(ret == NULL); // shouldn't have been initialized yet?
 	ret = sde;
 	// Headers don't carry their key block on disk; record it so a
 	// subdirectory entry (whose keyPointer names this block) can be
@@ -300,9 +277,9 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
           // HDV spans sixteen.
           uint32_t bitmapBlocks = (numBlocksTotal + 4095) / 4096;
           if (bitmapBlocks < 1) bitmapBlocks = 1;
-          if (freeBlockBitmap) free(freeBlockBitmap);
+          if (freeBlockBitmap) wozFree(freeBlockBitmap);
           freeBlockBitmapBytes = bitmapBlocks * 512;
-          freeBlockBitmap = (uint8_t *)calloc(freeBlockBitmapBytes, 1);
+          freeBlockBitmap = (uint8_t *)wozCalloc(freeBlockBitmapBytes, 1);
           if (!freeBlockBitmap) {
             wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory for volume bitmap");
             return NULL;
@@ -330,8 +307,9 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 	// if (fe->typen & 0xF0) == 0, then it's an empty directory entry.
 	if (fe->typelen & 0xF0) {
 	  activeEntriesFound++;
+	  // The header (entry 0 of the first block) always comes first, so
+	  // ret is set by now
 	  Vent *ve = new Vent(fe);
-	  assert(ret); // should have been initialized already?
 	  Vent *p3 = ret;
 	  while (p3->nextEnt()) {
 	    p3 = p3->nextEnt();
@@ -1203,7 +1181,7 @@ uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
   switch (indexType) {
   case 1:
     // Seedling file: we point right to the data
-    *toWhere = (char *)malloc(l); // FIXME check for error
+    *toWhere = (char *)wozMalloc(l); // FIXME check for error
     if (!validBlock(kp)) {
       memset(*toWhere, 0, l);
       badPointers++;
@@ -1226,7 +1204,7 @@ uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
     {
       uint32_t sizeRemaining = l;
       uint32_t bytesCopied = 0;
-      *toWhere = (char *)malloc(l); // FIXME check for error
+      *toWhere = (char *)wozMalloc(l); // FIXME check for error
       if (!validBlock(kp)) {
         memset(*toWhere, 0, l);
         badPointers++;
@@ -1257,7 +1235,7 @@ uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
     {
       uint32_t sizeRemaining = l;
       uint32_t bytesCopied = 0;
-      *toWhere = (char *)malloc(l); // FIXME check for error
+      *toWhere = (char *)wozMalloc(l); // FIXME check for error
       if (!validBlock(kp)) {
         memset(*toWhere, 0, l);
         badPointers++;

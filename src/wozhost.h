@@ -14,11 +14,17 @@
 // layer to fall back on, so the file hooks have no default there and the
 // program must install its own before opening an image.
 //
+// One host serves the whole program, and so does the message sink in
+// wozmsg.h; neither is locked. Install them before opening an image, and
+// keep every call into the library on one thread at a time (a GUI's
+// worker thread, say), since the objects aren't locked either.
+//
 // File descriptors are whatever the open hook returns, and -1 means
 // failure. Seeks take SEEK_SET, SEEK_CUR and SEEK_END from <stdio.h>.
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +58,13 @@ typedef struct {
   bool skipChecksum;
 
   void *ctx;
+
+  // The current time, for dating new files and volumes. (time_t)-1 means
+  // the program doesn't know, and things get no date. This is last in the
+  // struct so a host written before it existed still lines up; the
+  // default is time() on POSIX and "don't know" on Arduino, which may
+  // have no clock.
+  time_t (*now)(void *ctx);
 } wozHost;
 
 // Install a host. Any hook left NULL gets the default; the struct is
@@ -70,6 +83,7 @@ void *wozMalloc(size_t size);
 void *wozCalloc(size_t count, size_t size);
 void *wozRealloc(void *ptr, size_t size);
 void  wozFree(void *ptr);
+time_t wozNow(void);
 
 #ifdef __cplusplus
 };

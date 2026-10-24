@@ -9,6 +9,7 @@
 #include "dosspector.h"
 #include "prodosspector.h"
 #include "pascalspector.h"
+#include "wozops.h"
 
 // "    0x0010 : XX XX ..." rows, 16 bytes to a row
 static void hexRows(const char *indent, const uint8_t *p, uint32_t len)
@@ -619,10 +620,5 @@ void printFileDetails(Wozspector *fs, Vent *fp)
 
 void printBasicListing(FILE *out, const BasicListing &lines, bool integerBasic)
 {
-  for (size_t i = 0; i < lines.size(); i++) {
-    if (integerBasic)
-      fprintf(out, "%5u %s\n", lines[i].lineNumber, lines[i].text.c_str());
-    else
-      fprintf(out, "%d %s\n", lines[i].lineNumber, lines[i].text.c_str());
-  }
+  fputs(wozFormatBasicListing(lines, integerBasic).c_str(), out);
 }

@@ -3,6 +3,7 @@
 
 #include "woz.h"
 #include "vent.h"
+#include "woztypes.h"
 
 class Wozspector : public Woz {
 public:
@@ -11,8 +12,10 @@ public:
 
   Vent *getTree();
 
-  // getFileContents will will malloc(); caller must call free()
-  // return value is the length
+  // A file's contents: its data alone, without any header the filesystem
+  // stores in front of it (DOS 3.3's I, A and B files have one), so it's
+  // the same thing on every filesystem. Returns the length; the buffer
+  // comes from wozMalloc and the caller wozFree()s it.
   virtual uint32_t getFileContents(Vent *e, char **toWhere) = 0;
 
   // Returns the approximate on-disk allocation size (in bytes) for the
@@ -20,17 +23,14 @@ public:
   // logical-vs-allocated mismatches when copying files out.
   virtual uint32_t getAllocatedByteCount(Vent *e) = 0;
 
-  // Returns the full allocated contents of the file by walking the on-disk
-  // data sectors/blocks directly, ignoring any in-file length header. Used
-  // by cpout -A to recover files whose catalog length is a small "stub"
-  // that hides a larger payload. Default impl just delegates to
-  // getFileContents for filesystems where header-length == allocation.
+  // Everything the file has allocated, read straight off the disk: headers
+  // included, and past whatever length the directory or a header gives.
+  // That's how cpout -A recovers a file whose length is a small "stub"
+  // hiding a larger payload. Where the filesystem has nothing past the
+  // length to find, it's the same as getFileContents.
   virtual uint32_t getFileAllocation(Vent *e, char **toWhere) {
     return getFileContents(e, toWhere);
   }
-
-  // Dos and ProDOS have different size applesoft headers, which affects listing
-  virtual uint8_t applesoftHeaderBytes() = 0;
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
@@ -93,6 +93,10 @@ public:
   // spector knows how to handle. Used at startup to warn when the user
   // invoked wozit with the wrong -d/-p mode.
   virtual bool probe() = 0;
+
+  // Which filesystem this inspector reads. (A virtual rather than RTTI,
+  // which embedded builds often turn off.)
+  virtual wozFsType fsType() const = 0;
 
 protected:
   virtual Vent *createTree() = 0;

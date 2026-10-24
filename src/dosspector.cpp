@@ -5,6 +5,7 @@
 
 #include "vent.h"
 #include "wozmsg.h"
+#include "wozhost.h"
 
 struct _catalogInfo {
   uint8_t unused;
@@ -208,346 +209,117 @@ bool DosSpector::writeFileToImage(uint8_t *fileContents,
                                   uint16_t fileStart,
                                   uint32_t fileSize)
 {
-
-  if (fileSize > 31232) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: don't know how to handle files > 31232 bytes (b/c we need multiple TSlist blocks)");
-    return false;
-  }
-
-  // The tree has to be loaded before we start
-  if (!vtLoaded)
-    createTree();
-
-  /*
-  Vent *fp = findFileByName(fileName);
-  if (fp) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: File '%s' already exists", fileName);
-    return false;
-  }
-  */
-
-  // Build the on-disk form first. DOS 3.3 prefixes most file types with a
-  // short header, and that header has to be counted when we allocate
-  // sectors - otherwise a file whose length is an exact multiple of 256
-  // spills its last few bytes into a sector nobody reserved.
-  uint8_t *adulteratedData = NULL;
-  uint32_t writeSize = 0;
+  // The fileType we're handed is a ProDOS file type, because they're more
+  // expressive than the DOS ones, so the callers can use just one
+  uint8_t typeAndFlags;
+  uint32_t headerSize = 0;
   switch (fileType) {
-  case FT_BIN:
-    // 4-byte header: load address (L/H) then length (L/H).
-    writeSize = fileSize + 4;
-    adulteratedData = (uint8_t *)malloc(writeSize);
-    if (!adulteratedData) return false;
-    adulteratedData[0] = fileStart & 0xFF;
-    adulteratedData[1] = (fileStart >> 8) & 0xFF;
-    adulteratedData[2] = fileSize & 0xFF;
-    adulteratedData[3] = (fileSize >> 8) & 0xFF;
-    memcpy(&adulteratedData[4], fileContents, fileSize);
-    break;
-  case FT_BAS:
-  case FT_INT:
-    // 2-byte header: the program length. The caller hands us the bare
-    // program image, the same way it hands us bare data for a BIN file.
-    writeSize = fileSize + 2;
-    adulteratedData = (uint8_t *)malloc(writeSize);
-    if (!adulteratedData) return false;
-    adulteratedData[0] = fileSize & 0xFF;
-    adulteratedData[1] = (fileSize >> 8) & 0xFF;
-    memcpy(&adulteratedData[2], fileContents, fileSize);
-    break;
-  }
-  if (!adulteratedData) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: don't know how to set up the file header for this file type");
-    return false;
-  }
-
-  // We need a TSList
-  struct _dosTsList tsList;
-  memset(&tsList, 0, sizeof(tsList));
-  int tsPairPtr = 0;
-
-  int32_t remainingSize = writeSize;
-  while (tsPairPtr < 122 && remainingSize > 0) {
-    int t,s;
-    if (!findFreeSector(&t, &s)) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: unable to find enough free sectors");
-      free(adulteratedData);
-      return false;
-    }
-    if (verbose) wozMsg(WOZ_MSG_DEBUG, "Using track %d sector %d for data", t, s);
-    tsList.tsPair[tsPairPtr].track = t;
-    tsList.tsPair[tsPairPtr].sector = s;
-    tsPairPtr++;
-    remainingSize -= 256;
-  }
-
-  // Write the file to those blocks.
-  remainingSize = writeSize;
-  uint16_t dataPtr = 0;
-  uint8_t sectorData[256];
-  for (int b=0; b<tsPairPtr; b++) {
-    int t = tsList.tsPair[b].track;
-    int s = tsList.tsPair[b].sector;
-    uint32_t chunk = (remainingSize >= 256) ? 256 : (uint32_t)remainingSize;
-    memset(sectorData, 0, sizeof(sectorData));
-    memcpy(sectorData, &adulteratedData[dataPtr], chunk);
-    if (verbose) wozMsg(WOZ_MSG_DEBUG, "Writing data to track %d sector %d", t, s);
-    if (!encodeWozTrackSector(t, enphys[s], sectorData)) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to encodeWozTrackSector");
-      free(adulteratedData);
-      return false;
-    }
-    dataPtr += 256;
-    remainingSize -= chunk;
-  }
-  free(adulteratedData);
-  adulteratedData = NULL;
-
-  // Find a free block for the TS list itself
-  int t,s;
-  if (!findFreeSector(&t, &s)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: can't find a free sector for the TS list");
-    return false;
-  }
-  // Write the TS list
-  if (verbose) wozMsg(WOZ_MSG_DEBUG, "Writing the TS list to track %d sector %d", t, s);
-  if (!encodeWozTrackSector(t, enphys[s], (uint8_t *)&tsList)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to encodeWozTrackSector for TSList");
-    return false;
-  }
-
-  // Prep the directory entry
-  struct _dosFdEntry newEntry;
-  memset(&newEntry, 0, sizeof(newEntry));
-  newEntry.firstTrack = t;
-  newEntry.firstSector = s;
-
-  // The fileType argument passed in to us was a ProDOS file type, because
-  // they're more expressive than the DOS file types, so we can use just one
-  // and interpret them here.
-  switch (fileType) {
-  case FT_TXT: // 'T' Text
-    newEntry.fileTypeAndFlags = 0;
-    break;
-  case FT_INT: // 'I' Integer basic
-    newEntry.fileTypeAndFlags = 1;
-    break;
-  case FT_BAS: // 'A' Applesoft Basic
-    newEntry.fileTypeAndFlags = 2;
-    break;
-  case FT_BIN: // 'B' Binary file
-    newEntry.fileTypeAndFlags = 4;
-    break;
-  case FT_SYS: // 'S' sys
-    newEntry.fileTypeAndFlags = 8;
-    break;
-  case FT_REL: // 'R' rel
-    newEntry.fileTypeAndFlags = 16;
-    break;
+  case FT_TXT: typeAndFlags = 0;  break; // 'T' text
+  case FT_INT: typeAndFlags = 1;  headerSize = 2; break; // 'I' Integer BASIC
+  case FT_BAS: typeAndFlags = 2;  headerSize = 2; break; // 'A' Applesoft
+  case FT_BIN: typeAndFlags = 4;  headerSize = 4; break; // 'B' binary
+  case FT_SYS: typeAndFlags = 8;  break; // 'S'
+  case FT_REL: typeAndFlags = 16; break; // 'R' relocatable
   default:
-    wozMsg(WOZ_MSG_ERROR, "ERROR: unhandled file type; can't construct directory entry");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: DOS 3.3 has no file type for ProDOS type "
+           "$%02X", fileType);
+    return false;
+  }
+  // The I/A/B header's length is 16 bits
+  if (headerSize && fileSize > 0xFFFF) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: a DOS 3.3 %s file can't be over 65535 "
+           "bytes", fileType == FT_BIN ? "B" : fileType == FT_BAS ? "A" : "I");
     return false;
   }
 
-  char buf[31];
-  snprintf(buf, sizeof(buf), "%-30s", fileName);
-  if (verbose) wozMsg(WOZ_MSG_DEBUG, "new entry name: '%s'", buf);
-  memcpy(newEntry.fileName, buf, 30); // no terminator copied
-  // The catalog length field is a sector count, including the T/S list.
-  uint16_t sectorCount = (uint16_t)(tsPairPtr + 1);
-  newEntry.fileLength[0] = sectorCount & 0xFF;
-  newEntry.fileLength[1] = (sectorCount >> 8) & 0xFF;
-
-  // Flush the updated free blocks list before we write the directory entry
-  if (!flushFreeSectorList()) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to flush free sector list");
+  // Build the on-disk form: DOS 3.3 puts a short header in front of I, A
+  // and B files (B: load address, then length; I and A: just the length),
+  // and stores T, S and R files as they are
+  uint32_t writeSize = fileSize + headerSize;
+  uint8_t *onDisk = (uint8_t *)wozMalloc(writeSize ? writeSize : 1);
+  if (!onDisk) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory");
     return false;
   }
-
-  // actually add the directory entry
-  if (!addDirectoryEntryForFile(&newEntry)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to add directory entry");
-    return false;
+  uint8_t *h = onDisk;
+  if (fileType == FT_BIN) {
+    *h++ = fileStart & 0xFF;
+    *h++ = (fileStart >> 8) & 0xFF;
   }
+  if (headerSize) {
+    *h++ = fileSize & 0xFF;
+    *h++ = (fileSize >> 8) & 0xFF;
+  }
+  memcpy(h, fileContents, fileSize);
 
-  // Re-read the VTOC
-  createTree();
-
-  // Caller is responsible for updating the on-disk image
-  return true;
+  bool ok = writeFileRaw(onDisk, fileName, typeAndFlags, writeSize);
+  wozFree(onDisk);
+  return ok;
 }
-
 
 uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
 {
-  // The tree has to be loaded before we start
-  if (!vtLoaded)
-    createTree();
-  
-  // Find the T/S list so we can find the first block of the file, so we can find its length
-  uint8_t tsTrack = e->getFirstTrack();
-  uint8_t tsSector = e->getFirstSector();
-  if (!tsTrack && !tsSector) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: no T/S first entry?");
-    *toWhere = NULL;
-    return 0;
-  }
-  if (verbose) wozMsg(WOZ_MSG_DEBUG, "File T/S list starts at track %d sector %d", tsTrack, tsSector);
-
-#if 0
-  // unnecesary but checking to see what's wrong with below
-  uint8_t dataTrackData[256*16];
-  printf("About to decode track %d\n", tsTrack);
-  if (!decodeWozTrackToDsk(tsTrack, T_DSK, dataTrackData)) {
-    printf("Unable to decode track %d\n", tsTrack);
-    *toWhere = NULL;
-    return 0;
-  }
-  printf("Track dump\n");
-  for (int i=0; i<16; i++) {
-    printf("sector %d:\n", i);
-    for (int j=0; j<256; j+=16) {
-      printf("%.4X  ", j);
-      for (int k=0; k<16; k++) {
-        printf("%.2X ", dataTrackData[i*256+j+k]);
-      }
-      printf("\n");
-    }
-  }
-#endif
-  
-  struct _dosTsList *tsList = NULL;
-  uint8_t sectorData[256];
-  {
-    // The T/S list sector is addressed by its logical sector number in
-    // the directory entry. Go through the format-aware helper so the
-    // same code path works for DOS 3.2 (13-sector) and DOS 3.3.
-    uint8_t trackBuf[256*16];
-    if (!readLogicalTrack(tsTrack, trackBuf)) {
-      wozMsg(WOZ_MSG_ERROR, "Unable to decode track %d sector %d", tsTrack, tsSector);
-      *toWhere = NULL;
-      return 0;
-    }
-    memcpy(sectorData, &trackBuf[256 * tsSector], 256);
-  }
-  tsList = (struct _dosTsList *)sectorData;
-  if (verbose) {
-    wozMsg(WOZ_MSG_DEBUG, "TSList sector:");
-    char buf[256*3+1]; // "XX " per byte
-    size_t off = 0;
-    buf[0] = 0;
-    for (int i=0; i<256 && off < sizeof(buf); i++) {
-      off += snprintf(buf + off, sizeof(buf) - off, "%.2X ", sectorData[i]);
-    }
-    wozMsg(WOZ_MSG_DEBUG, "%s", buf);
-  }
-
-  // Find the length of the file from its first block
-  if (!tsList->tsPair[0].track && !tsList->tsPair[0].sector) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: T/S entry has no data sectors?");
-    *toWhere = NULL;
-    return 0;
-  }
-  if (tsList->tsPair[0].track > 34 || tsList->tsPair[0].sector > 15) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: invalid T/S entry?");
-    *toWhere = NULL;
-    return 0;
-  }
-  
-  uint8_t dataTrackData[256*16];
-  if (verbose) wozMsg(WOZ_MSG_DEBUG, "About to decode track %d", tsList->tsPair[0].track);
-  if (!readLogicalTrack(tsList->tsPair[0].track, dataTrackData)) {
-    wozMsg(WOZ_MSG_ERROR, "Unable to decode track %d", tsList->tsPair[0].track);
-    *toWhere = NULL;
-    return 0;
-  }
-  if (verbose) {
-    wozMsg(WOZ_MSG_DEBUG, "dump of track %d", tsList->tsPair[0].track);
-    for (int i=0; i<16; i++) {
-      wozMsg(WOZ_MSG_DEBUG, "sector %d", i);
-      char buf[256*3+1]; // "XX " per byte
-      size_t off = 0;
-      buf[0] = 0;
-      for (int j=0; j<256 && off < sizeof(buf); j++) {
-        off += snprintf(buf + off, sizeof(buf) - off, "%.2X ", dataTrackData[i*256+j]);
-      }
-      wozMsg(WOZ_MSG_DEBUG, "%s", buf);
-    }
-    wozMsg(WOZ_MSG_DEBUG, "looking for sector %d", tsList->tsPair[0].sector);
-  }
-  uint8_t *dataPtr = &dataTrackData[256*tsList->tsPair[0].sector];
-  uint32_t fileLength = 0;
-  switch (e->getFileType()) {
-    case FT_BIN:
-      // The 4-byte header (load address, then length) sits in front of the
-      // data, and the length counts only what follows it - so the file we
-      // hand back is 4 bytes longer than the field says. Leaving the +4 off
-      // returned the header plus the first length-4 bytes, quietly chopping
-      // the last 4 bytes off every BIN file copied out.
-      fileLength = dataPtr[2] + 256*dataPtr[3] + 4;
-      break;
-    case FT_BAS:
-    case FT_INT:
-      // The on-disk DOS 3.3 file is a 2-byte length header followed by
-      // exactly that many bytes of tokenized program. Return both so the
-      // caller gets the full file (listers skip the header via
-      // applesoftHeaderBytes()).
-      fileLength = dataPtr[0] + 256*dataPtr[1] + 2;
-      if (verbose) wozMsg(WOZ_MSG_DEBUG, "BAS/INT file length %u", (unsigned)fileLength);
-      break;
-    case FT_SYS: // 'S' type
-    case FT_REL: // 'R' type
-      // Don't know what SYS/REL do for length; skip for now
-    case FT_TXT:
-      // There's no way to tell the length of this beforehand - we have to
-      // go through the full T/S list. It may be sparse (have 00/00 entries
-      // in the T/S list), so it really is a full scan...
-    default:
-      wozMsg(WOZ_MSG_ERROR, "Unimplemented: don't know how to tell file length of this file type");
-      *toWhere = NULL;
-      return 0;
-      break;
-  }
-
-  *toWhere = (char *)malloc(fileLength); // FIXME: error checking
-  
-  // FIXME: this method won't work for sparse TXT Files
-  uint8_t ptr = 0; // pointer in to the tsList->tsPair: which pair are we looking at?
-  
-  uint32_t dptr = 0; // pointer in to the return data
-  uint32_t dataLeft = fileLength;
-
-  // '122' is the number of T/S pairs in the structure
-  while (ptr < 122 && (tsList->tsPair[ptr].track != 0 || tsList->tsPair[ptr].sector != 0)) {
-    // FIXME this could decode a single sector, instead of a track that we repeat
-    if (!readLogicalTrack(tsList->tsPair[ptr].track, dataTrackData)) {
-      wozMsg(WOZ_MSG_ERROR, "Unable to decode track %d", tsList->tsPair[ptr].track);
-      free(*toWhere);
-      *toWhere = NULL;
-      return 0;
-    }
-    dataPtr = &dataTrackData[256*tsList->tsPair[ptr].sector];
-    
-    if (dataLeft >= 256) {
-      memcpy((*toWhere) + dptr, dataPtr, 256);
-      dataLeft -= 256;
-      dptr += 256;
-    } else {
-      memcpy((*toWhere) + dptr, dataPtr, dataLeft);
-      
-      dataLeft = 0;
-      // We've got all the data
-      return fileLength;
-    }
-    ptr++;
-  }
-  
-  // If we reach here, then we need more data than was in the first T/S list.
-  // FIXME: implement
-  wozMsg(WOZ_MSG_ERROR, "Unimplemented: don't know how to follow second track/sector list");
-  free (*toWhere);
+  // The file's own data, the way DOS hands it to a program: I, A and B
+  // files lose the header in front of them (the length, and for B the load
+  // address first), and their length comes from it. A T file ends at its
+  // first $00, as a sequential text file does (there's no telling a
+  // random-access one apart, so use getFileAllocation for those). Anything
+  // else (S, R, and the new A and B types) is the whole raw stream.
   *toWhere = NULL;
-  return 0;
+  char *raw = NULL;
+  uint32_t rawLen = getFileAllocation(e, &raw);
+  if (!rawLen) return 0;
+
+  uint32_t start = 0;
+  uint32_t len = rawLen;
+  const uint8_t *r = (const uint8_t *)raw;
+  switch (e->getFileType()) {
+  case FT_BIN:
+    start = 4;
+    len = r[2] + 256 * r[3];
+    break;
+  case FT_BAS:
+  case FT_INT:
+    start = 2;
+    len = r[0] + 256 * r[1];
+    break;
+  case FT_TXT: {
+    const uint8_t *z = (const uint8_t *)memchr(r, 0, rawLen);
+    len = z ? (uint32_t)(z - r) : rawLen;
+    break;
+  }
+  default:
+    break;
+  }
+  if (start + len > rawLen) {
+    // BSAVE over a longer file leaves a stale length behind, and a damaged
+    // file can claim anything; we hand back what's really there
+    wozMsg(WOZ_MSG_WARNING, "WARNING: '%s' says it's %u bytes, but only %u "
+           "are allocated", e->getName(), (unsigned)len,
+           (unsigned)(rawLen > start ? rawLen - start : 0));
+    len = rawLen > start ? rawLen - start : 0;
+  }
+  if (!len) {
+    wozFree(raw);
+    return 0;
+  }
+  if (start)
+    memmove(raw, raw + start, len);
+  *toWhere = raw;
+  return len;
+}
+
+uint16_t DosSpector::getLoadAddress(Vent *e)
+{
+  if (e->getFileType() == FT_BAS)
+    return 0x0801; // where Applesoft programs always load
+  if (e->getFileType() != FT_BIN)
+    return 0;
+  // The load address is the first word of the file's first data sector
+  struct DosFileAnalysis a;
+  if (!analyzeFile(e, &a) || !a.haveLengthHeader)
+    return 0;
+  return a.loadAddress;
 }
 
 bool DosSpector::addDirectoryEntryForFile(struct _dosFdEntry *e)
@@ -635,63 +407,93 @@ bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
   if (!vtLoaded)
     createTree();
 
-  uint32_t dataSectors = (size + 255) / 256;
-  if (dataSectors > 122) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: don't know how to handle files > 31232 bytes (b/c we "
-                          "need multiple TSlist blocks)");
-    return false;
-  }
   if (strlen(fileName) > 30) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: DOS 3.3 file names may not exceed 30 characters");
     return false;
   }
 
-  // Allocate and write the data sectors, recording them in the T/S list.
-  struct _dosTsList tsList;
-  memset(&tsList, 0, sizeof(tsList));
-  uint32_t remaining = size;
-  for (uint32_t b = 0; b < dataSectors; b++) {
+  // Every file gets at least one data sector, and each T/S list sector
+  // names up to 122 of them; more than that takes a chain of T/S lists
+  uint32_t dataSectors = (size + 255) / 256;
+  if (!dataSectors) dataSectors = 1;
+  uint32_t listSectors = (dataSectors + 121) / 122;
+  if (dataSectors + listSectors > 35 * 16) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: unable to find enough free sectors");
+    return false;
+  }
+
+  // Allocate everything before writing anything, so running out of room
+  // leaves the disk alone. If we do run out, then re-reading the VTOC puts
+  // back the in-RAM free map.
+  struct _tsPair *lists = (struct _tsPair *)wozMalloc(listSectors * sizeof(struct _tsPair));
+  struct _tsPair *data = (struct _tsPair *)wozMalloc(dataSectors * sizeof(struct _tsPair));
+  if (!lists || !data) {
+    wozFree(lists);
+    wozFree(data);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory");
+    return false;
+  }
+  for (uint32_t i = 0; i < listSectors + dataSectors; i++) {
     int t, s;
     if (!findFreeSector(&t, &s)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: unable to find enough free sectors");
+      wozFree(lists);
+      wozFree(data);
+      createTree();
       return false;
     }
-    tsList.tsPair[b].track = t;
-    tsList.tsPair[b].sector = s;
+    // The first T/S list comes first, the way DOS lays a file out
+    struct _tsPair *p = (i < listSectors) ? &lists[i] : &data[i - listSectors];
+    p->track = t;
+    p->sector = s;
+  }
 
+  bool ok = true;
+  for (uint32_t b = 0; b < dataSectors && ok; b++) {
     uint8_t sectorData[256];
     memset(sectorData, 0, sizeof(sectorData));
-    memcpy(sectorData, &contents[b * 256],
-           remaining >= 256 ? 256 : remaining);
-    if (!encodeWozTrackSector(t, enphys[s], sectorData)) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to encodeWozTrackSector");
-      return false;
-    }
-    remaining -= (remaining >= 256) ? 256 : remaining;
+    uint32_t off = b * 256;
+    if (off < size)
+      memcpy(sectorData, &contents[off], (size - off) >= 256 ? 256 : size - off);
+    ok = encodeWozTrackSector(data[b].track, enphys[data[b].sector], sectorData);
   }
 
-  // The T/S list sector itself.
-  int t, s;
-  if (!findFreeSector(&t, &s)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: can't find a free sector for the TS list");
-    return false;
+  for (uint32_t l = 0; l < listSectors && ok; l++) {
+    struct _dosTsList tsList;
+    memset(&tsList, 0, sizeof(tsList));
+    if (l + 1 < listSectors) {
+      tsList.nextTrack = lists[l + 1].track;
+      tsList.nextSector = lists[l + 1].sector;
+    }
+    // Which data sector of the file this list starts at
+    uint16_t sectorOffset = (uint16_t)(l * 122);
+    tsList.sectorOffset[0] = sectorOffset & 0xFF;
+    tsList.sectorOffset[1] = sectorOffset >> 8;
+    for (uint32_t i = 0; i < 122 && l * 122 + i < dataSectors; i++)
+      tsList.tsPair[i] = data[l * 122 + i];
+    ok = encodeWozTrackSector(lists[l].track, enphys[lists[l].sector],
+                              (uint8_t *)&tsList);
   }
-  if (!encodeWozTrackSector(t, enphys[s], (uint8_t *)&tsList)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to encodeWozTrackSector for TSList");
+  struct _tsPair first = lists[0];
+  wozFree(lists);
+  wozFree(data);
+  if (!ok) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to encodeWozTrackSector");
+    createTree();
     return false;
   }
 
   struct _dosFdEntry newEntry;
   memset(&newEntry, 0, sizeof(newEntry));
-  newEntry.firstTrack = t;
-  newEntry.firstSector = s;
+  newEntry.firstTrack = first.track;
+  newEntry.firstSector = first.sector;
   newEntry.fileTypeAndFlags = typeAndFlags;
 
   char buf[31];
   snprintf(buf, sizeof(buf), "%-30s", fileName);
   memcpy(newEntry.fileName, buf, 30); // no terminator copied
-  // The catalog length field is a sector count, including the T/S list.
-  uint16_t sectorCount = dataSectors + 1;
+  // The catalog length field is a sector count, T/S lists included
+  uint16_t sectorCount = (uint16_t)(dataSectors + listSectors);
   newEntry.fileLength[0] = sectorCount & 0xFF;
   newEntry.fileLength[1] = (sectorCount >> 8) & 0xFF;
 
@@ -897,12 +699,12 @@ uint32_t DosSpector::getAllocatedByteCount(Vent *e)
 
 uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
 {
-  // Walks the full T/S list chain (following nextTrack/nextSector across
-  // multiple T/S list sectors) and concatenates every data sector it
-  // references. 0/0 pairs inside the list are skipped - treated as
-  // unused slots rather than sparse-file holes. Unlike getFileContents,
-  // the in-file length header is ignored, so this is the right way to
-  // recover files whose catalog "length" is a stub hiding a larger payload.
+  // Every data sector the T/S list chain names, in place: a 0/0 pair is a
+  // sparse hole and reads back as a zero sector, so a random-access text
+  // file keeps its records where they were. The stream ends with the last
+  // sector actually named, and the in-file length header is ignored, so
+  // this is also the way to recover a file whose header is a stub hiding a
+  // larger payload.
 
   if (!vtLoaded) createTree();
 
@@ -914,10 +716,11 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
     return 0;
   }
 
-  // First pass: count data sectors so we can allocate the output buffer.
-  uint32_t dataSectorCount = 0;
+  // First pass: find the last data sector named, so we can size the buffer
+  uint32_t sectors = 0; // index of the last named sector, plus one
   {
     uint8_t curT = tsTrack, curS = tsSector;
+    uint32_t base = 0;
     int safety = 256; // guard against a circular T/S list chain
     while ((curT || curS) && safety-- > 0) {
       uint8_t sectorData[256];
@@ -928,50 +731,47 @@ uint32_t DosSpector::getFileAllocation(Vent *e, char **toWhere)
       struct _dosTsList *tsList = (struct _dosTsList *)sectorData;
       for (int i = 0; i < 122; i++) {
         if (tsList->tsPair[i].track != 0 || tsList->tsPair[i].sector != 0) {
-          dataSectorCount++;
+          sectors = base + i + 1;
         }
       }
+      base += 122;
       curT = tsList->nextTrack;
       curS = tsList->nextSector;
     }
   }
 
-  uint32_t outSize = dataSectorCount * 256;
+  uint32_t outSize = sectors * 256;
   if (outSize == 0) {
     return 0;
   }
-  *toWhere = (char *)malloc(outSize);
+  *toWhere = (char *)wozCalloc(outSize, 1);
   if (!*toWhere) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory");
     return 0;
   }
 
-  // Second pass: copy each referenced data sector into the buffer.
-  uint32_t writePos = 0;
+  // Second pass: copy each named data sector to its place
   {
     uint8_t curT = tsTrack, curS = tsSector;
+    uint32_t base = 0;
     int safety = 256;
-    while ((curT || curS) && safety-- > 0) {
+    while ((curT || curS) && safety-- > 0 && base < sectors) {
       uint8_t sectorData[256];
       if (!readLogicalSector(curT, curS, sectorData)) {
-        free(*toWhere);
+        wozFree(*toWhere);
         *toWhere = NULL;
         return 0;
       }
       struct _dosTsList *tsList = (struct _dosTsList *)sectorData;
-      for (int i = 0; i < 122; i++) {
+      for (int i = 0; i < 122 && base + i < sectors; i++) {
         uint8_t t = tsList->tsPair[i].track;
         uint8_t s = tsList->tsPair[i].sector;
-        if (t == 0 && s == 0) continue;
-        uint8_t dataSector[256];
-        if (!readLogicalSector(t, s, dataSector)) {
-          // Couldn't read; leave a zero-filled hole rather than abort so
-          // the rest of the file can still be recovered.
-          memset((*toWhere) + writePos, 0, 256);
-        } else {
-          memcpy((*toWhere) + writePos, dataSector, 256);
-        }
-        writePos += 256;
+        if (t == 0 && s == 0) continue; // a hole: stays zero
+        // If we can't read it, it stays a zero-filled hole too, rather
+        // than aborting, so the rest of the file can still be recovered
+        readLogicalSector(t, s, (uint8_t *)(*toWhere) + (base + i) * 256);
       }
+      base += 122;
       curT = tsList->nextTrack;
       curS = tsList->nextSector;
     }
@@ -1064,6 +864,13 @@ bool DosSpector::analyzeFile(Vent *fp, struct DosFileAnalysis *out)
     out->lengthFarBelowAllocation = (out->logicalLength + 512 < out->dataBytes);
   }
   return true;
+}
+
+uint8_t DosSpector::volumeNumber()
+{
+  if (!vtLoaded)
+    createTree();
+  return vtLoaded ? vt.volumeNumber : 0;
 }
 
 bool DosSpector::getSectorUsage(bool used[35][16])

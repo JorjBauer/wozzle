@@ -1,5 +1,6 @@
 #include "pascalspector.h"
 #include "wozmsg.h"
+#include "wozhost.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,7 +61,8 @@ static uint16_t packPascalDate(int year, int month, int day)
 
 static uint16_t todayPascalDate()
 {
-  time_t now = time(NULL);
+  time_t now = wozNow();
+  if (now == (time_t)-1) return 0;
   struct tm *lt = localtime(&now);
   if (!lt) return 0;
   return packPascalDate(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
@@ -121,7 +123,7 @@ PascalSpector::PascalSpector(bool verbose)
 PascalSpector::~PascalSpector()
 {
   if (trackData) {
-    free(trackData);
+    wozFree(trackData);
     trackData = NULL;
   }
 }
@@ -133,14 +135,14 @@ PascalSpector::~PascalSpector()
 bool PascalSpector::loadBlockBuffer()
 {
   if (trackData) {
-    free(trackData);
+    wozFree(trackData);
     trackData = NULL;
     trackDataBytes = 0;
   }
 
   if (isHdv()) {
     trackDataBytes = hdvByteCount();
-    trackData = (uint8_t *)malloc(trackDataBytes);
+    trackData = (uint8_t *)wozMalloc(trackDataBytes);
     if (!trackData) return false;
     memcpy(trackData, hdvBuffer(), trackDataBytes);
     return true;
@@ -148,7 +150,7 @@ bool PascalSpector::loadBlockBuffer()
 
   // 5.25" floppy: 35 tracks x 16 sectors x 256 bytes = 140 KB.
   trackDataBytes = 35 * 256 * 16;
-  trackData = (uint8_t *)calloc(trackDataBytes, 1);
+  trackData = (uint8_t *)wozCalloc(trackDataBytes, 1);
   if (!trackData) return false;
 
   for (int i = 0; i < 35; i++) {
@@ -294,10 +296,10 @@ Vent *PascalSpector::createTree()
     return NULL;
   }
 
-  uint8_t *dirBuf = (uint8_t *)malloc(dirBytes());
+  uint8_t *dirBuf = (uint8_t *)wozMalloc(dirBytes());
   if (!dirBuf) return NULL;
   if (!readDirectory(dirBuf)) {
-    free(dirBuf);
+    wozFree(dirBuf);
     return NULL;
   }
 
@@ -318,7 +320,7 @@ Vent *PascalSpector::createTree()
       break;
   }
 
-  free(dirBuf);
+  wozFree(dirBuf);
   return tree;
 }
 
@@ -340,7 +342,7 @@ uint32_t PascalSpector::getFileContents(Vent *e, char **toWhere)
   uint32_t size = (nblocks - 1) * 512 + last;
   if (size == 0) return 0;
 
-  uint8_t *buf = (uint8_t *)malloc(size);
+  uint8_t *buf = (uint8_t *)wozMalloc(size);
   if (!buf) return 0;
 
   uint32_t copied = 0;
@@ -348,7 +350,7 @@ uint32_t PascalSpector::getFileContents(Vent *e, char **toWhere)
     uint8_t block[512];
     if (!validBlock((uint16_t)(start + b)) ||
         !readBlock((uint16_t)(start + b), block)) {
-      free(buf);
+      wozFree(buf);
       return 0;
     }
     uint32_t take = (size - copied < 512) ? (size - copied) : 512;
@@ -373,12 +375,12 @@ uint32_t PascalSpector::getFileAllocation(Vent *e, char **toWhere)
   uint32_t nblocks = next - start;
   uint32_t size = nblocks * 512;
 
-  uint8_t *buf = (uint8_t *)malloc(size);
+  uint8_t *buf = (uint8_t *)wozMalloc(size);
   if (!buf) return 0;
   for (uint32_t b = 0; b < nblocks; b++) {
     if (!validBlock((uint16_t)(start + b)) ||
         !readBlock((uint16_t)(start + b), buf + b * 512)) {
-      free(buf);
+      wozFree(buf);
       return 0;
     }
   }
@@ -507,9 +509,9 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     return false;
   }
 
-  uint8_t *dirBuf = (uint8_t *)malloc(dirBytes());
+  uint8_t *dirBuf = (uint8_t *)wozMalloc(dirBytes());
   if (!dirBuf) return false;
-  if (!readDirectory(dirBuf)) { free(dirBuf); return false; }
+  if (!readDirectory(dirBuf)) { wozFree(dirBuf); return false; }
 
   // Parse existing entries.
   std::vector<PEnt> ents;
@@ -527,7 +529,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     memcpy(en, &fe->name[1], cl);
     if (!strcasecmp(en, nm)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' already exists", nm);
-      free(dirBuf);
+      wozFree(dirBuf);
       return false;
     }
     PEnt pe;
@@ -538,7 +540,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
 
   if ((int)ents.size() >= maxEnt) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: directory is full (%d files max)", maxEnt);
-    free(dirBuf);
+    wozFree(dirBuf);
     return false;
   }
 
@@ -569,7 +571,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     wozMsg(WOZ_MSG_ERROR, "ERROR: no contiguous free region big enough (need %u blocks, "
                           "largest gap is %u). Pascal files must be contiguous; the disk "
                           "may need a K)runch.", (unsigned)neededBlocks, bestSize);
-    free(dirBuf);
+    wozFree(dirBuf);
     return false;
   }
 
@@ -591,7 +593,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     if (take > 0) memcpy(block, contents + copied, take);
     if (!writeBlock((uint16_t)(bestStart + b), block)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write data block %u", (unsigned)(bestStart + b));
-      free(dirBuf);
+      wozFree(dirBuf);
       return false;
     }
     copied += take;
@@ -613,16 +615,16 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
 
   // Reserialize the directory: keep the header verbatim except the file
   // count, zero the entry area, then lay the entries back down in order.
-  uint8_t *outBuf = (uint8_t *)calloc(dirBytes(), 1);
-  if (!outBuf) { free(dirBuf); return false; }
+  uint8_t *outBuf = (uint8_t *)wozCalloc(dirBytes(), 1);
+  if (!outBuf) { wozFree(dirBuf); return false; }
   memcpy(outBuf, dirBuf, DIR_ENTRY_LEN);          // volume header
   wr16(outBuf + 16, (uint16_t)ents.size());       // fileCount at +$10
   for (size_t i = 0; i < ents.size(); i++)
     memcpy(outBuf + DIR_ENTRY_LEN * (i + 1), ents[i].raw, DIR_ENTRY_LEN);
 
   bool ok = writeDirectory(outBuf);
-  free(outBuf);
-  free(dirBuf);
+  wozFree(outBuf);
+  wozFree(dirBuf);
   if (!ok) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write directory");
     return false;
@@ -674,9 +676,9 @@ bool PascalSpector::removeFile(const char *fileName)
   const char *name = fileName;
   if (name[0] == '/') name++;
 
-  uint8_t *dirBuf = (uint8_t *)malloc(dirBytes());
+  uint8_t *dirBuf = (uint8_t *)wozMalloc(dirBytes());
   if (!dirBuf) return false;
-  if (!readDirectory(dirBuf)) { free(dirBuf); return false; }
+  if (!readDirectory(dirBuf)) { wozFree(dirBuf); return false; }
 
   std::vector<PEnt> ents;
   bool found = false;
@@ -702,20 +704,20 @@ bool PascalSpector::removeFile(const char *fileName)
 
   if (!found) {
     wozMsg(WOZ_MSG_ERROR, "File '%s' not found", name);
-    free(dirBuf);
+    wozFree(dirBuf);
     return false;
   }
 
-  uint8_t *outBuf = (uint8_t *)calloc(dirBytes(), 1);
-  if (!outBuf) { free(dirBuf); return false; }
+  uint8_t *outBuf = (uint8_t *)wozCalloc(dirBytes(), 1);
+  if (!outBuf) { wozFree(dirBuf); return false; }
   memcpy(outBuf, dirBuf, DIR_ENTRY_LEN);
   wr16(outBuf + 16, (uint16_t)ents.size());
   for (size_t i = 0; i < ents.size(); i++)
     memcpy(outBuf + DIR_ENTRY_LEN * (i + 1), ents[i].raw, DIR_ENTRY_LEN);
 
   bool ok = writeDirectory(outBuf);
-  free(outBuf);
-  free(dirBuf);
+  wozFree(outBuf);
+  wozFree(dirBuf);
   if (!ok) return false;
 
   createTree();
@@ -798,9 +800,9 @@ bool PascalSpector::krunch(const char *afterFile)
   if (!ensureLoaded())
     return false;
 
-  uint8_t *dirBuf = (uint8_t *)malloc(dirBytes());
+  uint8_t *dirBuf = (uint8_t *)wozMalloc(dirBytes());
   if (!dirBuf) return false;
-  if (!readDirectory(dirBuf)) { free(dirBuf); return false; }
+  if (!readDirectory(dirBuf)) { wozFree(dirBuf); return false; }
 
   // Parse the file entries in on-disk (start-block) order.
   std::vector<PEnt> ents;
@@ -835,14 +837,14 @@ bool PascalSpector::krunch(const char *afterFile)
     if (kind == PK_BAD) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' is a .BAD (bad-block) file; refusing to krunch a "
                             "volume with damaged blocks.", en);
-      free(dirBuf);
+      wozFree(dirBuf);
       return false;
     }
     if (start < dirNextBlock || next <= start || next > volBlockCount ||
         start < prevNext) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: directory entry '%s' is damaged or overlapping "
                             "(start=%u next=%u); refusing to krunch.", en, start, next);
-      free(dirBuf);
+      wozFree(dirBuf);
       return false;
     }
     usedTotal += (uint16_t)(next - start);
@@ -866,7 +868,7 @@ bool PascalSpector::krunch(const char *afterFile)
     }
     if (found < 0) {
       wozMsg(WOZ_MSG_ERROR, "File '%s' not found", want);
-      free(dirBuf);
+      wozFree(dirBuf);
       return false;
     }
     splitIndex = found + 1;
@@ -885,7 +887,7 @@ bool PascalSpector::krunch(const char *afterFile)
       if (!moveFileBlocks(start, cursor, size)) {
         wozMsg(WOZ_MSG_ERROR, "ERROR: block move failed; image may be partially modified. "
                               "Do not save.");
-        free(dirBuf);
+        wozFree(dirBuf);
         return false;
       }
       wr16(fe->firstBlock, cursor);
@@ -910,7 +912,7 @@ bool PascalSpector::krunch(const char *afterFile)
       if (!moveFileBlocks(start, newStart, size)) {
         wozMsg(WOZ_MSG_ERROR, "ERROR: block move failed; image may be partially modified. "
                               "Do not save.");
-        free(dirBuf);
+        wozFree(dirBuf);
         return false;
       }
       wr16(fe->firstBlock, newStart);
@@ -926,22 +928,22 @@ bool PascalSpector::krunch(const char *afterFile)
   if (!changed) {
     wozMsg(WOZ_MSG_INFO, "Free space is already contiguous (%u blocks at block %u); "
                          "nothing to do.", (unsigned)freeBlocks, holeStart);
-    free(dirBuf);
+    wozFree(dirBuf);
     return true;
   }
 
   // Rewrite the directory. Entry order is unchanged - the low group still
   // has ascending start blocks below the high group's - so Pascal's
   // sorted-by-start invariant still holds.
-  uint8_t *outBuf = (uint8_t *)calloc(dirBytes(), 1);
-  if (!outBuf) { free(dirBuf); return false; }
+  uint8_t *outBuf = (uint8_t *)wozCalloc(dirBytes(), 1);
+  if (!outBuf) { wozFree(dirBuf); return false; }
   memcpy(outBuf, dirBuf, DIR_ENTRY_LEN);   // volume header, file count intact
   for (int i = 0; i < n; i++)
     memcpy(outBuf + DIR_ENTRY_LEN * (i + 1), ents[i].raw, DIR_ENTRY_LEN);
 
   bool ok = writeDirectory(outBuf);
-  free(outBuf);
-  free(dirBuf);
+  wozFree(outBuf);
+  wozFree(dirBuf);
   if (!ok) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write directory");
     return false;

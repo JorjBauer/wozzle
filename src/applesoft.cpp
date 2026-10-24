@@ -1,5 +1,6 @@
 #include "applesoft.h"
 #include "wozmsg.h"
+#include "wozhost.h"
 
 #include <string.h>
 #include <ctype.h>
@@ -304,7 +305,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
   uint32_t lineCount = 1;
   for (uint32_t i = 0; i < textLen; i++)
     if (text[i] == '\n') lineCount++;
-  uint8_t *out = (uint8_t *)malloc(textLen + 5 * lineCount + 8);
+  uint8_t *out = (uint8_t *)wozMalloc(textLen + 5 * lineCount + 8);
   if (!out) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory tokenizing");
     return NULL;
@@ -341,7 +342,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
         break;
       }
       if (++digits > 5) {
-        free(out);
+        wozFree(out);
         tokErr(srcLineNum, "line number has too many digits");
         return NULL;
       }
@@ -356,12 +357,12 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
       while (t < lineLen && isspace((unsigned char)line[t])) t++;
       if (t == lineLen || line[t] == '#')
         continue;
-      free(out);
+      wozFree(out);
       tokErr(srcLineNum, "line does not start with a line number");
       return NULL;
     }
     if (lineNum > APPLESOFT_MAX_LINENO) {
-      free(out);
+      wozFree(out);
       tokErr(srcLineNum, "line number is greater than 63999");
       return NULL;
     }
@@ -369,12 +370,12 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
     // represent two lines with the same number, so both are hard errors
     // rather than something to silently reorder behind the user's back.
     if (lineNum == lastLineNum) {
-      free(out);
+      wozFree(out);
       tokErr(srcLineNum, "duplicate line number");
       return NULL;
     }
     if (lineNum < lastLineNum) {
-      free(out);
+      wozFree(out);
       tokErr(srcLineNum, "line number is out of order");
       return NULL;
     }
@@ -505,7 +506,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
   }
 
   if (lastLineNum < 0) {
-    free(out);
+    wozFree(out);
     wozMsg(WOZ_MSG_ERROR, "ERROR: no Applesoft program lines found in the input");
     return NULL;
   }
@@ -514,7 +515,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
   out[outPos++] = 0x00;
 
   if (!setLinePointers(out, outPos, APPLESOFT_LOAD_ADDR)) {
-    free(out);
+    wozFree(out);
     wozMsg(WOZ_MSG_ERROR, "ERROR: internal error setting line pointers");
     return NULL;
   }

@@ -31,6 +31,8 @@ typedef void (*wozMsgSink)(wozMsgLevel level, const char *msg, void *ctx);
 // Install a sink. NULL restores the default, which prints DEBUG and INFO
 // to stdout and WARNING and ERROR to stderr.
 void wozSetMsgSink(wozMsgSink sink, void *ctx);
+// The sink and context installed now, so one can be put back afterward
+void wozGetMsgSink(wozMsgSink *sink, void **ctx);
 
 void wozMsg(wozMsgLevel level, const char *fmt, ...)
 #ifdef __GNUC__
@@ -38,6 +40,12 @@ void wozMsg(wozMsgLevel level, const char *fmt, ...)
 #endif
   ;
 void wozMsgV(wozMsgLevel level, const char *fmt, va_list ap);
+
+// The most recent ERROR message, whatever sink is installed, so a caller
+// that only learns "it failed" can ask why. "" if there hasn't been one
+// since the last wozClearError(). Long messages are cut short.
+const char *wozLastError(void);
+void wozClearError(void);
 
 #ifdef __cplusplus
 };

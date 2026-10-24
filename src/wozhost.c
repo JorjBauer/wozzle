@@ -50,7 +50,14 @@ static long posixSeek(int fd, long offset, int whence, void *ctx)
 #define DEFAULT_CLOSE posixClose
 #define DEFAULT_READ  posixRead
 #define DEFAULT_WRITE posixWrite
+static time_t posixNow(void *ctx)
+{
+  (void)ctx;
+  return time(NULL);
+}
+
 #define DEFAULT_SEEK  posixSeek
+#define DEFAULT_NOW   posixNow
 
 #else
 
@@ -72,7 +79,10 @@ static long noSeek(int fd, long offset, int whence, void *ctx) { (void)fd; (void
 #define DEFAULT_CLOSE noClose
 #define DEFAULT_READ  noRead
 #define DEFAULT_WRITE noWrite
+static time_t noNow(void *ctx) { (void)ctx; return (time_t)-1; }
+
 #define DEFAULT_SEEK  noSeek
+#define DEFAULT_NOW   noNow
 
 #endif
 
@@ -85,7 +95,8 @@ static wozHost current = {
   DEFAULT_OPEN, DEFAULT_CLOSE, DEFAULT_READ, DEFAULT_WRITE, DEFAULT_SEEK,
   stdMalloc, stdCalloc, stdRealloc, stdFree,
   false, false,
-  NULL
+  NULL,
+  DEFAULT_NOW
 };
 
 void wozSetHost(const wozHost *host)
@@ -100,6 +111,7 @@ void wozSetHost(const wozHost *host)
     h.ctx = NULL;
     h.open = NULL; h.close = NULL; h.read = NULL; h.write = NULL; h.seek = NULL;
     h.malloc = NULL; h.calloc = NULL; h.realloc = NULL; h.free = NULL;
+    h.now = NULL;
   }
 
   if (!h.open)    h.open = DEFAULT_OPEN;
@@ -111,6 +123,7 @@ void wozSetHost(const wozHost *host)
   if (!h.calloc)  h.calloc = stdCalloc;
   if (!h.realloc) h.realloc = stdRealloc;
   if (!h.free)    h.free = stdFree;
+  if (!h.now)     h.now = DEFAULT_NOW;
 
   current = h;
 }
@@ -162,5 +175,11 @@ void *wozRealloc(void *ptr, size_t size)
 
 void wozFree(void *ptr)
 {
-  current.free(ptr, current.ctx);
+  // Like free(), NULL is fine, whatever the hook makes of it
+  if (ptr) current.free(ptr, current.ctx);
+}
+
+time_t wozNow(void)
+{
+  return current.now(current.ctx);
 }

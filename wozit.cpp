@@ -7,19 +7,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <arpa/inet.h>
-
-#if defined(__APPLE__)
-  #include <machine/endian.h>
-#else
-  #include <endian.h>
-#endif
 
 #include <readline/readline.h>
 #include <readline/history.h>
-
-#include "applesingle.h"
-#include "bootblock.h"
 
 #include "woz.h"
 #include "crc32.h"
@@ -27,10 +17,10 @@
 #include "prodosspector.h"
 #include "dosspector.h"
 #include "pascalspector.h"
-#include "applesoft.h"
-#include "intbas.h"
+#include "wozhost.h"
+#include "wozmsg.h"
+#include "wozops.h"
 #include "clireport.h"
-//#include "vent.h"
 
 #ifndef MAXPATH
 #define MAXPATH 1023
@@ -43,6 +33,10 @@ bool dosMode = true;    // DOS 3.3 mode (default)
 bool pascalMode = false; // UCSD p-System / Apple Pascal mode (-P)
 // ProDOS (-p) is the mode that is neither of the other two.
 static inline bool prodosMode() { return !dosMode && !pascalMode; }
+static wozFsType fsMode()
+{
+  return pascalMode ? WOZ_FS_PASCAL : dosMode ? WOZ_FS_DOS33 : WOZ_FS_PRODOS;
+}
 bool striphi = false;
 bool useAllocation = false; // cpout uses full on-disk allocation not hdr length
 
@@ -111,7 +105,7 @@ static void dumpFileContents(const char *cmd, bool forceStripHi)
         }
       }
       printf("\n");
-      free(dat);
+      wozFree(dat);
     }
   } else {
     printf("File not found\n");
@@ -133,8 +127,7 @@ void cat7Handler(char *cmd)
 static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
                                 const char *destPath)
 {
-  uint8_t ft = fp->getFileType();
-  if (ft != FT_BAS && ft != FT_INT) {
+  if (!wozIsBasicFile(fp)) {
     printf("File is not BASIC (Applesoft or Integer)\n");
     return false;
   }
@@ -146,15 +139,8 @@ static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
   }
 
   BasicListing lines;
-  bool ok;
-  if (ft == FT_BAS) {
-    ApplesoftLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
-  } else {
-    IntegerLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
-  }
-  printBasicListing(outf, lines, ft == FT_INT);
+  bool ok = wozDetokenize(inspector, fp, dat, s, &lines);
+  printBasicListing(outf, lines, fp->getFileType() == FT_INT);
   fclose(outf);
 
   if (!ok)
@@ -209,67 +195,30 @@ void cpoutHandler(char *cmd)
     return;
   }
 
-  bool isExtended = prodosMode() && ProdosSpector::isExtendedFile(fp);
-  if (wantResourceFork && !isExtended) {
-    printf("'%s' has no resource fork (it isn't a GS/OS extended file)\n",
-           buf);
+  WozExportOptions xo;
+  xo.resourceFork = wantResourceFork;
+  xo.fullAllocation = useAllocation;
+  uint8_t *dat = NULL;
+  uint32_t s = 0;
+  if (!wozExportFile(inspector, fp, &xo, buf, &dat, &s))
     return;
-  }
 
-  char *dat = NULL;
-  uint32_t s;
-  if (isExtended) {
-    // Each fork is its own seedling/sapling/tree, so the whole-allocation
-    // (-A) reading of the file is the fork's allocation.
-    ProdosSpector *ps = (ProdosSpector *)inspector;
-    s = ps->getForkContents(fp, wantResourceFork, &dat);
-    if (useAllocation) {
-      ProdosFork f;
-      if (ps->getForkInfo(fp, wantResourceFork, &f) && f.storageType &&
-          (uint32_t)f.blocksUsed * 512 > s) {
-        fprintf(stderr,
-                "WARNING: -A can't extend a fork past its recorded length; "
-                "copying '%s' as %u bytes.\n", buf, s);
-      }
-    }
-  } else if (useAllocation) {
-    s = inspector->getFileAllocation(fp, &dat);
-  } else {
-    s = inspector->getFileContents(fp, &dat);
-    // Warn if the directory-length version is far smaller than what the
-    // disk actually allocates - classic stub-loader pattern (TAIPAN-style).
-    // Threshold picked to avoid noise on normal files where the program
-    // ends part-way into its last sector: flag only when the allocated
-    // size exceeds the logical size by more than 1 KB.
-    uint32_t allocated = inspector->getAllocatedByteCount(fp);
-    if (allocated > s && allocated - s > 1024) {
-      fprintf(stderr,
-              "WARNING: '%s' copied as %u bytes (directory length), but "
-              "%u bytes are allocated on disk. Re-run with -A to copy the "
-              "full allocation.\n",
-              buf, s, allocated);
-    }
-  }
-
-  if (s && dat) {
-    if (wantBasicListing) {
-      listBasicToHostFile(fp, (uint8_t *)dat, s, p);
-      free(dat);
-    } else {
-      FILE *out = fopen(p, "w");
-      if (!out) {
-        printf("ERROR: failed to open '%s' for write\n", p);
-        free(dat);
-        return;
-      }
-      fwrite(dat, 1, s, out);
-      fclose(out);
-      free(dat);
-    }
-  } else {
+  if (!s || !dat) {
     printf("Empty file; skipping\n");
     return;
   }
+  if (wantBasicListing) {
+    listBasicToHostFile(fp, dat, s, p);
+  } else {
+    FILE *out = fopen(p, "w");
+    if (!out) {
+      printf("ERROR: failed to open '%s' for write\n", p);
+    } else {
+      fwrite(dat, 1, s, out);
+      fclose(out);
+    }
+  }
+  wozFree(dat);
 }
 
 void infoHandler(char *cmd)
@@ -358,10 +307,7 @@ void cpinHandler(char *cmd)
   fileSize = (uint32_t)s.st_size;
 
   // Read the file contents to a buffer
-  uint8_t *dataToCopy = NULL;
-  uint8_t *resourceToCopy = NULL; // set only by an AppleSingle resource fork
-  uint32_t resourceSize = 0;
-  uint8_t *fileContents = (uint8_t *)malloc(fileSize);
+  uint8_t *fileContents = (uint8_t *)malloc(fileSize ? fileSize : 1);
   FILE *in = fopen(fn, "r");
   if (!in) {
     printf("ERROR: Failed to read file\n");
@@ -371,289 +317,15 @@ void cpinHandler(char *cmd)
   fread(fileContents, 1, fileSize, in);
   fclose(in);
 
-  // -B: the host file is an Applesoft listing, not a binary. Tokenize it
-  // into the program image the Apple II expects. This works for DOS 3.3 and
-  // ProDOS alike; the 2-byte length header a DOS 3.3 'A' file carries is
-  // added by the filesystem layer, not here.
-  if (wantTokenize) {
-    if (explicitType && filetype == FT_INT) {
-      // Integer BASIC's tokens are context-dependent (three different PRINT
-      // tokens, a dozen commas), so tokenizing it means reimplementing the
-      // interpreter's grammar. cpout -B lists Integer programs; cpin -B
-      // can't write them yet.
-      printf("ERROR: cpin -B can't tokenize Integer BASIC, only Applesoft\n");
-      free(fileContents);
-      return;
-    }
-    if (explicitType && filetype != FT_BAS) {
-      printf("ERROR: cpin -B writes an Applesoft (BAS, $FC) file; drop the "
-             "explicit type or pass FC\n");
-      free(fileContents);
-      return;
-    }
-    uint32_t tokSize = 0;
-    uint8_t *tokBuf = tokenizeApplesoft((const char *)fileContents, fileSize,
-                                        &tokSize);
-    if (!tokBuf) {
-      // tokenizeApplesoft() already said which line was at fault
-      free(fileContents);
-      return;
-    }
-    free(fileContents);
-    fileContents = tokBuf;
-    fileSize = tokSize;
-    filetype = FT_BAS;
-    // ProDOS records an Applesoft program's load address in the aux type.
-    if (!explicitAux) auxTypeData = APPLESOFT_LOAD_ADDR;
-  }
-
-  // Look for an AppleSingle header
-  bool foundAppleSingle = false;
-  bool foundMetadata = false;
-  if (!wantTokenize && fileSize >= sizeof(applesingle)) {
-    applesingle *as = (applesingle *)fileContents;
-    if (ntohl(as->magic) == 0x51600 && ntohl(as->version) == 0x20000) {
-      foundAppleSingle = true;
-      for (int i=0; i<16; i++) {
-        if (as->filler[i] != 0) {
-          printf("ERROR: Filler is NOT BLANK\n");
-          foundAppleSingle = false;
-          break;
-        }
-      }
-      if (foundAppleSingle) {
-        // entryID, offset, and length are all 32-bit big-endian fields;
-        // ntohs on them would hand back the wrong half of the value.
-        for (int i=0; i<ntohs(as->num_entries); i++) {
-          printf("ENTRY %d:\n", i);
-          printf("  entryID: %u\n", ntohl(as->entry[i].entryID));
-          printf("  offset: %u\n", ntohl(as->entry[i].offset));
-          printf("  length: %u\n", ntohl(as->entry[i].length));
-
-          if (ntohl(as->entry[i].entryID) == as_prodosFileInfo) {
-            type11prodos *p = (type11prodos *)(&fileContents[ntohl(as->entry[i].offset)]);
-            printf("    Access: 0x%X\n", ntohs(p->access));
-            printf("    FileType: 0x%X\n", ntohs(p->filetype));
-            printf("    AuxType: 0x%X\n", ntohl(p->auxtype));
-            /* The access field is bitwise ProDOS access permissions
-             * FileType is a ProDOS file type (0x06 == BIN)
-             * AuxType carries the start address for BIN files
-             *   (cf. https://prodos8.com/docs/technote/19/)
-             */
-            foundMetadata = true;
-            // Explicit command-line type/aux override the AppleSingle
-            // metadata; otherwise adopt what the metadata declares.
-            if (!explicitType) filetype = ntohs(p->filetype);
-            if (!explicitAux)  auxTypeData = ntohl(p->auxtype);
-          }
-          else if (ntohl(as->entry[i].entryID) == as_dataFork) {
-            fileSize = ntohl(as->entry[i].length);
-            if (dataToCopy) {
-              // dunno why we'd get 2 of them but...
-              free(dataToCopy);
-            }
-            dataToCopy = (uint8_t *)malloc(fileSize);
-            memcpy(dataToCopy, &fileContents[ntohl(as->entry[i].offset)], fileSize);
-          }
-          else if (ntohl(as->entry[i].entryID) == as_resourceFork) {
-            // A resource fork makes this a GS/OS extended file on the
-            // image: two forks described by an extended key block.
-            resourceSize = ntohl(as->entry[i].length);
-            if (resourceToCopy)
-              free(resourceToCopy);
-            resourceToCopy = (uint8_t *)malloc(resourceSize ? resourceSize : 1);
-            memcpy(resourceToCopy, &fileContents[ntohl(as->entry[i].offset)],
-                   resourceSize);
-          } else {
-            printf("ERROR: unknown entry ID type\n");
-            foundAppleSingle = false;
-            break;
-          }
-        }
-        //asEntry entries[1]; // and continue off the end of the array
-        // .entryID, .offset, .length
-        // then _type11prodos (as_prodosFileInfo)
-        // .access, .filetype, .auxtype
-        // and as_dataFork
-
-      }
-    }
-  }
-  
-  // If the caller didn't pin a type (no explicit arg, no AppleSingle
-  // metadata) but the destination is named like a ProDOS system program,
-  // make it a launchable SYS file loading at $2000 - the convention for
-  // .SYSTEM programs. An explicit aux still wins if one was given.
-  if (!explicitType && !foundMetadata) {
-    size_t dl = strlen(destfn);
-    const char *suffix = ".SYSTEM";
-    size_t sl = strlen(suffix);
-    if (dl >= sl && strcmp(destfn + dl - sl, suffix) == 0) {
-      filetype = 0xFF; // SYS
-      if (!explicitAux) auxTypeData = 0x2000;
-    }
-  }
-
-  // If the destination already exists, remove it first. writeFileToImage
-  // doesn't replace in place - it just appends a fresh catalog entry - so
-  // without this a repeated cpin leaves stale duplicate entries behind.
-  if (findFileByName(destfn)) {
-    inspector->removeFile(destfn);
-  }
-
-  // An AppleSingle file carrying a resource fork becomes a GS/OS extended
-  // file. Only ProDOS has those; anywhere else the resource fork has no
-  // home, so say so rather than dropping it silently.
-  bool wantExtended = (foundAppleSingle && resourceToCopy);
-  if (wantExtended && !prodosMode()) {
-    printf("ERROR: '%s' has a resource fork, which only ProDOS images can "
-           "store\n", fn);
-    if (dataToCopy) free(dataToCopy);
-    free(resourceToCopy);
-    free(fileContents);
-    return;
-  }
-
-  // Write the file into the image
-  if (wantExtended) {
-    struct _prodosFent meta;
-    memset(&meta, 0, sizeof(meta));
-    meta.fileType = filetype;
-    meta.accessFlags = 0xC3; // destroy/rename/write/read, as cpin always sets
-    meta.typeData[0] = auxTypeData & 0xFF;
-    meta.typeData[1] = (auxTypeData >> 8);
-    if (!((ProdosSpector *)inspector)->writeExtendedFileWithMeta(
-           dataToCopy ? dataToCopy : fileContents, fileSize,
-           resourceToCopy, resourceSize, destfn, &meta, NULL)) {
-      printf("ERROR: Failed to write file\n");
-    }
-  } else if (!inspector->writeFileToImage(dataToCopy ? dataToCopy : fileContents,
-                                          destfn, filetype, auxTypeData,
-                                          fileSize)) {
-    printf("ERROR: Failed to write file\n");
-  }
-  if (dataToCopy) free(dataToCopy);
-  if (resourceToCopy) free(resourceToCopy);
+  WozImportOptions io;
+  io.tokenize = wantTokenize;
+  io.explicitType = explicitType;
+  io.fileType = filetype;
+  io.explicitAux = explicitAux;
+  io.auxType = auxTypeData;
+  io.sourceName = fn;
+  wozImportFile(inspector, fileContents, fileSize, destfn, &io);
   free(fileContents);
-}
-
-// Lay down a freshly-formatted DOS 3.3 filesystem into the provided
-// 140 KB buffer (which must already be zeroed). Track 17/0 gets the
-// VTOC; sectors 17/15 down to 17/1 form the catalog chain with all
-// entries zero.
-static bool buildBlankDosDsk(uint8_t volumeNumber, uint8_t *img)
-{
-  const int trackBytes = 16 * 256;
-
-  struct _vtoc *v = (struct _vtoc *)(img + 17 * trackBytes + 0 * 256);
-  v->catalogTrack = 17;
-  v->catalogSector = 15;
-  v->dosVersion = 3;
-  v->volumeNumber = volumeNumber;
-  v->maxTSpairs = 122;
-  v->lastTrackAllocated = 18;
-  v->allocationDirection = 1;
-  v->tracksPerDisk = 35;
-  v->sectorsPerTrack = 16;
-  v->bytesPerSectorLow = 0x00;
-  v->bytesPerSectorHigh = 0x01; // 256 bytes/sector
-
-  // Track-allocation bitmap. 1-bits are free, 0-bits are used. Tracks 0/1/2
-  // hold the bootable DOS image, track 17 holds VTOC + catalog.
-  for (int t = 0; t < 35; t++) {
-    bool used = (t == 0 || t == 1 || t == 2 || t == 17);
-    v->trackState[t].sectorsUsed[0] = used ? 0x00 : 0xFF;
-    v->trackState[t].sectorsUsed[1] = used ? 0x00 : 0xFF;
-  }
-
-  // Catalog chain: sector 15 → 14 → ... → 1 → (0,0). Only the link
-  // bytes need to be set; the 7 file entries per sector stay zero.
-  for (int s = 15; s >= 1; s--) {
-    uint8_t *sec = img + 17 * trackBytes + s * 256;
-    sec[1] = (s > 1) ? 17 : 0;
-    sec[2] = (s > 1) ? (uint8_t)(s - 1) : 0;
-  }
-  return true;
-}
-
-// Lay down a blank ProDOS volume of totalBlocks 512-byte blocks in the
-// provided (zeroed) buffer. Blocks 0-1 (boot) stay zeros; blocks 2-5 are
-// a 4-block volume directory chain; the volume bitmap starts at block 6
-// and spans ceil(totalBlocks/4096) blocks (1 for a floppy, 16 for a
-// 65535-block hard drive).
-static bool buildBlankProdosPo(const char *volumeName, uint8_t *img,
-                               uint32_t totalBlocks)
-{
-  uint8_t *b2 = img + 2 * 512;
-  b2[0] = 0; b2[1] = 0;  // prev block = none
-  b2[2] = 3; b2[3] = 0;  // next block = 3
-
-  struct _subdirent *hdr = (struct _subdirent *)(b2 + 4);
-  size_t nl = strlen(volumeName);
-  if (nl > 15) nl = 15;
-  hdr->typelen = (0x0F << 4) | (uint8_t)nl;  // 0xF = volume directory hdr
-  memcpy(hdr->name, volumeName, nl);
-  hdr->accessFlags = 0xC3;    // destroy, rename, write, read
-  hdr->entryLength = 0x27;
-  hdr->entriesPerBlock = 0x0D;
-  hdr->volBitmap.pointer[0] = 6;
-  hdr->volBitmap.pointer[1] = 0;
-  hdr->volBlocks.total[0] = (uint8_t)(totalBlocks & 0xFF);
-  hdr->volBlocks.total[1] = (uint8_t)(totalBlocks >> 8);
-
-  // Remaining directory blocks in the chain. Only the prev/next header
-  // bytes matter for an empty volume.
-  for (int b = 3; b <= 5; b++) {
-    uint8_t *blk = img + b * 512;
-    blk[0] = (uint8_t)(b - 1);
-    blk[2] = (b == 5) ? 0 : (uint8_t)(b + 1);
-  }
-
-  // Volume bitmap. MSb-first within each byte: bit 0x80 of byte 0 = block 0.
-  // 1 = free, 0 = used. Used: blocks 0-1 (boot), 2-5 (vol dir), and the
-  // bitmap itself. Bits at or past totalBlocks stay 0 - those blocks
-  // don't exist and must be marked unavailable.
-  uint8_t *bm = img + 6 * 512;
-  uint32_t bitmapBlocks = (totalBlocks + 4095) / 4096;
-  for (uint32_t b = 6 + bitmapBlocks; b < totalBlocks; b++) {
-    bm[b / 8] |= (uint8_t)(0x80 >> (b % 8));
-  }
-  return true;
-}
-
-static inline void wrle16(uint8_t p[2], uint16_t v)
-{
-  p[0] = (uint8_t)(v & 0xFF);
-  p[1] = (uint8_t)(v >> 8);
-}
-
-// Lay down a blank UCSD Pascal volume of totalBlocks 512-byte blocks in
-// the provided (zeroed) buffer. Blocks 0-1 (boot) stay zeros; blocks 2-5
-// are the flat 4-block directory, of which only the 26-byte volume header
-// at the very start of block 2 is non-zero. fileCount = 0 is what marks
-// the volume empty: nothing past it is ever scanned.
-//
-// There is no allocation bitmap to build. Pascal free space is simply the
-// gaps between contiguous files, so a blank volume is one unbroken run
-// from block 6 to the end, and cpin has nothing to work around.
-static bool buildBlankPascal(const char *volumeName, uint8_t *img,
-                             uint32_t totalBlocks)
-{
-  struct _pascalVolHdr *h = (struct _pascalVolHdr *)(img + 2 * 512);
-  wrle16(h->firstBlock, 0);
-  wrle16(h->nextBlock, 6);   // first block past the 4-block directory
-  wrle16(h->fileType, 0);
-
-  size_t nl = strlen(volumeName);  // already validated to 1..7, upper-cased
-  h->name[0] = (uint8_t)nl;
-  memcpy(&h->name[1], volumeName, nl);  // bytes past nl stay 0 from calloc
-
-  wrle16(h->volBlockCount, (uint16_t)totalBlocks);
-  wrle16(h->fileCount, 0);
-  wrle16(h->lastAccess, 0);
-  wrle16(h->lastDateSet, PascalSpector::today());
-  // reserved[4] stays 0, as do blocks 0-1 and 3-5.
-  return true;
 }
 
 void dumptrackHandler(char *cmd)
@@ -706,32 +378,6 @@ void dumptrackHandler(char *cmd)
          NIBTRACKSIZE, trackNum, outPath);
 }
 
-// Parse a format-size token: a named preset or a bare ProDOS block count.
-// Presets are the sizes real devices presented; ProDOS itself accepts any
-// block count up to 65535 (total_blocks is 16 bits), so bare numbers are
-// allowed too. Returns the block count, or -1 if unparseable. Callers only
-// pass tokens that start with a digit (ProDOS volume names can't).
-static int32_t parseSizeSpec(const char *tok)
-{
-  static const struct { const char *name; uint32_t blocks; } presets[] = {
-    { "140k", 280 },    // 5.25" floppy
-    { "800k", 1600 },   // 3.5" floppy
-    { "4m",   8192 },   // round hard-disk sizes, handy for Pascal volumes
-    { "5m",   9728 },   // ProFile 5MB
-    { "8m",   16384 },
-    { "10m",  19456 },  // ProFile 10MB
-    { "16m",  32768 },  // practical Apple Pascal ceiling
-    { "32m",  65535 },  // ProDOS maximum (one block shy of 32MB)
-  };
-  for (size_t i = 0; i < sizeof(presets)/sizeof(presets[0]); i++) {
-    if (!strcasecmp(tok, presets[i].name)) return (int32_t)presets[i].blocks;
-  }
-  char *end;
-  long v = strtol(tok, &end, 10);
-  if (*tok && !*end && v >= 0 && v <= 0xFFFF) return (int32_t)v;
-  return -1;
-}
-
 void resizeHandler(char *cmd)
 {
   // resize <blocks>: shrink a ProDOS volume, and the image file holding
@@ -754,7 +400,7 @@ void resizeHandler(char *cmd)
            "5m/8m/10m/16m/32m; -n: refuse rather than move blocks down)\n");
     return;
   }
-  int32_t blocks = parseSizeSpec(tok);
+  int32_t blocks = wozParseSizeSpec(tok);
   if (blocks < 1) {
     printf("ERROR: bad size '%s' (a block count 1-65535, or 140k, 800k, "
            "4m, 5m, 8m, 10m, 16m, 32m)\n", tok);
@@ -770,36 +416,6 @@ void resizeHandler(char *cmd)
     printf("Volume resized from %u to %d blocks (%d bytes); "
            "'save' to write it out\n", before, blocks, blocks * 512);
   }
-}
-
-static bool hasExtension(const char *fname, const char *ext)
-{
-  const char *dot = strrchr(fname, '.');
-  return dot && !strcasecmp(dot, ext);
-}
-
-// Validate and uppercase a ProDOS volume name: 1-15 chars, letter first,
-// then letters/digits/periods. Prints the reason on failure.
-static bool normalizeVolumeName(const char *src, char out[16])
-{
-  size_t nl = strlen(src);
-  if (nl < 1 || nl > 15) {
-    printf("ERROR: volume name must be 1-15 characters\n");
-    return false;
-  }
-  memset(out, 0, 16);
-  for (size_t i = 0; i < nl; i++) {
-    char c = (char)toupper((unsigned char)src[i]);
-    bool okc = (i == 0) ? isalpha((unsigned char)c)
-                        : (isalnum((unsigned char)c) || c == '.');
-    if (!okc) {
-      printf("ERROR: bad volume name '%s' (letter first, then letters, "
-             "digits, or periods)\n", src);
-      return false;
-    }
-    out[i] = c;
-  }
-  return true;
 }
 
 void volnameHandler(char *cmd)
@@ -824,7 +440,7 @@ void volnameHandler(char *cmd)
     return;
   }
   char vol[16];
-  if (!normalizeVolumeName(cmd, vol))
+  if (!wozNormalizeProdosVolumeName(cmd, vol))
     return;
   if (!inspector->renameVolume(vol)) {
     printf("ERROR: failed to rename volume\n");
@@ -833,120 +449,11 @@ void volnameHandler(char *cmd)
   printf("Volume renamed to '%s'; use 'save' to make it permanent.\n", vol);
 }
 
-// Fill b0/b1 with boot code: from a donor image if one is named, else the
-// embedded standard ProDOS boot block (identical from ProDOS 1.1 through
-// 2.4, and the same on floppies and hard drives) with a zero block 1.
-static bool loadBootBlocks(const char *donor, uint8_t b0[512], uint8_t b1[512])
-{
-  if (!donor || !donor[0]) {
-    memcpy(b0, prodosBootBlock, 512);
-    memset(b1, 0, 512);
-    return true;
-  }
-
-  ProdosSpector d(false);
-  if (!d.readFile((char *)donor, true)) {
-    printf("ERROR: can't read boot donor image '%s'\n", donor);
-    return false;
-  }
-  if (!d.probe()) {
-    // A DOS 3.3 boot sector also starts with $01, so without this check a
-    // DOS donor would pass the magic-byte test below and produce an
-    // unbootable mongrel.
-    printf("ERROR: '%s' doesn't look like a ProDOS volume; refusing to "
-           "take boot code from it\n", donor);
-    return false;
-  }
-  if (!d.readBootBlocks(b0, b1)) {
-    printf("ERROR: can't read boot blocks from '%s' (not a ProDOS image?)\n",
-           donor);
-    return false;
-  }
-  if (b0[0] != 0x01) {
-    // Every Apple II boot sector/block starts with $01. Refuse rather than
-    // install something that certainly won't boot.
-    printf("ERROR: '%s' block 0 doesn't look like boot code "
-           "(first byte 0x%02X, not 0x01)\n", donor, b0[0]);
-    return false;
-  }
-  return true;
-}
-
-// Copy the embedded p-System bootstrap that matches this volume's device
-// class into b0/b1. Pascal has no one-size bootstrap the way ProDOS does:
-// a 5.25" volume boots through the Disk II controller and needs both
-// blocks, while a 3.5" or hard-disk volume boots through the slot's
-// ProDOS block-driver entry point and fits entirely in block 0.
-static void embeddedPascalBoot(uint32_t totalBlocks, uint8_t b0[512],
-                               uint8_t b1[512])
-{
-  if (totalBlocks == 280) {
-    memcpy(b0, pascalDiskIIBootBlock0, 512);
-    memcpy(b1, pascalDiskIIBootBlock1, 512);
-  } else {
-    memcpy(b0, pascalBlockDevBootBlock, 512);
-    memset(b1, 0, 512);
-  }
-}
-
-// Fill b0/b1 with p-System boot code copied from a donor Pascal volume,
-// for the case where the embedded blocks aren't what the user wants (a
-// different p-System release, or a patched bootstrap).
-static bool loadPascalBootBlocks(const char *donor, uint8_t b0[512],
-                                 uint8_t b1[512])
-{
-  PascalSpector d(false);
-  if (!d.readFile((char *)donor, true)) {
-    printf("ERROR: can't read boot donor image '%s'\n", donor);
-    return false;
-  }
-  if (!d.probe()) {
-    printf("ERROR: '%s' doesn't look like a Pascal volume; refusing to "
-           "take boot code from it\n", donor);
-    return false;
-  }
-  if (!d.readBootBlocks(b0, b1)) {
-    printf("ERROR: can't read boot blocks from '%s'\n", donor);
-    return false;
-  }
-  if (b0[0] != 0x01) {
-    // Every Apple II boot sector/block starts with $01. Refuse rather than
-    // install something that certainly won't boot.
-    printf("ERROR: '%s' block 0 doesn't look like boot code "
-           "(first byte 0x%02X, not 0x01)\n", donor, b0[0]);
-    return false;
-  }
-  return true;
-}
-
 void bootblocksHandler(char *cmd)
 {
   const bool fromDonor = (cmd && cmd[0]);
-  uint8_t b0[512], b1[512];
-
-  if (pascalMode) {
-    if (fromDonor) {
-      if (!loadPascalBootBlocks(cmd, b0, b1))
-        return;
-    } else {
-      // Which embedded bootstrap applies depends on how the finished
-      // volume will be read, so ask the volume how big it is.
-      uint16_t blocks = ((PascalSpector *)inspector)->volumeBlocks();
-      if (!blocks) {
-        printf("ERROR: can't determine the volume size\n");
-        return;
-      }
-      embeddedPascalBoot(blocks, b0, b1);
-    }
-  } else {
-    if (!loadBootBlocks(cmd, b0, b1))
-      return;
-  }
-
-  if (!inspector->writeBootBlocks(b0, b1)) {
-    printf("ERROR: failed to write boot blocks\n");
+  if (!wozInstallBootBlocks(inspector, fromDonor ? cmd : NULL))
     return;
-  }
   printf("Boot blocks installed%s%s; use 'save' to make it permanent.\n",
          fromDonor ? " from " : (pascalMode ? " (embedded p-System boot code)"
                                             : " (embedded ProDOS boot code)"),
@@ -1020,7 +527,7 @@ void formatHandler(char *cmd)
         printf("ERROR: more than one size given\n");
         return;
       }
-      sizeBlocks = parseSizeSpec(tok[i]);
+      sizeBlocks = wozParseSizeSpec(tok[i]);
       if (sizeBlocks < (int32_t)minBlocks) {
         printf("ERROR: bad size '%s' (140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m, "
                "or a block count %u-65535)\n", tok[i], minBlocks);
@@ -1036,107 +543,56 @@ void formatHandler(char *cmd)
   }
   if (sizeBlocks == -1) sizeBlocks = 280;
 
-  if (pascalMode) {
-    // A Pascal image is raw ProDOS-order blocks either way. A .po is read
-    // back through the 5.25" floppy loader at exactly 280 blocks, and
-    // through the raw-block path above that (woz.cpp promotes any .po
-    // bigger than a floppy), so .po covers real 5.25" and 3.5" media and
-    // nothing outside that range. Note .dsk is deliberately not accepted:
-    // it forces DOS sector order, which would scramble the blocks.
-    bool po  = hasExtension(fname, ".po");
-    bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img");
-    bool poOk = (sizeBlocks >= 280 && sizeBlocks <= 1600);
-    if (!hdv && !(po && poOk)) {
-      printf("ERROR: a %d-block Pascal image must be named %s\n", sizeBlocks,
-             poOk ? ".po, .hdv or .img" : ".hdv or .img");
-      return;
-    }
-    if (sizeBlocks > 32768) {
-      printf("WARNING: %d blocks is past the 16MB (32768-block) practical "
-             "Apple Pascal volume limit, and a flat 77-file directory "
-             "can't usefully fill even that.\n", sizeBlocks);
-    }
-  } else if (sizeBlocks != 280 &&
-             !hasExtension(fname, ".hdv") && !hasExtension(fname, ".img")) {
-    // Only a 280-block image round-trips through the .po/.dsk floppy
-    // loaders; anything else must be named for the raw-block HDV path.
-    printf("ERROR: a %d-block image must be named .hdv or .img\n",
-           sizeBlocks);
+  if (!wozCheckImageName(fsMode(), fname, (uint32_t)sizeBlocks))
     return;
-  }
 
-  // Validate/normalize the volume name up front, before we touch the
-  // filesystem. vol[] is sized for ProDOS; Pascal needs only 8 bytes.
-  char vol[16] = {0};
-  if (pascalMode) {
-    if (!PascalSpector::normalizeVolumeName(volName ? volName : "BLANK", vol))
-      return;
-  } else if (!dosMode) {
-    if (!normalizeVolumeName(volName ? volName : "BLANK", vol))
-      return;
-  }
+  WozFormatOptions fo;
+  fo.type = fsMode();
+  fo.volumeName = volName;
+  fo.dosVolume = volName ? atoi(volName) : 254;
+  fo.blocks = (uint32_t)sizeBlocks;
+  fo.bootable = bootable;
+  uint8_t *img = NULL;
+  uint32_t diskSize = 0;
+  char vol[16];
+  int dosVolume = 0;
+  if (!wozBuildBlankImage(&fo, &img, &diskSize, vol, &dosVolume))
+    return;
 
   // Don't clobber an existing file - the user may be formatting next to
   // the currently-loaded image and a typo shouldn't destroy work.
   struct stat st;
   if (lstat(fname, &st) == 0) {
     printf("ERROR: '%s' already exists; refusing to overwrite\n", fname);
+    wozFree(img);
     return;
   }
 
-  const size_t diskSize = (size_t)sizeBlocks * 512;
-  uint8_t *img = (uint8_t *)calloc(1, diskSize);
-  if (!img) {
-    printf("ERROR: out of memory\n");
-    return;
-  }
-
-  bool ok;
-  if (dosMode) {
-    int v = volName ? atoi(volName) : 254;
-    if (v < 1 || v > 254) v = 254;
-    ok = buildBlankDosDsk((uint8_t)v, img);
-    if (ok) printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, v);
-  } else if (pascalMode) {
-    ok = buildBlankPascal(vol, img, (uint32_t)sizeBlocks);
-    if (ok && bootable) {
-      // The bootstrap that fits this size, straight into blocks 0-1. The
-      // volume boots once the SYSTEM.* files are copied in.
-      embeddedPascalBoot((uint32_t)sizeBlocks, img, img + 512);
-    }
-    if (ok) {
-      printf("Created blank Pascal image '%s' (volume '%s', %d blocks%s)\n",
-             fname, vol, sizeBlocks, bootable ? ", bootable" : "");
-      if (bootable) {
-        printf("Note: booting also needs SYSTEM.APPLE and SYSTEM.PASCAL "
-               "(plus SYSTEM.FILER, SYSTEM.EDITOR and friends for a usable "
-               "system) on the volume.\n");
-        if (sizeBlocks == 280)
-          printf("Note: a 5.25\" image has to be converted to .woz with "
-                 "wozzle before an emulator will boot it.\n");
-      }
-    }
-  } else {
-    ok = buildBlankProdosPo(vol, img, (uint32_t)sizeBlocks);
-    if (ok && bootable) {
-      // Standard ProDOS boot code in block 0; block 1 stays zero. The
-      // volume boots once PRODOS and a .SYSTEM file are copied in.
-      memcpy(img, prodosBootBlock, 512);
-    }
-    if (ok) printf("Created blank ProDOS image '%s' (volume '%s', %d "
-                   "blocks%s)\n", fname, vol, sizeBlocks,
-                   bootable ? ", bootable" : "");
-  }
-
-  if (ok) {
-    FILE *f = fopen(fname, "wb");
-    if (f) { ok = (fwrite(img, 1, diskSize, f) == diskSize); fclose(f); }
-    else   { ok = false; }
-  }
-
-  free(img);
+  bool ok = false;
+  FILE *f = fopen(fname, "wb");
+  if (f) { ok = (fwrite(img, 1, diskSize, f) == diskSize); fclose(f); }
+  wozFree(img);
   if (!ok) {
     printf("ERROR: failed to write '%s'\n", fname);
+    return;
+  }
+
+  if (dosMode) {
+    printf("Created blank DOS 3.3 image '%s' (volume %d)\n", fname, dosVolume);
+  } else if (pascalMode) {
+    printf("Created blank Pascal image '%s' (volume '%s', %d blocks%s)\n",
+           fname, vol, sizeBlocks, bootable ? ", bootable" : "");
+    if (bootable) {
+      printf("Note: booting also needs SYSTEM.APPLE and SYSTEM.PASCAL "
+             "(plus SYSTEM.FILER, SYSTEM.EDITOR and friends for a usable "
+             "system) on the volume.\n");
+      if (sizeBlocks == 280)
+        printf("Note: a 5.25\" image has to be converted to .woz with "
+               "wozzle before an emulator will boot it.\n");
+    }
+  } else {
+    printf("Created blank ProDOS image '%s' (volume '%s', %d blocks%s)\n",
+           fname, vol, sizeBlocks, bootable ? ", bootable" : "");
   }
 }
 
@@ -1222,8 +678,7 @@ void listHandler(char *cmd)
     return;
   }
 
-  uint8_t ft = fp->getFileType();
-  if (ft != FT_BAS && ft != FT_INT) {
+  if (!wozIsBasicFile(fp)) {
     printf("File is not BASIC (Applesoft or Integer)\n");
     return;
   }
@@ -1236,19 +691,12 @@ void listHandler(char *cmd)
   }
 
   BasicListing lines;
-  bool ok;
-  if (ft == FT_BAS) {
-    ApplesoftLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
-  } else {
-    IntegerLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
-  }
-  printBasicListing(stdout, lines, ft == FT_INT);
+  bool ok = wozDetokenize(inspector, fp, dat, s, &lines);
+  printBasicListing(stdout, lines, fp->getFileType() == FT_INT);
   if (!ok) {
     printf("Failed to list file\n");
   }
-  free(dat);
+  wozFree(dat);
 }
 
 void inspectHandler(char *cmd)
@@ -1412,47 +860,23 @@ int main(int argc, char *argv[]) {
   }
 
   if (needImage) {
-    if (pascalMode) {
-      inspector = new PascalSpector(verbose);
-    } else if (dosMode) {
-      inspector = new DosSpector(verbose);
-    } else {
-      inspector = new ProdosSpector(verbose);
-    }
-
+    inspector = wozNewSpector(fsMode(), verbose);
     if (!inspector->readFile(infoname, true)) {
       printf("Failed to read file; aborting\n");
       exit(1);
     }
 
     // If the image doesn't smell like the filesystem we were told to use,
-    // probe the other kinds; if one looks right, warn the user.
+    // see whether it looks like one of the others, and warn the user.
     if (!inspector->probe()) {
-      const char *thisMode = pascalMode ? "Pascal (-P)"
-                           : dosMode    ? "DOS 3.3 (-d)"
-                                        : "ProDOS (-p)";
-      struct { Wozspector *s; const char *name; const char *flag; } others[2];
-      if (pascalMode) {
-        others[0] = { (Wozspector *)new ProdosSpector(false), "ProDOS", "-p" };
-        others[1] = { (Wozspector *)new DosSpector(false),    "DOS 3.3", "-d" };
-      } else if (dosMode) {
-        others[0] = { (Wozspector *)new ProdosSpector(false), "ProDOS", "-p" };
-        others[1] = { (Wozspector *)new PascalSpector(false), "Pascal", "-P" };
-      } else {
-        others[0] = { (Wozspector *)new DosSpector(false),    "DOS 3.3", "-d" };
-        others[1] = { (Wozspector *)new PascalSpector(false), "Pascal", "-P" };
+      static const char *flags[] = { "", "-d", "-p", "-P" };
+      wozFsType found = wozDetectFs(infoname);
+      if (found != WOZ_FS_UNKNOWN && found != fsMode()) {
+        printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
+               "in %s (%s) mode. Re-run with '%s' if you meant %s.\n",
+               infoname, wozFsName(found), wozFsName(fsMode()),
+               flags[fsMode()], flags[found], wozFsName(found));
       }
-      for (int i = 0; i < 2; i++) {
-        if (others[i].s->readFile(infoname, true) && others[i].s->probe()) {
-          printf("WARNING: '%s' looks like a %s image, but wozit was invoked "
-                 "in %s mode. Re-run with '%s' if you meant %s.\n",
-                 infoname, others[i].name, thisMode,
-                 others[i].flag, others[i].name);
-          break;
-        }
-      }
-      delete others[0].s;
-      delete others[1].s;
     }
   }
 

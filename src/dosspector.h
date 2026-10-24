@@ -59,7 +59,10 @@ class DosSpector : public Wozspector {
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
   virtual uint32_t getAllocatedByteCount(Vent *e);
   virtual uint32_t getFileAllocation(Vent *e, char **toWhere);
-  virtual uint8_t applesoftHeaderBytes() { return 2; };
+
+  // A B file's load address (from its header), $0801 for an A file, and 0
+  // for anything else: what ProDOS would keep as the aux type
+  uint16_t getLoadAddress(Vent *e);
 
   virtual bool writeFileToImage(uint8_t *fileContents,
                                 char *fileName,
@@ -85,8 +88,11 @@ class DosSpector : public Wozspector {
   // Sector usage from the VTOC bitmap: used[track][sector] is true for
   // an allocated sector. Tracks past the VTOC's track count read as free.
   bool getSectorUsage(bool used[35][16]);
+  // The VTOC's volume number (1-254), or 0 if the VTOC won't load
+  uint8_t volumeNumber();
   bool analyzeFile(Vent *fp, struct DosFileAnalysis *out);
   virtual bool probe();
+  virtual wozFsType fsType() const { return WOZ_FS_DOS33; }
 
 protected:
   virtual Vent *createTree();
