@@ -1,4 +1,5 @@
 #include "applesoft.h"
+#include "wozmsg.h"
 
 #include <string.h>
 #include <ctype.h>
@@ -144,7 +145,8 @@ struct _AStoken applesoftTokens[128] = {
   {0xFE, "???"},
   {0xFF, "???"} };
 
-bool ApplesoftLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
+bool ApplesoftLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
+                               BasicListing *out)
 {
   uint8_t lo,hi;
   uint32_t pos = skipBytes; // first 2 bytes are program size (from DOS) but ProDOS has naught.
@@ -159,29 +161,31 @@ bool ApplesoftLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
 
     lo = buf[pos++]; // read line number
     hi = buf[pos++];
-    uint16_t lineNumber = (hi << 8) | lo;
-    printf("%d ", lineNumber);
+    BasicLine line;
+    line.lineNumber = (hi << 8) | lo;
 
     while (1) {
       // read the tokenized/string data until a null terminator
       lo = buf[pos++];
       if (!lo) {
-        printf("\n");
         break;
       }
       
       if (lo & 0x80) {
         // token
         struct _AStoken t = applesoftTokens[lo & 0x7F];
-        printf(" %s ", t.detokened);
+        line.text += ' ';
+        line.text += t.detokened;
+        line.text += ' ';
       } else {
         // it's a straight character
-        printf("%c", lo);
+        line.text += (char)lo;
       }
     }
+    out->push_back(line);
   }
   /* NOTREACHED unless abnormal termination happens */
-  printf("ERROR: file ended early\n");
+  wozMsg(WOZ_MSG_ERROR, "ERROR: file ended early");
   return false;
 }
 
@@ -223,7 +227,7 @@ bool ApplesoftLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
 
 static bool tokErr(uint32_t srcLine, const char *msg)
 {
-  printf("ERROR: source line %u: %s\n", srcLine, msg);
+  wozMsg(WOZ_MSG_ERROR, "ERROR: source line %u: %s", srcLine, msg);
   return false;
 }
 
@@ -302,7 +306,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
     if (text[i] == '\n') lineCount++;
   uint8_t *out = (uint8_t *)malloc(textLen + 5 * lineCount + 8);
   if (!out) {
-    printf("ERROR: out of memory tokenizing\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory tokenizing");
     return NULL;
   }
   uint32_t outPos = 0;
@@ -494,14 +498,15 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
     // Not fatal - the program runs fine - but such a line can't be listed
     // and re-entered on the Apple II, whose input buffer stops at 239.
     if (lineLen > APPLESOFT_MAX_SRCLINE) {
-      printf("WARNING: source line %u (Applesoft line %ld) is too long to "
-             "edit on an Apple II\n", srcLineNum, lineNum);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: source line %u (Applesoft line %ld) is too long to "
+             "edit on an Apple II", srcLineNum, lineNum);
     }
   }
 
   if (lastLineNum < 0) {
     free(out);
-    printf("ERROR: no Applesoft program lines found in the input\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: no Applesoft program lines found in the input");
     return NULL;
   }
 
@@ -510,7 +515,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
 
   if (!setLinePointers(out, outPos, APPLESOFT_LOAD_ADDR)) {
     free(out);
-    printf("ERROR: internal error setting line pointers\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: internal error setting line pointers");
     return NULL;
   }
 

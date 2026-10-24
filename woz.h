@@ -8,16 +8,6 @@
 #include "nibutil.h"
 #include "disktypes.h"
 
-#define DUMP_TRACK         0x01
-#define DUMP_QTMAP         0x02
-#define DUMP_QTCRC         0x04
-// these all require DUMP_TRACK:
-#define DUMP_TOFILE        0x10
-#define DUMP_SECTOR        0x20
-#define DUMP_RAWTRACK      0x40
-#define DUMP_ORDEREDSECTOR 0x80
-
-
 typedef struct _diskInfo {
   uint8_t version;          // Woz format version #
   uint8_t diskType;         // 1 = 5.25"; 2 = 3.5"
@@ -44,9 +34,19 @@ typedef struct _trackInfo {
   bool dirty;
 } trackInfo;
 
+// One sector as found walking a track in order (see scanTrackOrderedSectors)
+typedef struct _trackSectorDump {
+  uint8_t volume;
+  uint8_t track;
+  uint8_t sector;
+  uint8_t checksum;
+  bool haveData;          // false if the data field was never found
+  uint8_t data62[342];    // still 6-and-2 encoded
+} trackSectorDump;
+
 class Woz {
  public:
-  Woz(bool verbose, uint8_t dumpflags);
+  Woz(bool verbose);
   ~Woz();
 
   bool readFile(const char *filename, bool preloadTracks, uint8_t forceType = T_AUTO);
@@ -55,7 +55,22 @@ class Woz {
   void advanceBitStream(uint8_t datatrack);
   uint8_t getNextWozBit(uint8_t datatrack);
 
-  void dumpInfo();
+
+  // Read-only views of the image, for programs that report on it
+  const diskInfo *getDiskInfo() const { return &di; }
+  const trackInfo *getTrackInfo(uint8_t datatrack) const { return &tracks[datatrack]; }
+  // The META chunk, one key/value pair at a time. Returns false past the
+  // last entry (or if there's no META chunk at all).
+  bool hasMetadata() const { return metaData != NULL; }
+  bool getMetadataEntry(uint32_t index, char *key, size_t keyLen,
+                        char *value, size_t valueLen);
+  bool checksumWozDataTrack(uint8_t datatrack, uint32_t *retCRC);
+  bool readNibSectorDataFromDataTrack(uint8_t dataTrack, uint8_t sector, nibSector *sectorData);
+  // Walk a data track for up to two revolutions, collecting each sector
+  // in the order it turns up (repeats included) until all 16 are seen.
+  // Returns how many were found; at most maxOut are stored.
+  uint8_t scanTrackOrderedSectors(uint8_t datatrack, trackSectorDump *out,
+                                  uint8_t maxOut);
 
   bool isSynchronized();
 
@@ -143,11 +158,8 @@ class Woz {
 
   bool readWozDataTrack(uint8_t datatrack);
   bool writeNibSectorDataToDataTrack(uint8_t dataTrack, uint8_t sector, uint8_t nibData[343]);
-  bool readNibSectorDataFromDataTrack(uint8_t dataTrack, uint8_t sector, nibSector *sectorData);
 
   bool loadMissingTrackFromImage(uint8_t datatrack);
-  
-  bool checksumWozDataTrack(uint8_t datatrack, uint32_t *retCRC);
 
   void _initInfo();
 
@@ -158,7 +170,6 @@ class Woz {
   uint8_t imageType;
   
   bool verbose;
-  uint8_t dumpflags;
 
   bool autoFlushTrackData;
   

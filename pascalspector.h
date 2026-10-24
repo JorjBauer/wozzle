@@ -19,9 +19,23 @@
 // blocks 2..5 (2048 bytes), every file stored on a run of contiguous
 // blocks with a "bytes used in the last block" count. There is no
 // allocation bitmap - free space is just the gaps between files.
+// Volume summary from PascalSpector::getVolumeInfo(). Free space is
+// whatever lies between files, so the largest contiguous gap matters as
+// much as the total.
+struct PascalVolumeInfo {
+  char name[MAX_VOL_NAME_LEN + 1];
+  uint16_t totalBlocks;
+  uint32_t files;
+  uint32_t fileBlocks;      // blocks occupied by files
+  uint16_t reservedBlocks;  // boot blocks plus the directory
+  uint32_t freeBlocks;
+  uint16_t largestGap;      // largest free contiguous region, in blocks
+  uint16_t largestGapStart; // ... and the block it starts at
+};
+
 class PascalSpector : public Wozspector {
  public:
-  PascalSpector(bool verbose, uint8_t dumpflags);
+  PascalSpector(bool verbose);
   ~PascalSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
@@ -64,8 +78,10 @@ class PascalSpector : public Wozspector {
   // stores names upper-cased).
   virtual Vent *findEntry(const char *path);
 
-  virtual void displayInfo();
-  virtual void inspectFile(const char *fileName, Vent *fp);
+  bool getVolumeInfo(struct PascalVolumeInfo *out);
+  // The file-name suffix for a Pascal file kind (".CODE", ".TEXT", ...),
+  // or "" for a kind that has none.
+  static const char *kindSuffix(uint8_t kind);
   virtual bool probe();
 
   // Write a file preserving the source entry's Pascal file kind and

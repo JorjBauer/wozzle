@@ -1,9 +1,10 @@
 #include "wozspector.h"
+#include "wozmsg.h"
 
 #include <stdio.h>
 #include <string.h>
 
-Wozspector::Wozspector(bool verbose, uint8_t dumpflags) : Woz(verbose, dumpflags)
+Wozspector::Wozspector(bool verbose) : Woz(verbose)
 {
   tree = NULL;
 }
@@ -12,39 +13,40 @@ Wozspector::Wozspector(bool verbose, uint8_t dumpflags) : Woz(verbose, dumpflags
 // overrides these; DOS 3.3 inherits the unsupported behavior.
 bool Wozspector::removeDirectory(const char *dirName)
 {
-  printf("This filesystem has no subdirectories; rmdir is not supported.\n");
+  wozMsg(WOZ_MSG_ERROR, "This filesystem has no subdirectories; rmdir is not supported.");
   return false;
 }
 
 bool Wozspector::removeDirectoryRecursive(const char *dirName)
 {
-  printf("This filesystem has no subdirectories; rm -r is not supported.\n");
+  wozMsg(WOZ_MSG_ERROR, "This filesystem has no subdirectories; rm -r is not supported.");
   return false;
 }
 
 bool Wozspector::makeDirectory(const char *dirName)
 {
-  printf("This filesystem has no subdirectories; mkdir is not supported.\n");
+  wozMsg(WOZ_MSG_ERROR, "This filesystem has no subdirectories; mkdir is not supported.");
   return false;
 }
 
 bool Wozspector::writeBootBlocks(const uint8_t block0[512],
                                  const uint8_t block1[512])
 {
-  printf("bootblocks is only supported for ProDOS volumes.\n");
+  wozMsg(WOZ_MSG_ERROR, "bootblocks is only supported for ProDOS volumes.");
   return false;
 }
 
 bool Wozspector::renameVolume(const char *newName)
 {
-  printf("volname is only supported for ProDOS volumes (DOS 3.3 has a "
-         "volume number, not a name).\n");
+  wozMsg(WOZ_MSG_ERROR,
+         "volname is only supported for ProDOS volumes (DOS 3.3 has a "
+         "volume number, not a name).");
   return false;
 }
 
 bool Wozspector::krunch(const char *afterFile)
 {
-  printf("krunch is only supported for Pascal volumes.\n");
+  wozMsg(WOZ_MSG_ERROR, "krunch is only supported for Pascal volumes.");
   return false;
 }
 
@@ -59,9 +61,10 @@ Vent *Wozspector::findEntry(const char *path)
   return NULL;
 }
 
-void Wozspector::displayDirectory(const char *path)
+Vent *Wozspector::getDirectoryListing(const char *path)
 {
-  printf("Listing a subdirectory is only supported on ProDOS.\n");
+  wozMsg(WOZ_MSG_ERROR, "Listing a subdirectory is only supported on ProDOS.");
+  return NULL;
 }
 
 Wozspector::~Wozspector()
@@ -81,19 +84,6 @@ Vent *Wozspector::getTree()
 
   // otherwise return whatever tree is currently loaded
   return tree;
-}
-
-void Wozspector::displayTree()
-{
-  displayTree(getTree());
-}
-
-void Wozspector::displayTree(Vent *tree)
-{
-  while (tree) {
-    tree->Dump();
-    tree = tree->nextEnt();
-  }
 }
 
 void Wozspector::freeTree(Vent *tree)

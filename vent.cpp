@@ -1,4 +1,5 @@
 #include "vent.h"
+#include "wozmsg.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -58,10 +59,6 @@ Vent::Vent(struct _pascalFent *fp)
   this->children = this->next = NULL;
 }
 
-// Returned by prodosDateToEpoch() when the entry has no date set. A real
-// ProDOS date always has zero seconds, so it can never convert to -1.
-#define NO_DATE ((time_t)-1)
-
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
 {
   // ProDOS treats a zero date word as "no date" (CAT shows <NO DATE>)
@@ -90,19 +87,6 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
   return mktime(&t);
 }
 
-// Format a date for the ls listing, padded to the width of a real date so
-// the columns stay aligned.
-static void formatDate(time_t when, char *buf, size_t len)
-{
-  if (when == NO_DATE) {
-    snprintf(buf, len, "%-15s", "<NO DATE>");
-    return;
-  }
-  struct tm ts = *localtime(&when);
-  // FIXME uc() that
-  strftime(buf, len, "%d-%b-%y %H:%M", &ts);
-}
-
 Vent::Vent(struct _subdirent *di)
 {
   isDirectoryHeader = true;
@@ -123,11 +107,11 @@ Vent::Vent(struct _subdirent *di)
   // something slips through with a malformed header - just warn and treat
   // it as an empty directory so the tool stays usable on damaged images.
   if (di->entryLength != 0x27 || di->entriesPerBlock != 0x0D) {
-    fprintf(stderr,
-            "WARNING: directory header has unexpected geometry "
-            "(entryLength=0x%02X, entriesPerBlock=0x%02X); "
-            "treating it as empty.\n",
-            di->entryLength, di->entriesPerBlock);
+    wozMsg(WOZ_MSG_WARNING,
+           "WARNING: directory header has unexpected geometry "
+           "(entryLength=0x%02X, entriesPerBlock=0x%02X); "
+           "treating it as empty.",
+           di->entryLength, di->entriesPerBlock);
     this->activeFileCount = 0;
     this->children = this->next = NULL;
     return;
@@ -204,7 +188,7 @@ Vent::Vent(struct _dosFdEntry *fe)
   case 64: // 'B'
   default:
     fileType = FT_TYP;
-    printf("Unhandled file type %d\n", fe->fileTypeAndFlags & 0x7F);
+    wozMsg(WOZ_MSG_WARNING, "Unhandled file type %d", fe->fileTypeAndFlags & 0x7F);
   }
   blocksUsed = fe->fileLength[0] + fe->fileLength[1] * 256;
   firstTrack = fe->firstTrack;
@@ -247,187 +231,6 @@ Vent::Vent(const Vent &vi)
 
 Vent::~Vent()
 {
-}
-
-void Vent::Dump(bool verbose)
-{
-  if (isPascal) {
-    static const char *kindName[] = {
-      "     ", ".BAD ", ".CODE", ".TEXT", ".INFO",
-      ".DATA", ".GRAF", ".FOTO", "SECDR"
-    };
-    uint8_t k = pascalType & 0x0F;
-    printf(" %s  %5u blk  %-15s  (blocks %u..%u, %u bytes)\n",
-           (k < 9) ? kindName[k] : "  ?  ",
-           blocksUsed, name, pascalStartBlock,
-           pascalNextBlock ? (pascalNextBlock - 1) : pascalStartBlock,
-           eofLength);
-    if (verbose) {
-      printf("  startBlock: %u\n", pascalStartBlock);
-      printf("  nextBlock:  %u\n", pascalNextBlock);
-      printf("  fileKind:   %u\n", k);
-      printf("  bytesInLastBlock: %u\n", pascalByteCount);
-      printf("  modDate (raw): 0x%04X\n", rd16(pascalData.modDate));
-    }
-    return;
-  }
-
-  if (isDos33) {
-    switch (fileType) {
-    case FT_TXT:
-      printf(" T ");
-      break;
-    case FT_BAS:
-      printf(" A ");
-      break;
-    case FT_INT:
-      printf(" I ");
-      break;
-    case FT_BIN:
-      printf(" B ");
-      break;
-    case FT_SYS:
-      printf(" S ");
-      break;
-    default:
-      printf(" ? ");
-      break;
-    }
-    printf("%.3d ", blocksUsed);
-    printf("%s\n", name);
-  } else {
-    if (isDirectoryHeader) {
-      printf("\n  %s\n\n", name);
-    } else {
-      if (accessFlags & 0x02) {
-	printf(" ");
-      } else {
-	// locked
-	printf("*");
-      }
-      
-      // A '+' after the name marks a GS/OS extended file - one that has a
-      // resource fork as well as a data fork. Its listed byte size is the
-      // 512 bytes of its extended key block, which is all the directory
-      // entry records; 'inspect' shows what each fork really holds.
-      printf("%15s%s ", name, entryType == 0x05 ? "+" : " ");
-
-      char auxData[16] = "";
-      switch (fileType) {
-      case FT_TYP:
-	printf("TYP");
-	break;
-      case FT_BAD:
-	printf("BAD");
-	break;
-      case FT_TXT:
-	printf("TXT");
-	snprintf(auxData, sizeof(auxData), "R=%5d", typeData);
-	break;
-      case FT_BIN:
-	printf("BIN");
-	snprintf(auxData, sizeof(auxData), "A=$%.4X", typeData);
-	break;
-      case FT_DIR:
-	printf("DIR");
-	snprintf(auxData, sizeof(auxData), "[$%.4X]", keyPointer); // pointer to first block
-	break;
-      case FT_ADB:
-	printf("ADB"); // appleworks database
-	break;
-      case FT_AWP:
-	printf("AWP"); // appleworks word processing
-	break;
-      case FT_ASP:
-	printf("ASP"); // appleworks spreadsheet
-	break;
-      case FT_PAS:
-	printf("PAS"); // pascal
-	break;
-      case FT_CMD:
-	printf("CMD");
-	break;
-      case FT_US1:
-      case FT_US2:
-      case FT_US3:
-      case FT_US4:
-      case FT_US5:
-      case FT_US6:
-      case FT_US7:
-      case FT_US8:
-	printf("US%d", fileType & 0x0F);
-	break;
-      case FT_INT:
-	printf("INT");
-	break;
-      case FT_IVR:
-	printf("IVR"); // saved integer basic variables
-	break;
-      case FT_BAS:
-	printf("BAS");
-	snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
-	break;
-      case FT_VAR:
-	printf("VAR"); // saved applesoft variables
-	break;
-      case FT_REL:
-	printf("REL"); // relocatable EDASM object
-	break;
-      case FT_SYS:
-	printf("SYS");
-	snprintf(auxData, sizeof(auxData), "[$%.4X]", typeData);
-	break;
-      default:
-	printf("???"); // check appendix E of "Beneath ProDOS" to see what we missed
-	break;
-      }
-      
-      printf("  %6d  ", blocksUsed);
-      char buf[255];
-      formatDate(lastModified, buf, sizeof(buf));
-      printf("%s   ", buf);
-      formatDate(creationDate, buf, sizeof(buf));
-      printf("%s  %5d %s\n", buf, eofLength, auxData);
-    }
-  }
-
-  if (verbose) {
-    printf("Is directory header: %s\n", isDirectoryHeader ? "true" : "false");
-    printf("Is DOS 3.3: %s\n", isDos33 ? "true" : "false");
-    printf("EntryType: 0x%.2X\n", entryType);
-    printf("FileType: 0x%.2X\n", fileType);
-    printf("keyPointer: 0x%.4X\n", keyPointer);
-    printf("blocksUsed: 0x%.4X\n", blocksUsed);
-    printf("eofLength: 0x%.8X\n", eofLength);
-    printf("typeData: 0x%.4X\n", typeData);
-
-    if (!isDos33) {
-      printf("ProdosData dump:\n");
-
-      printf("  type/len: 0x%.2X\n", prodosData.typelen);
-      printf("  fileType: 0x%.2X\n", prodosData.fileType);
-      printf("  keyPointer: 0x%.2X%.2X\n", prodosData.keyPointer[1],
-             prodosData.keyPointer[0]);
-      printf("  blocksUsed: 0x%.2X%.2X\n", prodosData.blocksUsed[1],
-             prodosData.blocksUsed[0]);
-      printf("  eofLength: 0x%.2X%.2X%.2X\n",
-             prodosData.eofLength[2],
-             prodosData.eofLength[1],
-             prodosData.eofLength[0]);
-      printf("  creatorVersion: 0x%.2X\n", prodosData.creatorVersion);
-      printf("  minRequiredVersion: 0x%.2X\n", prodosData.minRequiredVersion);
-      printf("  accessFlags: 0x%.2X\n", prodosData.accessFlags);
-      printf("  typeData: 0x%.2X%.2X\n", prodosData.typeData[1],
-             prodosData.typeData[0]);
-      printf("  headerPointer: 0x%.2X%.2X\n", prodosData.headerPointer[1],
-             prodosData.headerPointer[0]);
-    } else {
-      printf("dosData dump:\n");
-      printf("  first track/sector: %d/%d\n", dosData.firstTrack, dosData.firstSector);
-      printf("  fileTypeAndFlags: 0x%.2X\n", dosData.fileTypeAndFlags);
-      printf("  fileLength: 0x%.2X%.2X\n", dosData.fileLength[1], dosData.fileLength[0]);
-    }
-  }
 }
 
 Vent *Vent::nextEnt()

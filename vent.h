@@ -6,6 +6,11 @@
 #include <stdint.h>
 #include <time.h>
 
+// Returned by prodosDateToEpoch() (and so by the date getters) when the
+// entry has no date set. A real ProDOS date always has zero seconds, so it
+// can never convert to -1.
+#define NO_DATE ((time_t)-1)
+
 enum {
  FT_TYP = 0,
  FT_BAD = 1,
@@ -162,7 +167,6 @@ class Vent {
   Vent(const Vent &vi);
   ~Vent();
 
-  void Dump(bool verbose=false);
 
   Vent *nextEnt();
   void nextEnt(Vent *);
@@ -191,6 +195,13 @@ class Vent {
   uint16_t getPascalNextBlock() const { return pascalNextBlock; }
   uint16_t getPascalByteCount() const { return pascalByteCount; }
   uint8_t getPascalKind() const { return (uint8_t)(pascalType & 0x0F); }
+  bool getIsDos33() const { return isDos33; }
+  uint8_t getAccessFlags() const { return accessFlags; }
+  // ProDOS aux type (load address, record length, ...)
+  uint16_t getAuxType() const { return typeData; }
+  // NO_DATE when the entry has none
+  time_t getCreationDate() const { return creationDate; }
+  time_t getLastModified() const { return lastModified; }
 
   const char *getName();
 

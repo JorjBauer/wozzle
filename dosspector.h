@@ -29,9 +29,31 @@ struct _vtoc {
   struct _bmTrack trackState[50];
 };
 
+// What DosSpector::analyzeFile() learns about one file's storage. It
+// cross-checks three independent size signals: the catalog sector count,
+// a walk of the T/S list chain, and the length header (if the file type
+// has one) in the first data sector.
+struct DosFileAnalysis {
+  uint16_t catalogSectors;  // from the directory entry
+  bool hasTsList;           // false: the entry has no T/S list pointer
+  uint32_t tsListSectors;   // T/S list sectors walked
+  uint32_t dataSectors;     // valid data sectors they point to
+  uint32_t sparseGaps;      // 0/0 entries (sparse holes or trailing)
+  bool haveFirstData;       // the first data sector was readable
+  uint8_t firstDataTrack;
+  uint8_t firstDataSector;
+  bool haveLengthHeader;    // BAS, INT and BIN files carry one
+  uint16_t loadAddress;     // BIN only
+  uint32_t logicalLength;   // from the length header
+  uint32_t dataBytes;       // walked data allocation, less the header
+  // The length header is far smaller than the allocation: a stub loader
+  // with a hidden payload, or deleted-tail padding
+  bool lengthFarBelowAllocation;
+};
+
 class DosSpector : public Wozspector {
  public:
-  DosSpector(bool verbose, uint8_t dumpflags);
+  DosSpector(bool verbose);
   ~DosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
@@ -60,8 +82,10 @@ class DosSpector : public Wozspector {
   bool writeFileRaw(uint8_t *contents, const char *fileName,
                     uint8_t typeAndFlags, uint32_t size);
 
-  virtual void displayInfo();
-  virtual void inspectFile(const char *fileName, Vent *fp);
+  // Sector usage from the VTOC bitmap: used[track][sector] is true for
+  // an allocated sector. Tracks past the VTOC's track count read as free.
+  bool getSectorUsage(bool used[35][16]);
+  bool analyzeFile(Vent *fp, struct DosFileAnalysis *out);
   virtual bool probe();
 
 protected:

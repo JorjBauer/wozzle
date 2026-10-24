@@ -1,42 +1,39 @@
 // Unit tests for ApplesoftLister. See tests/unit-intbas.cpp for the
-// capture/assertion pattern - this file mirrors it.
+// collection/assertion pattern - this file mirrors it.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <string>
 
 #include "applesoft.h"
+#include "wozmsg.h"
 
 static int passed = 0, failed = 0;
 
-struct StdoutCapture {
-  int savedFd;
-  FILE *tmp;
-  StdoutCapture() {
-    fflush(stdout);
-    savedFd = dup(STDOUT_FILENO);
-    tmp = tmpfile();
-    if (!tmp || savedFd < 0) { perror("capture setup"); exit(2); }
-    dup2(fileno(tmp), STDOUT_FILENO);
-  }
-  ~StdoutCapture() {
-    fflush(stdout);
-    dup2(savedFd, STDOUT_FILENO);
-    close(savedFd);
-    if (tmp) fclose(tmp);
-  }
-  char *take() {
-    fflush(stdout);
-    fseek(tmp, 0, SEEK_END);
-    long n = ftell(tmp);
-    fseek(tmp, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)n + 1);
-    if (!buf) return NULL;
-    size_t r = fread(buf, 1, (size_t)n, tmp);
-    buf[r] = '\0';
-    return buf;
-  }
+// Everything one listFile() call produced: its return value, the listing,
+// and any messages it raised along the way.
+struct Listed {
+  bool rc;
+  BasicListing lines;
+  std::string messages;
 };
+
+static void collectMsg(wozMsgLevel level, const char *msg, void *ctx)
+{
+  std::string *s = (std::string *)ctx;
+  s->append(msg);
+  s->append("\n");
+}
+
+static Listed list(uint8_t *buf, uint32_t size, uint8_t skipBytes)
+{
+  Listed r;
+  wozSetMsgSink(collectMsg, &r.messages);
+  ApplesoftLister l;
+  r.rc = l.listFile(buf, size, skipBytes, &r.lines);
+  wozSetMsgSink(NULL, NULL);
+  return r;
+}
 
 static void check(const char *name, bool cond, const char *detail = NULL) {
   if (cond) {
@@ -49,8 +46,8 @@ static void check(const char *name, bool cond, const char *detail = NULL) {
   }
 }
 
-static bool contains(const char *h, const char *n) {
-  return h && strstr(h, n) != NULL;
+static bool contains(const std::string &h, const char *n) {
+  return h.find(n) != std::string::npos;
 }
 
 // ----- cases ---------------------------------------------------------
@@ -59,13 +56,10 @@ static bool contains(const char *h, const char *n) {
 // Applesoft reads lo,hi each loop; 0,0 means done. Lister returns true.
 static void case_empty_program() {
   uint8_t buf[] = { 0x00, 0x00 };
-  StdoutCapture cap;
-  ApplesoftLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("empty program returns true", rc == true);
-  check("empty program prints nothing", out && out[0] == '\0');
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("empty program returns true", r.rc == true);
+  check("empty program lists nothing", r.lines.empty());
+  check("empty program raises no messages", r.messages.empty());
 }
 
 // 10 END
@@ -78,14 +72,11 @@ static void case_end_line() {
     0x08, 0x08, 0x0A, 0x00, 0x80, 0x00,
     0x00, 0x00
   };
-  StdoutCapture cap;
-  ApplesoftLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("10 END returns true", rc == true);
-  check("line number 10 present", contains(out, "10"));
-  check("END keyword decoded", contains(out, "END"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("10 END returns true", r.rc == true);
+  check("one line listed", r.lines.size() == 1);
+  check("line number 10", r.lines.size() == 1 && r.lines[0].lineNumber == 10);
+  check("END keyword decoded", r.lines.size() == 1 && contains(r.lines[0].text, "END"));
 }
 
 // 20 PRINT "HI"
@@ -97,15 +88,11 @@ static void case_print_string() {
     0x22, 'H', 'I', 0x22, 0x00,
     0x00, 0x00
   };
-  StdoutCapture cap;
-  ApplesoftLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("PRINT \"HI\" returns true", rc == true);
-  check("line 20 present", contains(out, "20"));
-  check("PRINT keyword decoded", contains(out, "PRINT"));
-  check("string HI present", contains(out, "HI"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("PRINT \"HI\" returns true", r.rc == true);
+  check("line 20", r.lines.size() == 1 && r.lines[0].lineNumber == 20);
+  check("PRINT keyword and string decoded",
+        r.lines.size() == 1 && r.lines[0].text == " PRINT \"HI\"");
 }
 
 // Missing end-of-program marker: the file runs off the end looking for
@@ -115,13 +102,11 @@ static void case_missing_end_marker() {
   uint8_t buf[] = {
     0x08, 0x08, 0x0A, 0x00, 0x80, 0x00
   };
-  StdoutCapture cap;
-  ApplesoftLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("missing end marker returns false", rc == false);
-  check("error names the early end", contains(out, "ended early"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("missing end marker returns false", r.rc == false);
+  check("lines before the problem are kept",
+        r.lines.size() == 1 && r.lines[0].lineNumber == 10);
+  check("error names the early end", contains(r.messages, "ended early"));
 }
 
 // skipBytes: DOS stores a 2-byte length prefix ahead of the tokenized
@@ -132,13 +117,10 @@ static void case_skipbytes() {
     0x08, 0x08, 0x0A, 0x00, 0x80, 0x00,
     0x00, 0x00
   };
-  StdoutCapture cap;
-  ApplesoftLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 2);
-  char *out = cap.take();
-  check("skipBytes returns true", rc == true);
-  check("END still decoded after skip", contains(out, "END"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 2);
+  check("skipBytes returns true", r.rc == true);
+  check("END still decoded after skip",
+        r.lines.size() == 1 && contains(r.lines[0].text, "END"));
 }
 
 int main(int, char **) {

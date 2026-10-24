@@ -4,17 +4,17 @@ MACFLAGS=-mmacosx-version-min=10.15
 CFLAGS = -Wall -g -I/usr/local/include/osxfuse -I/opt/homebrew/opt/readline/include -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
-WOZSRCS=woz.cpp wozzle.cpp crc32.c nibutil.cpp
-WOZOBJS=woz.o crc32.o nibutil.o wozzle.o
+WOZSRCS=woz.cpp wozzle.cpp crc32.c wozmsg.c nibutil.cpp
+WOZOBJS=woz.o crc32.o wozmsg.o nibutil.o wozzle.o
 
-FUSESRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp vent.cpp wozfuse.cpp
-FUSEOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o vent.o wozfuse.o
+FUSESRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozfuse.cpp
+FUSEOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozfuse.o
 
-WOZITSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozit.cpp applesoft.cpp intbas.cpp
-WOZITOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozit.o applesoft.o intbas.o
+WOZITSRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozit.cpp applesoft.cpp intbas.cpp
+WOZITOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozit.o applesoft.o intbas.o
 
-WOZMOSISSRCS=woz.cpp crc32.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
-WOZMOSISOBJS=woz.o crc32.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozmosis.o
+WOZMOSISSRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
+WOZMOSISOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozmosis.o
 
 .PHONY: test clean unit-tests
 
@@ -24,14 +24,14 @@ UNIT_BINS = tests/unit-intbas tests/unit-applesoft tests/unit-nib
 
 unit-tests: $(UNIT_BINS)
 
-tests/unit-intbas: tests/unit-intbas.cpp intbas.o
-	$(CXX) $(CFLAGS) -I. tests/unit-intbas.cpp intbas.o -o $@
+tests/unit-intbas: tests/unit-intbas.cpp intbas.o wozmsg.o
+	$(CXX) $(CFLAGS) -I. tests/unit-intbas.cpp intbas.o wozmsg.o -o $@
 
-tests/unit-applesoft: tests/unit-applesoft.cpp applesoft.o
-	$(CXX) $(CFLAGS) -I. tests/unit-applesoft.cpp applesoft.o -o $@
+tests/unit-applesoft: tests/unit-applesoft.cpp applesoft.o wozmsg.o
+	$(CXX) $(CFLAGS) -I. tests/unit-applesoft.cpp applesoft.o wozmsg.o -o $@
 
-tests/unit-nib: tests/unit-nib.cpp nibutil.o
-	$(CXX) $(CFLAGS) -I. tests/unit-nib.cpp nibutil.o -o $@
+tests/unit-nib: tests/unit-nib.cpp nibutil.o wozmsg.o
+	$(CXX) $(CFLAGS) -I. tests/unit-nib.cpp nibutil.o wozmsg.o -o $@
 
 wozzle: $(WOZOBJS)
 	$(CXX) $(CFLAGS) -o wozzle $(WOZOBJS) 

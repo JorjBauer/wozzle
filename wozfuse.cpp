@@ -10,6 +10,7 @@ using namespace std;
 #include "woz.h"
 #include "crc32.h"
 #include "nibutil.h"
+#include "clireport.h"
 //#include "vtoc.h"
 //#include "vmap.h"
 //#include "vent.h"
@@ -125,7 +126,7 @@ int main(int argc, char *argv[]) {
   bool preloadTracks = true;
   bool dumpDosInfo = false;
   bool dumpProdosInfo = false;
-  uint32_t dumpflags = 0; // DUMP_RAWTRACK usw., cf. woz.h
+  uint32_t dumpflags = 0; // DUMP_RAWTRACK usw., cf. clireport.h
 
   preload_crc();
 
@@ -198,7 +199,7 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
   
-  Woz w(verbose, dumpflags & 0xFF);
+  Woz w(verbose);
 
   if (!w.readFile(inname[0] ? inname : infoname, preloadTracks)) {
     printf("Failed to read file; aborting\n");
@@ -206,7 +207,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (infoname[0]) {
-    w.dumpInfo();
+    printWozInfo(&w, dumpflags & 0xFF);
 
     if (dumpDosInfo) {
       if (!w.decodeWozTrackToDsk(17, /* The catalog and VToC are on track 17 */

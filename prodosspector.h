@@ -6,6 +6,12 @@
 #include "wozspector.h"
 #include "vent.h"
 
+// Storage types for an ordinary file: one data block (seedling), an index
+// block of data blocks (sapling), or a master index of index blocks (tree)
+#define PRODOS_STORAGE_SEEDLING 0x01
+#define PRODOS_STORAGE_SAPLING  0x02
+#define PRODOS_STORAGE_TREE     0x03
+
 // ProDOS storage type 5 is an "extended" file: the GS/OS forked file. Its
 // key block is neither data nor an index but an extended key block holding
 // two mini-entries - one per fork - each describing an ordinary
@@ -23,7 +29,7 @@ struct ProdosFork {
 
 class ProdosSpector : public Wozspector {
  public:
-  ProdosSpector(bool verbose, uint8_t dumpflags);
+  ProdosSpector(bool verbose);
   ~ProdosSpector();
 
   virtual uint32_t getFileContents(Vent *e, char **toWhere);
@@ -60,11 +66,24 @@ class ProdosSpector : public Wozspector {
   virtual bool removeDirectoryRecursive(const char *dirName);
   virtual bool makeDirectory(const char *dirName);
   virtual Vent *findEntry(const char *path);
-  virtual void displayDirectory(const char *path);
+  virtual Vent *getDirectoryListing(const char *path);
 
-  virtual void displayInfo();
+  // Volume bitmap queries
+  uint32_t calculateBlocksFree();
+  bool isBlockFree(uint32_t block);
+  // Where a block lives on a 5.25" floppy: each 512-byte block is two
+  // 256-byte sectors of one track.
+  static void blockToTrackSectors(uint32_t block, uint8_t *track,
+                                  uint8_t *sectorA, uint8_t *sectorB);
 
-  virtual void inspectFile(const char *fileName, Vent *fp);
+  bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
+
+  // The storage type ProDOS uses for a file of `eof` bytes (seedling,
+  // sapling or tree), and the name of a storage type (NULL if it isn't one
+  // of those three).
+  static uint8_t storageTypeForSize(uint32_t eof);
+  static const char *storageTypeName(uint8_t storageType);
+
   virtual bool probe();
   virtual bool writeBootBlocks(const uint8_t block0[512],
                                const uint8_t block1[512]);
@@ -79,7 +98,7 @@ class ProdosSpector : public Wozspector {
   // free space below), the resize is refused and nothing changes.
   bool resizeVolume(uint32_t newBlocks, bool relocate);
   // Total blocks the volume directory header currently claims.
-  uint32_t volumeBlockCount() const { return numBlocksTotal; }
+  uint32_t volumeBlockCount() { if (!tree) createTree(); return numBlocksTotal; }
   // Write a file preserving the metadata (type, aux, access, dates,
   // versions) of an existing directory entry - for image-to-image copies.
   bool writeFileWithMeta(uint8_t *fileContents, const char *fileName,
@@ -99,12 +118,8 @@ class ProdosSpector : public Wozspector {
 protected:
   virtual Vent *createTree();
 
-  uint16_t calculateBlocksFree();
-  void printFreeBlocks();
-  
   bool findFreeBlock(uint16_t *blockOut);
   bool flushFreeBlockList();
-  bool readBlock(uint16_t blockNum, uint8_t dataOut[512]);
   bool writeBlock(uint16_t blockNum, uint8_t data[512]);
   // True iff block b lies wholly inside the loaded image buffer. Corrupt
   // directory chains and index blocks can point anywhere; every walker

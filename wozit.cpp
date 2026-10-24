@@ -29,6 +29,7 @@
 #include "pascalspector.h"
 #include "applesoft.h"
 #include "intbas.h"
+#include "clireport.h"
 //#include "vent.h"
 
 #ifndef MAXPATH
@@ -77,11 +78,13 @@ void lsHandler(char *cmd)
   // With an argument, list that subdirectory (ProDOS); with none, dump the
   // whole tree as before.
   if (cmd && strlen(cmd)) {
-    inspector->displayDirectory(cmd);
+    Vent *list = inspector->getDirectoryListing(cmd);
+    printListing(list);
+    inspector->freeListing(list);
     return;
   }
 
-  inspector->displayTree();
+  printListing(inspector->getTree());
 }
 
 Vent *findFileByName(const char *name)
@@ -126,9 +129,7 @@ void cat7Handler(char *cmd)
   dumpFileContents(cmd, true);
 }
 
-// Detokenize an Applesoft or Integer BASIC file to a host text file. The
-// listers write to stdout, so redirect it for the duration rather than
-// growing a second, subtly different copy of each of them.
+// Detokenize an Applesoft or Integer BASIC file to a host text file.
 static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
                                 const char *destPath)
 {
@@ -144,22 +145,16 @@ static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
     return false;
   }
 
-  fflush(stdout);
-  int saved = dup(STDOUT_FILENO);
-  dup2(fileno(outf), STDOUT_FILENO);
-
+  BasicListing lines;
   bool ok;
   if (ft == FT_BAS) {
     ApplesoftLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
   } else {
     IntegerLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
   }
-
-  fflush(stdout);
-  dup2(saved, STDOUT_FILENO);
-  close(saved);
+  printBasicListing(outf, lines, ft == FT_INT);
   fclose(outf);
 
   if (!ok)
@@ -280,8 +275,9 @@ void cpoutHandler(char *cmd)
 void infoHandler(char *cmd)
 {
   // FIXME: handle arguments? Or throw error?
-  inspector->dumpInfo();
-  inspector->displayInfo();
+  // Verbose mode adds the track-level detail
+  printWozInfo(inspector, verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0);
+  printVolumeInfo(inspector);
 }
 
 void cpinHandler(char *cmd)
@@ -848,7 +844,7 @@ static bool loadBootBlocks(const char *donor, uint8_t b0[512], uint8_t b1[512])
     return true;
   }
 
-  ProdosSpector d(false, 0);
+  ProdosSpector d(false);
   if (!d.readFile((char *)donor, true)) {
     printf("ERROR: can't read boot donor image '%s'\n", donor);
     return false;
@@ -899,7 +895,7 @@ static void embeddedPascalBoot(uint32_t totalBlocks, uint8_t b0[512],
 static bool loadPascalBootBlocks(const char *donor, uint8_t b0[512],
                                  uint8_t b1[512])
 {
-  PascalSpector d(false, 0);
+  PascalSpector d(false);
   if (!d.readFile((char *)donor, true)) {
     printf("ERROR: can't read boot donor image '%s'\n", donor);
     return false;
@@ -1239,14 +1235,16 @@ void listHandler(char *cmd)
     return;
   }
 
+  BasicListing lines;
   bool ok;
   if (ft == FT_BAS) {
     ApplesoftLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
   } else {
     IntegerLister l;
-    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes());
+    ok = l.listFile(dat, s, inspector->applesoftHeaderBytes(), &lines);
   }
+  printBasicListing(stdout, lines, ft == FT_INT);
   if (!ok) {
     printf("Failed to list file\n");
   }
@@ -1258,8 +1256,8 @@ void inspectHandler(char *cmd)
   Vent *fp = findFileByName(cmd);
   if (fp) {
     printf("Entry dump for '%s':\n", cmd);
-    fp->Dump(true);
-    inspector->inspectFile(cmd, fp);
+    printEntry(fp, true);
+    printFileDetails(inspector, fp);
   } else {
     printf("File not found\n");
   }
@@ -1414,13 +1412,12 @@ int main(int argc, char *argv[]) {
   }
 
   if (needImage) {
-    uint8_t dflags = verbose ? (DUMP_QTMAP | DUMP_QTCRC | DUMP_TRACK | DUMP_RAWTRACK) : 0;
     if (pascalMode) {
-      inspector = new PascalSpector(verbose, dflags);
+      inspector = new PascalSpector(verbose);
     } else if (dosMode) {
-      inspector = new DosSpector(verbose, dflags);
+      inspector = new DosSpector(verbose);
     } else {
-      inspector = new ProdosSpector(verbose, dflags);
+      inspector = new ProdosSpector(verbose);
     }
 
     if (!inspector->readFile(infoname, true)) {
@@ -1436,14 +1433,14 @@ int main(int argc, char *argv[]) {
                                         : "ProDOS (-p)";
       struct { Wozspector *s; const char *name; const char *flag; } others[2];
       if (pascalMode) {
-        others[0] = { (Wozspector *)new ProdosSpector(false, 0), "ProDOS", "-p" };
-        others[1] = { (Wozspector *)new DosSpector(false, 0),    "DOS 3.3", "-d" };
+        others[0] = { (Wozspector *)new ProdosSpector(false), "ProDOS", "-p" };
+        others[1] = { (Wozspector *)new DosSpector(false),    "DOS 3.3", "-d" };
       } else if (dosMode) {
-        others[0] = { (Wozspector *)new ProdosSpector(false, 0), "ProDOS", "-p" };
-        others[1] = { (Wozspector *)new PascalSpector(false, 0), "Pascal", "-P" };
+        others[0] = { (Wozspector *)new ProdosSpector(false), "ProDOS", "-p" };
+        others[1] = { (Wozspector *)new PascalSpector(false), "Pascal", "-P" };
       } else {
-        others[0] = { (Wozspector *)new DosSpector(false, 0),    "DOS 3.3", "-d" };
-        others[1] = { (Wozspector *)new PascalSpector(false, 0), "Pascal", "-P" };
+        others[0] = { (Wozspector *)new DosSpector(false),    "DOS 3.3", "-d" };
+        others[1] = { (Wozspector *)new PascalSpector(false), "Pascal", "-P" };
       }
       for (int i = 0; i < 2; i++) {
         if (others[i].s->readFile(infoname, true) && others[i].s->probe()) {

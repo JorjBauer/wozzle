@@ -6,14 +6,11 @@
 
 class Wozspector : public Woz {
 public:
-  Wozspector(bool verbose, uint8_t dumpflags);
+  Wozspector(bool verbose);
   virtual ~Wozspector();
 
   Vent *getTree();
-  void displayTree();
-  
-  virtual void displayInfo() = 0;
-  
+
   // getFileContents will will malloc(); caller must call free()
   // return value is the length
   virtual uint32_t getFileContents(Vent *e, char **toWhere) = 0;
@@ -86,11 +83,11 @@ public:
   // walk subdirectory paths.
   virtual Vent *findEntry(const char *path);
 
-  // List the contents of a subdirectory named by `path`. Only ProDOS has
-  // subdirectories; the base implementation says so and lists nothing.
-  virtual void displayDirectory(const char *path);
-
-  virtual void inspectFile(const char *fileName, Vent *fp) = 0;
+  // The entries of the subdirectory named by `path`, as a fresh list the
+  // caller hands back to freeListing(). Only ProDOS has subdirectories; the
+  // base implementation says so and returns NULL.
+  virtual Vent *getDirectoryListing(const char *path);
+  void freeListing(Vent *list) { freeTree(list); }
 
   // Returns true if the loaded image looks like the filesystem this
   // spector knows how to handle. Used at startup to warn when the user
@@ -99,7 +96,6 @@ public:
 
 protected:
   virtual Vent *createTree() = 0;
-  virtual void displayTree(Vent *tree);
   virtual void freeTree(Vent *tree);
   
   void appendTree(Vent *a);

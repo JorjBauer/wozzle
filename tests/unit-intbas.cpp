@@ -1,52 +1,47 @@
 // Unit tests for IntegerLister. Each case hand-assembles a small tokenized
-// program, redirects stdout to a tmpfile, runs listFile(), and asserts on
-// the captured text. Exits 0 only if every case passes.
+// program, runs listFile(), and asserts on the lines it returns and the
+// messages it raised. Exits 0 only if every case passes.
 //
 // Build: see Makefile (unit-tests target).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
+#include <string>
 
 #include "intbas.h"
+#include "wozmsg.h"
 
 static int passed = 0, failed = 0;
 
-// Captures everything written to stdout within its lifetime. Restores
-// the real stdout on destruction. Single-threaded, not reentrant.
-struct StdoutCapture {
-  int savedFd;
-  FILE *tmp;
-
-  StdoutCapture() {
-    fflush(stdout);
-    savedFd = dup(STDOUT_FILENO);
-    tmp = tmpfile();
-    if (!tmp || savedFd < 0) { perror("capture setup"); exit(2); }
-    dup2(fileno(tmp), STDOUT_FILENO);
-  }
-
-  ~StdoutCapture() {
-    fflush(stdout);
-    dup2(savedFd, STDOUT_FILENO);
-    close(savedFd);
-    if (tmp) fclose(tmp);
-  }
-
-  // Read captured contents into a heap buffer. Caller frees.
-  char *take() {
-    fflush(stdout);
-    fseek(tmp, 0, SEEK_END);
-    long n = ftell(tmp);
-    fseek(tmp, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)n + 1);
-    if (!buf) return NULL;
-    size_t r = fread(buf, 1, (size_t)n, tmp);
-    buf[r] = '\0';
-    return buf;
-  }
+// Everything one listFile() call produced: its return value, the listing,
+// and any messages it raised along the way.
+struct Listed {
+  bool rc;
+  BasicListing lines;
+  std::string text;      // the lines joined, one per row
+  std::string messages;
 };
+
+static void collectMsg(wozMsgLevel level, const char *msg, void *ctx)
+{
+  std::string *s = (std::string *)ctx;
+  s->append(msg);
+  s->append("\n");
+}
+
+static Listed list(uint8_t *buf, uint32_t size, uint8_t skipBytes)
+{
+  Listed r;
+  wozSetMsgSink(collectMsg, &r.messages);
+  IntegerLister l;
+  r.rc = l.listFile(buf, size, skipBytes, &r.lines);
+  wozSetMsgSink(NULL, NULL);
+  for (size_t i = 0; i < r.lines.size(); i++) {
+    r.text += r.lines[i].text;
+    r.text += "\n";
+  }
+  return r;
+}
 
 static void check(const char *name, bool cond, const char *detail = NULL) {
   if (cond) {
@@ -59,8 +54,8 @@ static void check(const char *name, bool cond, const char *detail = NULL) {
   }
 }
 
-static bool contains(const char *haystack, const char *needle) {
-  return haystack && strstr(haystack, needle) != NULL;
+static bool contains(const std::string &haystack, const char *needle) {
+  return haystack.find(needle) != std::string::npos;
 }
 
 // ----- cases ---------------------------------------------------------
@@ -68,13 +63,10 @@ static bool contains(const char *haystack, const char *needle) {
 // Zero-byte input: loop never executes; returns true; no output.
 static void case_empty() {
   uint8_t buf[1] = {0};
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, 0, 0);
-  char *out = cap.take();
-  check("empty input returns true", rc == true);
-  check("empty input prints nothing", out && out[0] == '\0');
-  free(out);
+  Listed r = list(buf, 0, 0);
+  check("empty input returns true", r.rc == true);
+  check("empty input lists nothing", r.lines.empty());
+  check("empty input raises no messages", r.messages.empty());
 }
 
 // Single PRINT "HI" line. Token layout:
@@ -84,15 +76,11 @@ static void case_print_string() {
   uint8_t buf[] = {
     0x09, 0x0A, 0x00, 0x61, 0x28, 0xC8, 0xC9, 0x29, 0x01
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("PRINT \"HI\" returns true", rc == true);
-  check("output contains line number 10", contains(out, "10"));
-  check("output contains PRINT keyword", contains(out, "PRINT"));
-  check("output contains string body HI", contains(out, "HI"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("PRINT \"HI\" returns true", r.rc == true);
+  check("line number 10", r.lines.size() == 1 && r.lines[0].lineNumber == 10);
+  check("output contains PRINT keyword", contains(r.text, "PRINT"));
+  check("output contains string body HI", contains(r.text, "\"HI\""));
 }
 
 // 30 GOTO 100
@@ -104,15 +92,11 @@ static void case_goto_constant() {
   uint8_t buf[] = {
     0x08, 0x1E, 0x00, 0x5F, 0xB0, 0x64, 0x00, 0x01
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("GOTO 100 returns true", rc == true);
-  check("line number 30 present", contains(out, "30"));
-  check("GOTO keyword present", contains(out, "GOTO"));
-  check("integer constant 100 decoded", contains(out, "100"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("GOTO 100 returns true", r.rc == true);
+  check("line number 30", r.lines.size() == 1 && r.lines[0].lineNumber == 30);
+  check("GOTO keyword present", contains(r.text, "GOTO"));
+  check("integer constant 100 decoded", contains(r.text, "100"));
 }
 
 // 40 REM HELLO
@@ -121,14 +105,10 @@ static void case_rem() {
   uint8_t buf[] = {
     0x0A, 0x28, 0x00, 0x5D, 0xC8, 0xC5, 0xCC, 0xCC, 0xCF, 0x01
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("REM line returns true", rc == true);
-  check("REM keyword present", contains(out, "REM"));
-  check("REM text body present", contains(out, "HELLO"));
-  free(out);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("REM line returns true", r.rc == true);
+  check("REM keyword present", contains(r.text, "REM"));
+  check("REM text body present", contains(r.text, "HELLO"));
 }
 
 // Error path: open-quote with no close-quote or EOL before end-of-buffer.
@@ -136,14 +116,11 @@ static void case_truncated_string() {
   uint8_t buf[] = {
     0x09, 0x0A, 0x00, 0x61, 0x28, 0xC8, 0xC9  // truncated mid-string
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("truncated string returns false", rc == false);
+  Listed r = list(buf, sizeof(buf), 0);
+  check("truncated string returns false", r.rc == false);
   check("truncated string error named",
-        contains(out, "string constant"));
-  free(out);
+        contains(r.messages, "string constant"));
+  check("partial line kept", contains(r.text, "PRINT \"HI"));
 }
 
 // Binary payload inside a REM: a REM whose body contains raw control bytes
@@ -162,18 +139,15 @@ static void case_rem_with_embedded_binary() {
     0x07, 0x0A, 0x00, 0x5D, 0x01, 0x41, 0x01,
     0x05, 0x14, 0x00, 0x51, 0x01
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 0);
-  char *out = cap.take();
-  check("binary REM case returns true", rc == true);
-  check("binary body labelled", contains(out, "binary"));
-  check("binary body rendered as hex octets", contains(out, "01 41"));
+  Listed r = list(buf, sizeof(buf), 0);
+  check("binary REM case returns true", r.rc == true);
+  check("binary body labelled", contains(r.text, "binary"));
+  check("binary body rendered as hex octets", contains(r.text, "01 41"));
   check("no resync needed for length-spanned REM",
-        !contains(out, "resyncing"));
-  check("line 20 still reached", contains(out, "20"));
-  check("END keyword after binary REM", contains(out, "END"));
-  free(out);
+        !contains(r.messages, "resyncing"));
+  check("line 20 still reached", r.lines.size() == 2 && r.lines[1].lineNumber == 20);
+  check("END keyword after binary REM",
+        r.lines.size() == 2 && contains(r.lines[1].text, "END"));
 }
 
 // skipBytes: DOS-style 2-byte length prefix ahead of the tokenized
@@ -184,17 +158,13 @@ static void case_skipbytes() {
     0xAA, 0xBB,
     0x09, 0x0A, 0x00, 0x61, 0x28, 0xC8, 0xC9, 0x29, 0x01
   };
-  StdoutCapture cap;
-  IntegerLister l;
-  bool rc = l.listFile(buf, sizeof(buf), 2);
-  char *out = cap.take();
-  check("skipBytes case returns true", rc == true);
-  check("PRINT parsed after skipBytes", contains(out, "PRINT"));
-  check("string body after skipBytes", contains(out, "HI"));
+  Listed r = list(buf, sizeof(buf), 2);
+  check("skipBytes case returns true", r.rc == true);
+  check("PRINT parsed after skipBytes", contains(r.text, "PRINT"));
+  check("string body after skipBytes", contains(r.text, "HI"));
   // Prefix bytes must not leak into output.
   check("skipped prefix not echoed (no 0xAA)",
-        out && strchr(out, (char)0xAA) == NULL);
-  free(out);
+        r.text.find((char)0xAA) == std::string::npos);
 }
 
 int main(int, char **) {

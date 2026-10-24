@@ -189,14 +189,14 @@ int main(int argc, char *argv[])
   // ---- open both images with same-filesystem enforcement ----
   Wozspector *src, *dst;
   if (mode == 'd') {
-    src = new DosSpector(verbose, 0);
-    dst = new DosSpector(verbose, 0);
+    src = new DosSpector(verbose);
+    dst = new DosSpector(verbose);
   } else if (mode == 'P') {
-    src = new PascalSpector(verbose, 0);
-    dst = new PascalSpector(verbose, 0);
+    src = new PascalSpector(verbose);
+    dst = new PascalSpector(verbose);
   } else {
-    src = new ProdosSpector(verbose, 0);
-    dst = new ProdosSpector(verbose, 0);
+    src = new ProdosSpector(verbose);
+    dst = new ProdosSpector(verbose);
   }
   const char *fsName = (mode == 'd') ? "DOS 3.3"
                      : (mode == 'P') ? "Pascal" : "ProDOS";

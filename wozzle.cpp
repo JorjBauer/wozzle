@@ -67,7 +67,11 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
-  Woz w(verbose, dumpflags & 0xFF);
+  // wozzle has no info report for -D to add to (wozit and wozfuse do);
+  // the flag is still accepted so existing command lines keep working
+  (void)dumpflags;
+
+  Woz w(verbose);
 
   if (!w.readFile(inname, preloadTracks)) {
     printf("Failed to read file; aborting\n");

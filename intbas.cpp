@@ -1,4 +1,5 @@
 #include "intbas.h"
+#include "wozmsg.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -142,13 +143,15 @@ struct _INTtoken integerTokens[128] = {
   {0x7E, "PR#"},
   {0x7F, "IN#"} };
 
-bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
+bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
+                             BasicListing *out)
 {
   uint32_t pos = skipBytes;
+  char num[32];
 
   while (pos < ssize) {
     if (ssize - pos < 3) {
-      printf("ERROR: file ended in the middle of a line header\n");
+      wozMsg(WOZ_MSG_ERROR, "ERROR: file ended in the middle of a line header");
       return false;
     }
 
@@ -162,22 +165,24 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
     }
     uint16_t lineNumber = buf[pos] | (buf[pos+1] << 8);
     pos += 2;
-    printf("%5u ", lineNumber);
+    BasicLine line;
+    line.lineNumber = lineNumber;
 
     while (pos < ssize && buf[pos] != 0x01) {
       uint8_t b = buf[pos++];
 
       if (b == 0x28) {
         // Open-quote: copy bytes (stripping high bit) until close-quote.
-        printf("\"");
+        line.text += '"';
         while (pos < ssize && buf[pos] != 0x29) {
-          printf("%c", buf[pos++] & 0x7F);
+          line.text += (char)(buf[pos++] & 0x7F);
         }
         if (pos >= ssize) {
-          printf("\nERROR: file ended inside a string constant\n");
+          out->push_back(line);
+          wozMsg(WOZ_MSG_ERROR, "ERROR: file ended inside a string constant");
           return false;
         }
-        printf("\"");
+        line.text += '"';
         pos++; // consume close-quote
       } else if (b == 0x5D) {
         // REM: print the keyword, then the comment body. Normally the body
@@ -191,7 +196,9 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
         // Instead, trust the line's stored length to find the true EOL, and
         // if the body isn't clean printable text, dump it as hex octets so
         // the binary is visible rather than garbled into control characters.
-        printf(" %s ", integerTokens[b].detokened);
+        line.text += ' ';
+        line.text += integerTokens[b].detokened;
+        line.text += ' ';
 
         // The EOL (0x01) is the final byte of the line: lineStart+lineLen-1.
         // Fall back to scanning for 0x01 if the stored length is unusable.
@@ -212,15 +219,20 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
         }
 
         if (binary) {
-          printf("{binary: %u bytes:", remEnd - pos);
-          for (uint32_t i = pos; i < remEnd; i++) printf(" %.2X", buf[i]);
-          printf("}");
+          snprintf(num, sizeof(num), "{binary: %u bytes:", remEnd - pos);
+          line.text += num;
+          for (uint32_t i = pos; i < remEnd; i++) {
+            snprintf(num, sizeof(num), " %.2X", buf[i]);
+            line.text += num;
+          }
+          line.text += '}';
           pos = remEnd;
         } else {
-          while (pos < remEnd) printf("%c", buf[pos++] & 0x7F);
+          while (pos < remEnd) line.text += (char)(buf[pos++] & 0x7F);
         }
         if (pos >= ssize) {
-          printf("\nERROR: file ended inside a REM\n");
+          out->push_back(line);
+          wozMsg(WOZ_MSG_ERROR, "ERROR: file ended inside a REM");
           return false;
         }
       } else if (b & 0x80) {
@@ -228,38 +240,42 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
           // Numeric-constant marker: the token itself is discarded, the
           // next two bytes are a little-endian unsigned value.
           if (ssize - pos < 2) {
-            printf("\nERROR: file ended inside an integer constant\n");
+            out->push_back(line);
+            wozMsg(WOZ_MSG_ERROR, "ERROR: file ended inside an integer constant");
             return false;
           }
           uint16_t v = buf[pos] | (buf[pos+1] << 8);
           pos += 2;
-          printf("%u", v);
+          snprintf(num, sizeof(num), "%u", v);
+          line.text += num;
         } else if (b >= ('A' | 0x80) && b <= ('Z' | 0x80)) {
           // Variable-name start: the token byte is itself the first
           // letter. Keep emitting while following bytes are high-bit
           // letters or digits.
-          printf("%c", b & 0x7F);
+          line.text += (char)(b & 0x7F);
           while (pos < ssize) {
             uint8_t c = buf[pos];
             if ((c >= ('A' | 0x80) && c <= ('Z' | 0x80)) ||
                 (c >= ('0' | 0x80) && c <= ('9' | 0x80))) {
-              printf("%c", c & 0x7F);
+              line.text += (char)(c & 0x7F);
               pos++;
             } else {
               break;
             }
           }
         } else {
-          printf("\nWARNING: unexpected byte 0x%.2X at offset 0x%X\n",
+          wozMsg(WOZ_MSG_WARNING, "WARNING: unexpected byte 0x%.2X at offset 0x%X",
                  b, pos - 1);
         }
       } else {
         // Plain token: print with surrounding spaces (applesoft.cpp style).
         struct _INTtoken t = integerTokens[b];
-        printf(" %s ", t.detokened);
+        line.text += ' ';
+        line.text += t.detokened;
+        line.text += ' ';
       }
     }
-    printf("\n");
+    out->push_back(line);
 
     if (pos < ssize && buf[pos] == 0x01) pos++; // consume EOL
 
@@ -269,11 +285,12 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes)
     // length to snap back to the true next-line boundary.
     uint32_t actualLen = pos - lineStart;
     if (actualLen != lineLen) {
-      printf("WARNING: line %u stored length %u != actual %u - resyncing\n",
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: line %u stored length %u != actual %u - resyncing",
              lineNumber, lineLen, actualLen);
       uint32_t target = lineStart + lineLen;
       if (target > ssize) {
-        printf("ERROR: stored line length runs past end of buffer\n");
+        wozMsg(WOZ_MSG_ERROR, "ERROR: stored line length runs past end of buffer");
         return false;
       }
       pos = target;

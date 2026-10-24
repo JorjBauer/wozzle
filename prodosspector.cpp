@@ -7,6 +7,7 @@
 // Prodos disk map parser
 
 #include "vent.h"
+#include "wozmsg.h"
 
 #include <stack>
 #include <set>
@@ -74,7 +75,7 @@ void dumpFent(struct _prodosFent *e)
 }
 #endif
 
-ProdosSpector::ProdosSpector(bool verbose, uint8_t dumpflags) : Wozspector(verbose, dumpflags)
+ProdosSpector::ProdosSpector(bool verbose) : Wozspector(verbose)
 {
   volBitmapBlock = 6; // safe default; it's usually in block 6
   numBlocksTotal = 280; // safe default; overwritten from the vol dir header
@@ -122,7 +123,7 @@ bool ProdosSpector::loadBlockBuffer()
 
   for (int i = 0; i < 35; i++) {
     if (!decodeWozTrackToDsk(i, T_PO, &trackData[i * 256 * 16])) {
-      fprintf(stderr, "Failed to read track %d\n", i);
+      wozMsg(WOZ_MSG_ERROR, "Failed to read track %d", i);
       return false;
     }
   }
@@ -132,7 +133,7 @@ bool ProdosSpector::loadBlockBuffer()
 // Read a volume bitmap and return the number of blocks free in it.
 // Assumes it's a floppy image bitmap, where the number of blocks
 // on the device won't exceed one block of bits...
-uint16_t ProdosSpector::calculateBlocksFree()
+uint32_t ProdosSpector::calculateBlocksFree()
 {
   if (!tree)
     createTree();
@@ -155,53 +156,41 @@ uint16_t ProdosSpector::calculateBlocksFree()
   return count;
 }
 
-void ProdosSpector::printFreeBlocks()
+bool ProdosSpector::isBlockFree(uint32_t block)
 {
   if (!tree)
     createTree();
 
-  // For a floppy-sized volume (≤280 blocks), show the familiar
-  // track/sector grid. For anything larger we'd need a screenful per
-  // hundred blocks, so just emit a linear block-level map in rows.
-  uint8_t *getBit = freeBlockBitmap;
-  auto isFree = [&](uint32_t i) -> bool {
-    return (getBit[i / 8] & (0x80 >> (i % 8))) != 0;
-  };
+  if (!freeBlockBitmap || block >= numBlocksTotal)
+    return false;
+  return (freeBlockBitmap[block / 8] & (0x80 >> (block % 8))) != 0;
+}
 
-  if (numBlocksTotal <= 280) {
-    bool trackSectorFree[35][16];
-    memset(trackSectorFree, 0, sizeof(trackSectorFree));
-    for (int i = 0; i < (int)numBlocksTotal; i++) {
-      bool f = isFree(i);
-      trackSectorFree[trackFromBlock(i)][s1map[blockInTrack(i)]] = f;
-      trackSectorFree[trackFromBlock(i)][s2map[blockInTrack(i)]] = f;
-    }
+void ProdosSpector::blockToTrackSectors(uint32_t block, uint8_t *track,
+                                        uint8_t *sectorA, uint8_t *sectorB)
+{
+  *track = trackFromBlock(block);
+  *sectorA = s1map[blockInTrack(block)];
+  *sectorB = s2map[blockInTrack(block)];
+}
 
-    printf("\n");
-    char col[16] = { 'S','E','C','T','O','R',' ',' ',' ',' ',' ',' ',' ',' ',' ',' '};
-    printf("   TRACK           1               2  \n");
-    printf("   0123456789ABCDEF0123456789ABCDEF012\n\n");
-    for (int i = 0; i < 16; i++) {
-      printf("%c%X ", col[i], i);
-      for (int t = 0; t < 35; t++) {
-        printf("%c", trackSectorFree[t][i] ? '.' : '*');
-      }
-      printf("\n");
-    }
-    printf("\n");
-    return;
+uint8_t ProdosSpector::storageTypeForSize(uint32_t eof)
+{
+  if (eof <= 512)
+    return ft_seedling;
+  if (eof <= 128*1024)
+    return ft_sapling;
+  return ft_tree;
+}
+
+const char *ProdosSpector::storageTypeName(uint8_t storageType)
+{
+  switch (storageType) {
+  case ft_seedling: return "seedling";
+  case ft_sapling:  return "sapling";
+  case ft_tree:     return "tree";
+  default:          return NULL;
   }
-
-  // Large (HDV) case: 64 blocks per row, one char per block.
-  printf("\nBlock free map (64 blocks/row):\n");
-  for (uint32_t i = 0; i < numBlocksTotal; i += 64) {
-    printf("%6u  ", i);
-    for (uint32_t j = 0; j < 64 && (i + j) < numBlocksTotal; j++) {
-      printf("%c", isFree(i + j) ? '.' : '*');
-    }
-    printf("\n");
-  }
-  printf("\n");
 }
 
 Vent *ProdosSpector::descendTree(uint16_t fromBlock)
@@ -218,17 +207,17 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 
   while (currentBlock) {
     if (!validBlock(currentBlock)) {
-      fprintf(stderr,
-              "WARNING: directory chain starting at block %u points at "
-              "block %u, outside the volume; the directory is corrupt and "
-              "its listing is truncated here.\n", fromBlock, currentBlock);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: directory chain starting at block %u points at "
+             "block %u, outside the volume; the directory is corrupt and "
+             "its listing is truncated here.", fromBlock, currentBlock);
       break;
     }
     if (visited.count(currentBlock)) {
-      fprintf(stderr,
-              "WARNING: directory chain starting at block %u loops back to "
-              "block %u; the directory is corrupt and its listing is "
-              "truncated here.\n", fromBlock, currentBlock);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: directory chain starting at block %u loops back to "
+             "block %u; the directory is corrupt and its listing is "
+             "truncated here.", fromBlock, currentBlock);
       break;
     }
     visited.insert(currentBlock);
@@ -261,11 +250,11 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
       }
     }
     if (!plausible) {
-      fprintf(stderr,
-              "WARNING: directory chain starting at block %u reaches block "
-              "%u, which no longer holds directory entries (overwritten?); "
-              "the directory is corrupt and its listing is truncated "
-              "here.\n", fromBlock, currentBlock);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: directory chain starting at block %u reaches block "
+             "%u, which no longer holds directory entries (overwritten?); "
+             "the directory is corrupt and its listing is truncated "
+             "here.", fromBlock, currentBlock);
       break;
     }
 
@@ -282,11 +271,11 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
 	// a warning instead of aborting the whole process deep in the Vent
 	// constructor.
 	if (md->entryLength != 0x27 || md->entriesPerBlock != 0x0D) {
-	  fprintf(stderr,
-		  "WARNING: block %u was walked as a directory but its header "
-		  "is not one (entryLength=0x%02X, entriesPerBlock=0x%02X); "
-		  "skipping it.\n",
-		  currentBlock, md->entryLength, md->entriesPerBlock);
+	  wozMsg(WOZ_MSG_WARNING,
+		 "WARNING: block %u was walked as a directory but its header "
+		 "is not one (entryLength=0x%02X, entriesPerBlock=0x%02X); "
+		 "skipping it.",
+		 currentBlock, md->entryLength, md->entriesPerBlock);
 	  return ret; // ret is still NULL here
 	}
 	Vent *sde = new Vent(md);
@@ -315,7 +304,7 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
           freeBlockBitmapBytes = bitmapBlocks * 512;
           freeBlockBitmap = (uint8_t *)calloc(freeBlockBitmapBytes, 1);
           if (!freeBlockBitmap) {
-            fprintf(stderr, "ERROR: out of memory for volume bitmap\n");
+            wozMsg(WOZ_MSG_ERROR, "ERROR: out of memory for volume bitmap");
             return NULL;
           }
           // The bitmap pointer comes from disk, so it can be corrupt.
@@ -330,9 +319,9 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
                    &trackData[512 * volBitmapBlock],
                    freeBlockBitmapBytes);
           } else {
-            fprintf(stderr,
-                    "WARNING: volume bitmap (block %u) lies outside the "
-                    "volume; treating every block as used.\n",
+            wozMsg(WOZ_MSG_WARNING,
+                   "WARNING: volume bitmap (block %u) lies outside the "
+                   "volume; treating every block as used.",
                     volBitmapBlock);
           }
         }
@@ -365,9 +354,10 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
   if (ret) {
     uint16_t declared = ret->getActiveFileCount();
     if (declared != activeEntriesFound) {
-      printf("WARNING: directory '%s' header says %u active entries "
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: directory '%s' header says %u active entries "
              "but the full scan found %u. ProDOS 1.1.1 will only see "
-             "the first %u via CAT.\n",
+             "the first %u via CAT.",
              ret->getName(), declared,
              activeEntriesFound, declared);
     }
@@ -393,7 +383,7 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
       freeBlockBitmap[ptr] &= ~bits;
       // return the value
       *blockOut = (uint16_t)i;
-      if (verbose) printf("> use block %u (0x%X)\n", i, i);
+      if (verbose) wozMsg(WOZ_MSG_DEBUG, "> use block %u (0x%X)", i, i);
       // return that we succeeded in finding a free block
       return true;
     }
@@ -468,7 +458,8 @@ bool ProdosSpector::renameVolume(const char *newName)
   // (volume directory header); low nybble is the name length.
   struct _subdirent *hdr = (struct _subdirent *)(&trackData[512 * 2 + 4]);
   if ((hdr->typelen >> 4) != ft_voldirhdr) {
-    printf("ERROR: block 2 doesn't hold a volume directory header\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: block 2 doesn't hold a volume directory header");
     return false;
   }
   hdr->typelen = (ft_voldirhdr << 4) | (uint8_t)nl;
@@ -730,8 +721,9 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
     return true;
 
   if (toMove.size() > freeBelow) {
-    printf("ERROR: %zu block%s sit%s at or past block %u, but only %u free "
-           "block%s below it - %zu more needed. Nothing changed.\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: %zu block%s sit%s at or past block %u, but only %u free "
+           "block%s below it - %zu more needed. Nothing changed.",
            toMove.size(), toMove.size() == 1 ? "" : "s",
            toMove.size() == 1 ? "s" : "", limit, freeBelow,
            freeBelow == 1 ? "" : "s", toMove.size() - freeBelow);
@@ -741,7 +733,8 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
   RefMap refs;
   collectBlockRefs(&refs);
 
-  printf("Moving %zu block%s out of the last %u block%s of the volume...\n",
+  wozMsg(WOZ_MSG_INFO,
+         "Moving %zu block%s out of the last %u block%s of the volume...",
          toMove.size(), toMove.size() == 1 ? "" : "s",
          (unsigned)(numBlocksTotal - limit),
          numBlocksTotal - limit == 1 ? "" : "s");
@@ -766,9 +759,10 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
 
     uint16_t dst;
     if (!findFreeBlock(&dst) || dst >= limit) {
-      printf("ERROR: ran out of free blocks below %u while moving block "
+      wozMsg(WOZ_MSG_ERROR,
+             "ERROR: ran out of free blocks below %u while moving block "
              "%u; the volume in memory is now inconsistent - do NOT save "
-             "it\n", limit, src);
+             "it", limit, src);
       return false;
     }
 
@@ -795,8 +789,9 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
   }
 
   if (orphans) {
-    printf("WARNING: %u block%s past block %u %s marked allocated but "
-           "belonged to no file or directory; released\n",
+    wozMsg(WOZ_MSG_WARNING,
+           "WARNING: %u block%s past block %u %s marked allocated but "
+           "belonged to no file or directory; released",
            orphans, orphans == 1 ? "" : "s", limit,
            orphans == 1 ? "was" : "were");
   }
@@ -805,8 +800,9 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
   // is in `dirty` under its new number, which is the one that matters.)
   for (set<uint16_t>::iterator d = dirty.begin(); d != dirty.end(); ++d) {
     if (!writeBlock(*d, &trackData[512 * (*d)])) {
-      printf("ERROR: couldn't write block %u; the volume in memory is now "
-             "inconsistent - do NOT save it\n", *d);
+      wozMsg(WOZ_MSG_ERROR,
+             "ERROR: couldn't write block %u; the volume in memory is now "
+             "inconsistent - do NOT save it", *d);
       return false;
     }
   }
@@ -815,7 +811,8 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
   // point where the volume is coherent again. If the caller gives up after
   // this, what's in hand is still a valid volume - just not a shrunk one.
   if (!flushFreeBlockList()) {
-    printf("ERROR: couldn't write the volume bitmap after moving blocks\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: couldn't write the volume bitmap after moving blocks");
     return false;
   }
 
@@ -839,26 +836,30 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
     return false;
 
   if (!isHdv()) {
-    printf("ERROR: only raw block images (.img/.hdv/.po) can be resized; a "
-           "floppy image is a fixed 280 blocks\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: only raw block images (.img/.hdv/.po) can be resized; a "
+           "floppy image is a fixed 280 blocks");
     return false;
   }
 
   struct _subdirent *hdr = (struct _subdirent *)(&trackData[512 * 2 + 4]);
   if ((hdr->typelen >> 4) != ft_voldirhdr) {
-    printf("ERROR: block 2 doesn't hold a volume directory header\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: block 2 doesn't hold a volume directory header");
     return false;
   }
 
   uint32_t oldBlocks = numBlocksTotal;
   if (newBlocks == oldBlocks) {
-    printf("Volume is already %u blocks; nothing to do\n", newBlocks);
+    wozMsg(WOZ_MSG_INFO,
+           "Volume is already %u blocks; nothing to do", newBlocks);
     return true;
   }
   if (newBlocks > oldBlocks) {
-    printf("ERROR: this volume is %u blocks; resize only shrinks a volume "
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: this volume is %u blocks; resize only shrinks a volume "
            "(growing one means formatting a bigger image and copying into "
-           "it)\n", oldBlocks);
+           "it)", oldBlocks);
     return false;
   }
 
@@ -867,8 +868,9 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
   uint32_t newBitmapBlocks = (newBlocks + 4095) / 4096;
   uint32_t lastReserved = (uint32_t)volBitmapBlock + newBitmapBlocks;
   if (newBlocks < 6 || newBlocks <= lastReserved) {
-    printf("ERROR: %u blocks is too small; the boot blocks, volume "
-           "directory and bitmap need at least %u\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: %u blocks is too small; the boot blocks, volume "
+           "directory and bitmap need at least %u",
            newBlocks, lastReserved + 1);
     return false;
   }
@@ -881,7 +883,8 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
     if (!relocateBlocksBelow(newBlocks, &moved))
       return false;
     if (moved)
-      printf("Moved %u block%s below block %u\n", moved,
+      wozMsg(WOZ_MSG_INFO,
+             "Moved %u block%s below block %u", moved,
              moved == 1 ? "" : "s", newBlocks);
   }
 
@@ -900,8 +903,9 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
     }
   }
   if (inUse) {
-    printf("ERROR: %u block%s at or past block %u %s still allocated (first "
-           "is block %u); nothing changed\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: %u block%s at or past block %u %s still allocated (first "
+           "is block %u); nothing changed",
            inUse, inUse == 1 ? "" : "s", newBlocks,
            inUse == 1 ? "is" : "are", firstInUse);
     return false;
@@ -909,8 +913,9 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
 
   char what[128];
   if (findBlockUseAtOrAbove(newBlocks, what, sizeof(what))) {
-    printf("ERROR: %s, at or past the requested new end of %u blocks; "
-           "nothing changed\n", what, newBlocks);
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: %s, at or past the requested new end of %u blocks; "
+           "nothing changed", what, newBlocks);
     return false;
   }
 
@@ -935,11 +940,11 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
   hdr->volBlocks.total[0] = (uint8_t)(newBlocks & 0xFF);
   hdr->volBlocks.total[1] = (uint8_t)(newBlocks >> 8);
   if (!writeBlock(2, &trackData[512 * 2])) {
-    printf("ERROR: couldn't write the volume directory header\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: couldn't write the volume directory header");
     return false;
   }
   if (!flushFreeBlockList()) {
-    printf("ERROR: couldn't write the volume bitmap\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: couldn't write the volume bitmap");
     return false;
   }
 
@@ -947,7 +952,7 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
   // later write can reach past the volume's new end.
   uint32_t newBytes = newBlocks * 512;
   if (!truncateHdv(newBytes)) {
-    printf("ERROR: couldn't shrink the image buffer\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: couldn't shrink the image buffer");
     return false;
   }
   if (newBytes < trackDataBytes)
@@ -1016,7 +1021,7 @@ Vent *ProdosSpector::createTree()
   // Pull the whole image into our block-indexed buffer (floppy: nibble-
   // decode each track; HDV: copy raw bytes).
   if (!loadBlockBuffer()) {
-    fprintf(stderr, "Failed to load block buffer\n");
+    wozMsg(WOZ_MSG_ERROR, "Failed to load block buffer");
     return NULL;
   }
 
@@ -1036,9 +1041,9 @@ Vent *ProdosSpector::createTree()
       if (p->isDirectory()) {
         uint16_t kp = p->keyPointerVal();
         if (!validBlock(kp)) {
-          fprintf(stderr,
-                  "WARNING: directory '%s' points at key block %u, outside "
-                  "the volume; skipping its contents.\n", p->getName(), kp);
+          wozMsg(WOZ_MSG_WARNING,
+                 "WARNING: directory '%s' points at key block %u, outside "
+                 "the volume; skipping its contents.", p->getName(), kp);
         } else if (!queued.count(kp)) {
           s.push(kp);
           queued.insert(kp);
@@ -1113,10 +1118,10 @@ bool ProdosSpector::getForkInfo(Vent *e, bool resourceFork,
 
   uint8_t keyBlockData[512];
   if (!readBlock(e->keyPointerVal(), keyBlockData)) {
-    fprintf(stderr,
-            "WARNING: '%s' is an extended file whose key block %u can't be "
-            "read; treating the fork as empty.\n",
-            e->getName(), e->keyPointerVal());
+    wozMsg(WOZ_MSG_WARNING,
+           "WARNING: '%s' is an extended file whose key block %u can't be "
+           "read; treating the fork as empty.",
+           e->getName(), e->keyPointerVal());
     return false;
   }
   readForkEntry(keyBlockData, resourceFork, out);
@@ -1286,17 +1291,17 @@ uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
   default:
     // deleted, a Pascal area (type 4), or corruption. Extended files never
     // arrive here: getFileContents() resolves them to a fork first.
-    fprintf(stderr, "WARNING: '%s' has unreadable storage type %d; "
-            "skipping it.\n", name, indexType);
+    wozMsg(WOZ_MSG_WARNING, "WARNING: '%s' has unreadable storage type %d; "
+           "skipping it.", name, indexType);
     *toWhere = NULL;
     return 0;
   }
 
   if (badPointers) {
-    fprintf(stderr,
-            "WARNING: '%s' has %u block pointer%s outside the volume; "
-            "those parts read as zeros.\n",
-            name, badPointers, badPointers == 1 ? "" : "s");
+    wozMsg(WOZ_MSG_WARNING,
+           "WARNING: '%s' has %u block pointer%s outside the volume; "
+           "those parts read as zeros.",
+           name, badPointers, badPointers == 1 ? "" : "s");
   }
   return l;
 }
@@ -1332,7 +1337,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
 {
   // The EOF field is 24 bits, so 16MB-1 is the hard ProDOS file limit.
   if (size > 0xFFFFFF) {
-    printf("ERROR: ProDOS files may not exceed 16MB-1 bytes\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: ProDOS files may not exceed 16MB-1 bytes");
     return false;
   }
 
@@ -1354,7 +1359,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     // Allocate one block for the file
     uint16_t firstBlock;
     if (!findFreeBlock(&firstBlock)) {
-      printf("Failed to find a free block for the data\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the data");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1362,7 +1367,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     memset(&paddedData, 0, sizeof(paddedData));
     memcpy(paddedData, contents, size);
     if (!writeBlock(firstBlock, paddedData)) {
-      printf("Failed to write data block\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to write data block");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1376,7 +1381,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     blocksUsed++;
     uint16_t indexBlock;
     if (!findFreeBlock(&indexBlock)) {
-      printf("Failed to find a free block for the index\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the index");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1392,7 +1397,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     for (int idx = 0; idx < size; idx+= 512, bytesRemaining -= 512) {
       uint16_t nextBlock;
       if (!findFreeBlock(&nextBlock)) {
-        printf("Failed to find next free block for the data\n");
+        wozMsg(WOZ_MSG_ERROR, "Failed to find next free block for the data");
         reloadFreeBlockBitmap();
         return false;
       }
@@ -1405,14 +1410,14 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
       memcpy(paddedData, &contents[idx],
              bytesRemaining >= 512 ? 512 : bytesRemaining);
       if (!writeBlock(nextBlock, paddedData)) {
-        printf("Failed to write next data block\n");
+        wozMsg(WOZ_MSG_ERROR, "Failed to write next data block");
         reloadFreeBlockBitmap();
         return false;
       }
     }
 
     if (!writeBlock(indexBlock, indexBlockData)) {
-      printf("Failed to write index block\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to write index block");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1424,7 +1429,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
 
     uint16_t masterBlock;
     if (!findFreeBlock(&masterBlock)) {
-      printf("Failed to find a free block for the master index\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the master index");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1440,7 +1445,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     while (bytesRemaining) {
       uint16_t indexBlock;
       if (!findFreeBlock(&indexBlock)) {
-        printf("Failed to find a free block for an index\n");
+        wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for an index");
         reloadFreeBlockBitmap();
         return false;
       }
@@ -1453,7 +1458,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
       for (int i = 0; i < 256 && bytesRemaining; i++) {
         uint16_t nextBlock;
         if (!findFreeBlock(&nextBlock)) {
-          printf("Failed to find next free block for the data\n");
+          wozMsg(WOZ_MSG_ERROR, "Failed to find next free block for the data");
           reloadFreeBlockBitmap();
           return false;
         }
@@ -1465,7 +1470,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
         memcpy(paddedData, &contents[idx],
                bytesRemaining >= 512 ? 512 : bytesRemaining);
         if (!writeBlock(nextBlock, paddedData)) {
-          printf("Failed to write next data block\n");
+          wozMsg(WOZ_MSG_ERROR, "Failed to write next data block");
           reloadFreeBlockBitmap();
           return false;
         }
@@ -1473,14 +1478,14 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
         bytesRemaining -= (bytesRemaining >= 512) ? 512 : bytesRemaining;
       }
       if (!writeBlock(indexBlock, indexBlockData)) {
-        printf("Failed to write index block\n");
+        wozMsg(WOZ_MSG_ERROR, "Failed to write index block");
         reloadFreeBlockBitmap();
         return false;
       }
     }
 
     if (!writeBlock(masterBlock, masterData)) {
-      printf("Failed to write master index block\n");
+      wozMsg(WOZ_MSG_ERROR, "Failed to write master index block");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1516,7 +1521,8 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   memset(&fent, 0, sizeof(fent));
   size_t leaflen = strlen(leaf);
   if (leaflen < 1 || leaflen > 15) {
-    printf("ERROR: file names may not exceed 15 chars in ProDOS\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: file names may not exceed 15 chars in ProDOS");
     return false;
   }
   strncpy(fent.name, leaf, 15);
@@ -1552,13 +1558,14 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   fent.keyPointer[0] = keyBlock & 0xFF;
   fent.keyPointer[1] = (keyBlock >> 8);
 
-  if (verbose) printf("Blocks used to store this file: %d\n", blocksUsed);
+  if (verbose)
+    wozMsg(WOZ_MSG_DEBUG, "Blocks used to store this file: %d", blocksUsed);
   fent.blocksUsed[0] = blocksUsed & 0xFF;
   fent.blocksUsed[1] = (blocksUsed >> 8);
 
   // Write the directory entry
   if (!addDirectoryEntryForFile(dirKey, &fent)) {
-    printf("Error writing directory entry for file\n");
+    wozMsg(WOZ_MSG_ERROR, "Error writing directory entry for file");
     reloadFreeBlockBitmap();
     return false;
   }
@@ -1596,7 +1603,8 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
   memset(&fent, 0, sizeof(fent));
   size_t leaflen = strlen(leaf);
   if (leaflen < 1 || leaflen > 15) {
-    printf("ERROR: file names may not exceed 15 chars in ProDOS\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: file names may not exceed 15 chars in ProDOS");
     return false;
   }
   strncpy(fent.name, leaf, 15);
@@ -1623,7 +1631,8 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
   // The extended key block comes first so it lands ahead of the fork data.
   uint16_t extKeyBlock;
   if (!findFreeBlock(&extKeyBlock)) {
-    printf("Failed to find a free block for the extended key block\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "Failed to find a free block for the extended key block");
     reloadFreeBlockBitmap();
     return false;
   }
@@ -1655,7 +1664,8 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
       uint16_t keyBlock, blocksUsed;
       if (!writeForkBlocks(contents ? contents : &emptyByte, len,
                            &storageType, &keyBlock, &blocksUsed)) {
-        printf("Failed to write the %s fork of '%s'\n",
+        wozMsg(WOZ_MSG_ERROR,
+               "Failed to write the %s fork of '%s'",
                resourceFork ? "resource" : "data", leaf);
         reloadFreeBlockBitmap();
         return false;
@@ -1670,18 +1680,19 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
   }
 
   if (!writeBlock(extKeyBlock, keyBlockData)) {
-    printf("Failed to write extended key block\n");
+    wozMsg(WOZ_MSG_ERROR, "Failed to write extended key block");
     reloadFreeBlockBitmap();
     return false;
   }
 
   if (verbose)
-    printf("Blocks used to store this extended file: %d\n", totalBlocks);
+    wozMsg(WOZ_MSG_DEBUG,
+           "Blocks used to store this extended file: %d", totalBlocks);
   fent.blocksUsed[0] = totalBlocks & 0xFF;
   fent.blocksUsed[1] = (totalBlocks >> 8);
 
   if (!addDirectoryEntryForFile(dirKey, &fent)) {
-    printf("Error writing directory entry for file\n");
+    wozMsg(WOZ_MSG_ERROR, "Error writing directory entry for file");
     reloadFreeBlockBitmap();
     return false;
   }
@@ -1704,7 +1715,8 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
   // span several blocks via the next-block links; if none of them has a free
   // slot we grow the directory by appending a new block (see below).
   if (!validBlock(dirKey)) {
-    printf("ERROR: directory key block %u is outside the volume\n", dirKey);
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: directory key block %u is outside the volume", dirKey);
     return false;
   }
   uint16_t currentBlock = dirKey;
@@ -1716,8 +1728,9 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
 
   while (currentBlock) {
     if (!validBlock(currentBlock) || visited.count(currentBlock)) {
-      printf("ERROR: directory chain is corrupt at block %u; refusing to "
-             "add an entry to it\n", currentBlock);
+      wozMsg(WOZ_MSG_ERROR,
+             "ERROR: directory chain is corrupt at block %u; refusing to "
+             "add an entry to it", currentBlock);
       return false;
     }
     visited.insert(currentBlock);
@@ -1742,7 +1755,8 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
                  sizeof(struct _prodosFent));
           // then update the block in the woz image
           if (!writeBlock(currentBlock, &trackData[512*currentBlock])) {
-            printf("Error: can't write block data for directory\n");
+            wozMsg(WOZ_MSG_ERROR,
+                   "Error: can't write block data for directory");
             return false;
           }
 
@@ -1756,7 +1770,7 @@ bool ProdosSpector::addDirectoryEntryForFile(uint16_t dirKey, struct _prodosFent
           // That will have updated directly in the trackData cache; just need
           // to write the header block back to the Woz image
           if (!writeBlock(dirKey, &trackData[512*dirKey])) {
-            printf("Failed to write directory header back out\n");
+            wozMsg(WOZ_MSG_ERROR, "Failed to write directory header back out");
             return false;
           }
           return true;
@@ -1777,13 +1791,14 @@ bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
   // The volume directory has a fixed number of blocks in ProDOS and cannot
   // grow; only subdirectories can. (dirKey 2 is always the volume root.)
   if (dirKey == 2) {
-    printf("Error: the volume directory is full and cannot be extended\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "Error: the volume directory is full and cannot be extended");
     return false;
   }
 
   uint16_t newBlock;
   if (!findFreeBlock(&newBlock)) {
-    printf("Error: no free block to extend the directory\n");
+    wozMsg(WOZ_MSG_ERROR, "Error: no free block to extend the directory");
     return false;
   }
 
@@ -1829,7 +1844,7 @@ bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
     pe->eofLength[1] = (eof >> 8) & 0xFF;
     pe->eofLength[2] = (eof >> 16) & 0xFF;
     if (!writeBlock(parentBlock, &trackData[512 * parentBlock])) {
-      printf("Error: can't update parent directory entry\n");
+      wozMsg(WOZ_MSG_ERROR, "Error: can't update parent directory entry");
       return false;
     }
   }
@@ -1839,7 +1854,7 @@ bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
   if (!writeBlock(newBlock,  &trackData[512 * newBlock]) ||
       !writeBlock(lastBlock, &trackData[512 * lastBlock]) ||
       !writeBlock(dirKey,    &trackData[512 * dirKey])) {
-    printf("Error: can't write extended directory blocks\n");
+    wozMsg(WOZ_MSG_ERROR, "Error: can't write extended directory blocks");
     return false;
   }
   return true;
@@ -1876,8 +1891,9 @@ bool ProdosSpector::freeFileBlocks(const struct _prodosFent *fe)
     // else.
     uint8_t keyBlockData[512];
     if (!validBlock(kp) || !readBlock(kp, keyBlockData)) {
-      printf("WARNING: extended key block %u is unreadable; freeing only "
-             "the directory entry\n", kp);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: extended key block %u is unreadable; freeing only "
+             "the directory entry", kp);
       return true;
     }
     for (int pass = 0; pass < 2; pass++) {
@@ -1910,8 +1926,9 @@ bool ProdosSpector::freeForkBlocks(uint8_t storage, uint16_t kp)
     // nothing real to free through it. (markBlockFree itself rejects
     // out-of-range data pointers.)
     if (!validBlock(kp)) {
-      printf("WARNING: index block %u is outside the volume; freeing only "
-             "the directory entry\n", kp);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: index block %u is outside the volume; freeing only "
+             "the directory entry", kp);
       return true;
     }
     for (int i = 0; i < 256; i++) {
@@ -1926,8 +1943,9 @@ bool ProdosSpector::freeForkBlocks(uint8_t storage, uint16_t kp)
     // pointers at either level are sparse holes - nothing to free, and
     // out-of-range pointers are corruption - nothing real behind them.
     if (!validBlock(kp)) {
-      printf("WARNING: master index block %u is outside the volume; freeing "
-             "only the directory entry\n", kp);
+      wozMsg(WOZ_MSG_WARNING,
+             "WARNING: master index block %u is outside the volume; freeing "
+             "only the directory entry", kp);
       return true;
     }
     for (int mi = 0; mi < 128; mi++) {
@@ -1942,7 +1960,8 @@ bool ProdosSpector::freeForkBlocks(uint8_t storage, uint16_t kp)
     markBlockFree(kp);
     return true;
   default:
-    printf("ERROR: entry has unexpected storage type 0x%X; not deleting\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: entry has unexpected storage type 0x%X; not deleting",
            storage);
     return false;
   }
@@ -2003,12 +2022,12 @@ bool ProdosSpector::resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
       uint16_t b;
       uint32_t off;
       if (!findEntryInDir(dirKey, p, &b, &off)) {
-        if (!quiet) printf("Directory '%s' not found\n", p);
+        if (!quiet) wozMsg(WOZ_MSG_ERROR, "Directory '%s' not found", p);
         return false;
       }
       struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
       if (fe->fileType != FT_DIR) {
-        if (!quiet) printf("'%s' is not a directory\n", p);
+        if (!quiet) wozMsg(WOZ_MSG_ERROR, "'%s' is not a directory", p);
         return false;
       }
       dirKey = fe->keyPointer[1] * 256 + fe->keyPointer[0];
@@ -2017,7 +2036,7 @@ bool ProdosSpector::resolveDirAndLeaf(const char *path, uint16_t *dirKeyOut,
   }
 
   if (!*p) {
-    printf("ERROR: missing filename in path '%s'\n", path);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: missing filename in path '%s'", path);
     return false;
   }
   strncpy(leaf, p, leafSz - 1);
@@ -2056,7 +2075,7 @@ Vent *ProdosSpector::findEntry(const char *path)
   return NULL;
 }
 
-void ProdosSpector::displayDirectory(const char *path)
+Vent *ProdosSpector::getDirectoryListing(const char *path)
 {
   if (!tree)
     createTree();
@@ -2064,24 +2083,22 @@ void ProdosSpector::displayDirectory(const char *path)
   uint16_t dirKey;
   char leaf[16];
   if (!resolveDirAndLeaf(path, &dirKey, leaf, sizeof(leaf)))
-    return;
+    return NULL;
 
   uint16_t block;
   uint32_t off;
   if (!findEntryInDir(dirKey, leaf, &block, &off)) {
-    printf("'%s' not found\n", path);
-    return;
+    wozMsg(WOZ_MSG_ERROR, "'%s' not found", path);
+    return NULL;
   }
   struct _prodosFent *fe = (struct _prodosFent *)&trackData[off];
   if (fe->fileType != FT_DIR) {
-    printf("'%s' is not a directory\n", path);
-    return;
+    wozMsg(WOZ_MSG_ERROR, "'%s' is not a directory", path);
+    return NULL;
   }
 
   uint16_t subKey = fe->keyPointer[1] * 256 + fe->keyPointer[0];
-  Vent *list = descendTree(subKey);
-  displayTree(list);
-  freeTree(list);
+  return descendTree(subKey);
 }
 
 bool ProdosSpector::removeDirEntry(uint16_t dirKey, uint16_t block,
@@ -2093,7 +2110,7 @@ bool ProdosSpector::removeDirEntry(uint16_t dirKey, uint16_t block,
   // from the directory reader.
   trackData[offset] = 0;
   if (!writeBlock(block, &trackData[512 * block])) {
-    printf("ERROR: failed to write directory block %u\n", block);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write directory block %u", block);
     return false;
   }
 
@@ -2105,7 +2122,7 @@ bool ProdosSpector::removeDirEntry(uint16_t dirKey, uint16_t block,
   md->fileCount[0] = fc & 0xFF;
   md->fileCount[1] = (fc >> 8);
   if (!writeBlock(dirKey, &trackData[512 * dirKey])) {
-    printf("ERROR: failed to update directory header\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to update directory header");
     return false;
   }
   return true;
@@ -2124,7 +2141,7 @@ bool ProdosSpector::removeFile(const char *fileName)
   uint16_t block;
   uint32_t off;
   if (!findEntryInDir(dirKey, leaf, &block, &off)) {
-    printf("File '%s' not found\n", fileName);
+    wozMsg(WOZ_MSG_ERROR, "File '%s' not found", fileName);
     return false;
   }
 
@@ -2133,7 +2150,7 @@ bool ProdosSpector::removeFile(const char *fileName)
   memcpy(&fe, &trackData[off], sizeof(fe));
 
   if (((fe.typelen & 0xF0) >> 4) == ft_subdir) {
-    printf("'%s' is a directory; use rmdir\n", fileName);
+    wozMsg(WOZ_MSG_ERROR, "'%s' is a directory; use rmdir", fileName);
     return false;
   }
 
@@ -2144,7 +2161,7 @@ bool ProdosSpector::removeFile(const char *fileName)
 
   flushFreeBlockList();
   createTree(); // re-read so subsequent commands see the change
-  printf("Removed '%s'\n", fileName);
+  wozMsg(WOZ_MSG_INFO, "Removed '%s'", fileName);
   return true;
 }
 
@@ -2161,7 +2178,7 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   uint16_t block;
   uint32_t off;
   if (!findEntryInDir(dirKey, leaf, &block, &off)) {
-    printf("Directory '%s' not found\n", dirName);
+    wozMsg(WOZ_MSG_ERROR, "Directory '%s' not found", dirName);
     return false;
   }
 
@@ -2169,14 +2186,15 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   memcpy(&fe, &trackData[off], sizeof(fe));
 
   if (((fe.typelen & 0xF0) >> 4) != ft_subdir) {
-    printf("'%s' is not a directory; use rm\n", dirName);
+    wozMsg(WOZ_MSG_ERROR, "'%s' is not a directory; use rm", dirName);
     return false;
   }
 
   uint16_t keyBlock = fe.keyPointer[1] * 256 + fe.keyPointer[0];
   if (!validBlock(keyBlock)) {
-    printf("ERROR: '%s' points at key block %u, outside the volume; "
-           "refusing\n", dirName, keyBlock);
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: '%s' points at key block %u, outside the volume; "
+           "refusing", dirName, keyBlock);
     return false;
   }
 
@@ -2184,13 +2202,15 @@ bool ProdosSpector::removeDirectory(const char *dirName)
   // must be empty - refuse otherwise (like Unix rmdir).
   struct _subdirent *sd = (struct _subdirent *)&trackData[512 * keyBlock + 4];
   if (sd->entryLength != 0x27 || sd->entriesPerBlock != 0x0D) {
-    printf("ERROR: '%s' does not point at a directory header; refusing\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: '%s' does not point at a directory header; refusing",
            dirName);
     return false;
   }
   uint16_t fc = sd->fileCount[1] * 256 + sd->fileCount[0];
   if (fc != 0) {
-    printf("ERROR: directory '%s' is not empty (%u entr%s); refusing\n",
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: directory '%s' is not empty (%u entr%s); refusing",
            dirName, fc, fc == 1 ? "y" : "ies");
     return false;
   }
@@ -2211,7 +2231,7 @@ bool ProdosSpector::removeDirectory(const char *dirName)
 
   flushFreeBlockList();
   createTree();
-  printf("Removed directory '%s'\n", dirName);
+  wozMsg(WOZ_MSG_INFO, "Removed directory '%s'", dirName);
   return true;
 }
 
@@ -2228,14 +2248,14 @@ bool ProdosSpector::removeDirectoryRecursive(const char *dirName)
   uint16_t block;
   uint32_t off;
   if (!findEntryInDir(dirKey, leaf, &block, &off)) {
-    printf("Directory '%s' not found\n", dirName);
+    wozMsg(WOZ_MSG_ERROR, "Directory '%s' not found", dirName);
     return false;
   }
 
   struct _prodosFent fe;
   memcpy(&fe, &trackData[off], sizeof(fe));
   if (((fe.typelen & 0xF0) >> 4) != ft_subdir) {
-    printf("'%s' is not a directory; use rm\n", dirName);
+    wozMsg(WOZ_MSG_ERROR, "'%s' is not a directory; use rm", dirName);
     return false;
   }
 
@@ -2303,7 +2323,8 @@ bool ProdosSpector::makeDirectory(const char *dirName)
 
   size_t namelen = strlen(leaf);
   if (namelen < 1 || namelen > 15) {
-    printf("ERROR: directory names must be 1..15 chars in ProDOS\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: directory names must be 1..15 chars in ProDOS");
     return false;
   }
 
@@ -2312,7 +2333,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   uint16_t existsBlock;
   uint32_t existsOff;
   if (findEntryInDir(dirKey, leaf, &existsBlock, &existsOff)) {
-    printf("ERROR: '%s' already exists\n", dirName);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' already exists", dirName);
     return false;
   }
 
@@ -2320,7 +2341,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   // directory block).
   uint16_t dirBlock;
   if (!findFreeBlock(&dirBlock)) {
-    printf("ERROR: no free block for the new directory\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: no free block for the new directory");
     return false;
   }
 
@@ -2343,7 +2364,8 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   if (!addDirectoryEntryForFile(dirKey, &fent)) {
     // No free directory slot; the block we grabbed is only reserved in RAM,
     // so leaving without flushing the bitmap discards that reservation.
-    printf("ERROR: couldn't add directory entry for '%s'\n", dirName);
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: couldn't add directory entry for '%s'", dirName);
     return false;
   }
 
@@ -2353,7 +2375,8 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   uint16_t parentBlock;
   uint32_t parentOff;
   if (!findEntryInDir(dirKey, leaf, &parentBlock, &parentOff)) {
-    printf("ERROR: internal: just-written directory entry not found\n");
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: internal: just-written directory entry not found");
     return false;
   }
   uint8_t entryNumber = (parentOff - 4 - 512 * parentBlock) / 0x27 + 1;
@@ -2378,24 +2401,15 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   sd->subParent.entryLength = 0x27;
 
   if (!writeBlock(dirBlock, blockData)) {
-    printf("ERROR: failed to write new directory block %u\n", dirBlock);
+    wozMsg(WOZ_MSG_ERROR,
+           "ERROR: failed to write new directory block %u", dirBlock);
     return false;
   }
 
   flushFreeBlockList();
   createTree(); // re-read so subsequent commands see the new directory
-  printf("Created directory '%s'\n", dirName);
+  wozMsg(WOZ_MSG_INFO, "Created directory '%s'", dirName);
   return true;
-}
-
-void ProdosSpector::displayInfo()
-{
-  if (!tree)
-    createTree();
-
-  printFreeBlocks();
-  printf("\nBlocks total: %u\nBlocks free: %u\n",
-         numBlocksTotal, (unsigned)calculateBlocksFree());
 }
 
 bool ProdosSpector::probe()
@@ -2424,67 +2438,5 @@ bool ProdosSpector::probe()
   if (stype != 0x0F) return false;
   if (namelen < 1 || namelen > 15) return false;
   return true;
-}
-
-void ProdosSpector::inspectFile(const char *fileName, Vent *fp)
-{
-  if (isExtendedFile(fp)) {
-    // The entry describes the extended key block; the forks describe
-    // themselves, in mini-entries inside it.
-    printf("extended (GS/OS forked file)\n");
-    printf("extended key block: %d (0x%X)\n", fp->keyPointerVal(),
-           fp->keyPointerVal());
-    for (int pass = 0; pass < 2; pass++) {
-      bool resourceFork = (pass == 1);
-      struct ProdosFork f;
-      if (!getForkInfo(fp, resourceFork, &f))
-        return;
-      const char *which = resourceFork ? "resource" : "data";
-      if (!f.storageType) {
-        printf("  %s fork: absent\n", which);
-        continue;
-      }
-      const char *shape = (f.storageType == ft_seedling) ? "seedling"
-                        : (f.storageType == ft_sapling)  ? "sapling"
-                        : (f.storageType == ft_tree)     ? "tree"
-                        : "unknown storage type";
-      printf("  %s fork: %s, %u bytes in %u block%s, key block %u (0x%X)\n",
-             which, shape, f.eof, f.blocksUsed,
-             f.blocksUsed == 1 ? "" : "s", f.keyBlock, f.keyBlock);
-    }
-    return;
-  }
-
-  uint32_t fileSize = fp->getEofLength();
-  if (fileSize <= 512) {
-    printf("seedling\n");
-    if (fp->getStorageType() != ft_seedling) {
-      printf("WARNING: type in dir says 0x%X, seedling should be 0x%X\n", fp->getStorageType(), ft_seedling);
-    }
-  } else if (fileSize <= 128*1024) {
-    printf("sapling\n");
-    if (fp->getStorageType() != ft_sapling) {
-      printf("WARNING: type in dir says 0x%X, sapling should be 0x%X\n", fp->getStorageType(), ft_sapling);
-    }
-    uint16_t kpv = fp->keyPointerVal();
-    printf("looking up key pointer %d (0x%X)\n", kpv, kpv);
-    uint8_t blockData[512];
-    if (!readBlock(kpv, blockData)) {
-      printf("ERROR: unable to read block\n");
-      return;
-    }
-    printf("Sapling index block data:\n");
-    for (int i=0; i<512; i+=16) {
-      printf("%.4X  ", i);
-      for (int j=0; j<16; j++) {
-        printf("%.2X ", blockData[i+j]);
-      }
-      printf("\n");
-    }
-  } else {
-    printf("tree\n");
-    printf("(Tree entries are not coded yet; cannot inspect.)\n");
-  }
-             
 }
 

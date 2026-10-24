@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include "basiclisting.h"
 
 // Applesoft programs load at $0801 on every Apple II. DOS 3.3 stores them
 // behind a 2-byte length header; ProDOS stores the program image as-is and
@@ -15,7 +16,10 @@
 
 class ApplesoftLister {
 public:
-  bool listFile(uint8_t *buf, uint32_t size, uint8_t skipBytes);
+  // Detokenize a program into *out. On a malformed program, *out holds
+  // the lines read before the problem and the return value is false.
+  bool listFile(uint8_t *buf, uint32_t size, uint8_t skipBytes,
+                BasicListing *out);
 };
 
 // Tokenize an Applesoft text listing into the in-memory program image the

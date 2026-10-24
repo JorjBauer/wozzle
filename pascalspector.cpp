@@ -1,4 +1,5 @@
 #include "pascalspector.h"
+#include "wozmsg.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,24 +77,24 @@ bool PascalSpector::normalizeVolumeName(const char *src, char *out)
   memset(out, 0, MAX_VOL_NAME_LEN + 1);
   for (const char *s = src; *s; s++) {
     if (vlen >= MAX_VOL_NAME_LEN) {
-      printf("ERROR: volume name max %d chars\n", MAX_VOL_NAME_LEN);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: volume name max %d chars", MAX_VOL_NAME_LEN);
       return false;
     }
     char c = (char)toupper((unsigned char)*s);
     if (c <= 0x20 || (unsigned char)c >= 0x7f || strchr("$=?,[#:", c)) {
-      printf("ERROR: '%c' not allowed in a Pascal volume name\n", *s);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: '%c' not allowed in a Pascal volume name", *s);
       return false;
     }
     out[vlen++] = c;
   }
   if (vlen == 0) {
-    printf("ERROR: empty volume name\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: empty volume name");
     return false;
   }
   return true;
 }
 
-static const char *kindSuffix(uint8_t kind)
+const char *PascalSpector::kindSuffix(uint8_t kind)
 {
   switch (kind) {
   case PK_BAD:  return ".BAD";
@@ -107,8 +108,8 @@ static const char *kindSuffix(uint8_t kind)
   }
 }
 
-PascalSpector::PascalSpector(bool verbose, uint8_t dumpflags)
-  : Wozspector(verbose, dumpflags)
+PascalSpector::PascalSpector(bool verbose)
+  : Wozspector(verbose)
 {
   trackData = NULL;
   trackDataBytes = 0;
@@ -152,7 +153,7 @@ bool PascalSpector::loadBlockBuffer()
 
   for (int i = 0; i < 35; i++) {
     if (!decodeWozTrackToDsk(i, T_PO, &trackData[i * 256 * 16])) {
-      fprintf(stderr, "Failed to read track %d\n", i);
+      wozMsg(WOZ_MSG_ERROR, "Failed to read track %d", i);
       return false;
     }
   }
@@ -289,7 +290,7 @@ Vent *PascalSpector::createTree()
   }
   loaded = false;
   if (!ensureLoaded()) {
-    fprintf(stderr, "Failed to load Pascal directory\n");
+    wozMsg(WOZ_MSG_ERROR, "Failed to load Pascal directory");
     return NULL;
   }
 
@@ -417,20 +418,20 @@ bool PascalSpector::probe()
 // Info / inspect
 // -------------------------------------------------------------------------
 
-void PascalSpector::displayInfo()
+bool PascalSpector::getVolumeInfo(struct PascalVolumeInfo *out)
 {
+  memset(out, 0, sizeof(*out));
   if (!ensureLoaded()) {
-    printf("Not a readable Pascal volume\n");
-    return;
+    wozMsg(WOZ_MSG_ERROR, "Not a readable Pascal volume");
+    return false;
   }
   uint8_t block[512];
-  if (!readBlock(VOL_DIR_START_BLOCK, block)) return;
+  if (!readBlock(VOL_DIR_START_BLOCK, block)) return false;
   struct _pascalVolHdr *h = (struct _pascalVolHdr *)block;
 
-  char volName[MAX_VOL_NAME_LEN + 1] = {0};
   uint8_t nl = h->name[0];
   if (nl > MAX_VOL_NAME_LEN) nl = MAX_VOL_NAME_LEN;
-  memcpy(volName, &h->name[1], nl);
+  memcpy(out->name, &h->name[1], nl);
 
   if (!tree) createTree();
 
@@ -452,36 +453,17 @@ void PascalSpector::displayInfo()
     uint16_t g = volBlockCount - prevNext;
     if (g > largestGap) { largestGap = g; gapAt = prevNext; }
   }
+
+  out->totalBlocks = volBlockCount;
+  out->files = files;
+  out->fileBlocks = used;
+  out->reservedBlocks = dirNextBlock;
   // Free = total - (boot blocks 0..1 + directory blocks 2..dirNextBlock-1)
   // - blocks occupied by files. dirNextBlock counts blocks 0..dirNextBlock-1.
-  uint32_t freeBlocks = volBlockCount - dirNextBlock - used;
-
-  printf("Pascal volume: %s\n", volName);
-  printf("Total blocks:  %u\n", volBlockCount);
-  printf("Files:         %u\n", files);
-  printf("Blocks used:   %u (files) + %u (boot+dir)\n",
-         used, dirNextBlock);
-  printf("Blocks free:   %u\n", freeBlocks);
-  printf("Largest free contiguous region: %u blocks at block %u\n",
-         largestGap, gapAt);
-}
-
-void PascalSpector::inspectFile(const char *fileName, Vent *fp)
-{
-  if (!fp || !fp->getIsPascal()) {
-    printf("Not a Pascal file entry\n");
-    return;
-  }
-  uint16_t start = fp->getPascalStartBlock();
-  uint16_t next  = fp->getPascalNextBlock();
-  printf("Pascal file '%s':\n", fp->getName());
-  printf("  kind:            %u (%s)\n", fp->getPascalKind(),
-         kindSuffix(fp->getPascalKind()));
-  printf("  start block:     %u\n", start);
-  printf("  next block:      %u\n", next);
-  printf("  block count:     %u\n", (next > start) ? next - start : 0);
-  printf("  bytes/last block:%u\n", fp->getPascalByteCount());
-  printf("  logical length:  %u bytes\n", fp->getEofLength());
+  out->freeBlocks = volBlockCount - dirNextBlock - used;
+  out->largestGap = largestGap;
+  out->largestGapStart = gapAt;
+  return true;
 }
 
 // -------------------------------------------------------------------------
@@ -510,18 +492,18 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     char c = (char)toupper((unsigned char)*s);
     if (c <= 0x20 || (unsigned char)c >= 0x7f ||
         strchr("$=?,[#:", c)) {
-      printf("ERROR: '%c' is not allowed in a Pascal file name\n", *s);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: '%c' is not allowed in a Pascal file name", *s);
       return false;
     }
     nm[nlen++] = c;
   }
   if (nlen == 0) {
-    printf("ERROR: empty file name\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: empty file name");
     return false;
   }
   if (strlen(fileName) > MAX_FILE_NAME_LEN) {
-    printf("ERROR: '%s' is longer than %d characters\n",
-           fileName, MAX_FILE_NAME_LEN);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' is longer than %d characters",
+                          fileName, MAX_FILE_NAME_LEN);
     return false;
   }
 
@@ -544,7 +526,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     uint8_t cl = nl > MAX_FILE_NAME_LEN ? MAX_FILE_NAME_LEN : nl;
     memcpy(en, &fe->name[1], cl);
     if (!strcasecmp(en, nm)) {
-      printf("ERROR: '%s' already exists\n", nm);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' already exists", nm);
       free(dirBuf);
       return false;
     }
@@ -555,7 +537,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
   }
 
   if ((int)ents.size() >= maxEnt) {
-    printf("ERROR: directory is full (%d files max)\n", maxEnt);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: directory is full (%d files max)", maxEnt);
     free(dirBuf);
     return false;
   }
@@ -584,9 +566,9 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
   }
 
   if (bestSize < neededBlocks) {
-    printf("ERROR: no contiguous free region big enough (need %u blocks, "
-           "largest gap is %u). Pascal files must be contiguous; the disk "
-           "may need a K)runch.\n", neededBlocks, bestSize);
+    wozMsg(WOZ_MSG_ERROR, "ERROR: no contiguous free region big enough (need %u blocks, "
+                          "largest gap is %u). Pascal files must be contiguous; the disk "
+                          "may need a K)runch.", neededBlocks, bestSize);
     free(dirBuf);
     return false;
   }
@@ -608,7 +590,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     uint32_t take = (fileSize - copied < 512) ? (fileSize - copied) : 512;
     if (take > 0) memcpy(block, contents + copied, take);
     if (!writeBlock((uint16_t)(bestStart + b), block)) {
-      printf("ERROR: failed to write data block %u\n", bestStart + b);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write data block %u", bestStart + b);
       free(dirBuf);
       return false;
     }
@@ -642,7 +624,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
   free(outBuf);
   free(dirBuf);
   if (!ok) {
-    printf("ERROR: failed to write directory\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write directory");
     return false;
   }
 
@@ -719,7 +701,7 @@ bool PascalSpector::removeFile(const char *fileName)
   }
 
   if (!found) {
-    printf("File '%s' not found\n", name);
+    wozMsg(WOZ_MSG_ERROR, "File '%s' not found", name);
     free(dirBuf);
     return false;
   }
@@ -851,15 +833,15 @@ bool PascalSpector::krunch(const char *afterFile)
     uint8_t cl = fe->name[0] > MAX_FILE_NAME_LEN ? MAX_FILE_NAME_LEN : fe->name[0];
     memcpy(en, &fe->name[1], cl);
     if (kind == PK_BAD) {
-      printf("ERROR: '%s' is a .BAD (bad-block) file; refusing to krunch a "
-             "volume with damaged blocks.\n", en);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: '%s' is a .BAD (bad-block) file; refusing to krunch a "
+                            "volume with damaged blocks.", en);
       free(dirBuf);
       return false;
     }
     if (start < dirNextBlock || next <= start || next > volBlockCount ||
         start < prevNext) {
-      printf("ERROR: directory entry '%s' is damaged or overlapping "
-             "(start=%u next=%u); refusing to krunch.\n", en, start, next);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: directory entry '%s' is damaged or overlapping "
+                            "(start=%u next=%u); refusing to krunch.", en, start, next);
       free(dirBuf);
       return false;
     }
@@ -883,7 +865,7 @@ bool PascalSpector::krunch(const char *afterFile)
       if (!strcasecmp(en, want)) { found = i; break; }
     }
     if (found < 0) {
-      printf("File '%s' not found\n", want);
+      wozMsg(WOZ_MSG_ERROR, "File '%s' not found", want);
       free(dirBuf);
       return false;
     }
@@ -901,8 +883,8 @@ bool PascalSpector::krunch(const char *afterFile)
     uint16_t size  = (uint16_t)(rd16(fe->nextBlock) - start);
     if (start != cursor) {
       if (!moveFileBlocks(start, cursor, size)) {
-        printf("ERROR: block move failed; image may be partially modified. "
-               "Do not save.\n");
+        wozMsg(WOZ_MSG_ERROR, "ERROR: block move failed; image may be partially modified. "
+                              "Do not save.");
         free(dirBuf);
         return false;
       }
@@ -926,8 +908,8 @@ bool PascalSpector::krunch(const char *afterFile)
     uint16_t newStart = (uint16_t)(cursor - size);
     if (start != newStart) {
       if (!moveFileBlocks(start, newStart, size)) {
-        printf("ERROR: block move failed; image may be partially modified. "
-               "Do not save.\n");
+        wozMsg(WOZ_MSG_ERROR, "ERROR: block move failed; image may be partially modified. "
+                              "Do not save.");
         free(dirBuf);
         return false;
       }
@@ -942,8 +924,8 @@ bool PascalSpector::krunch(const char *afterFile)
   uint32_t freeBlocks = volBlockCount - dirNextBlock - usedTotal;
 
   if (!changed) {
-    printf("Free space is already contiguous (%u blocks at block %u); "
-           "nothing to do.\n", freeBlocks, holeStart);
+    wozMsg(WOZ_MSG_INFO, "Free space is already contiguous (%u blocks at block %u); "
+                         "nothing to do.", freeBlocks, holeStart);
     free(dirBuf);
     return true;
   }
@@ -961,13 +943,13 @@ bool PascalSpector::krunch(const char *afterFile)
   free(outBuf);
   free(dirBuf);
   if (!ok) {
-    printf("ERROR: failed to write directory\n");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write directory");
     return false;
   }
 
   createTree();
-  printf("Krunched: %u free block%s now contiguous at block %u; "
-         "use 'save' to make it permanent.\n",
-         freeBlocks, freeBlocks == 1 ? "" : "s", holeStart);
+  wozMsg(WOZ_MSG_INFO, "Krunched: %u free block%s now contiguous at block %u; "
+                       "use 'save' to make it permanent.",
+                       freeBlocks, freeBlocks == 1 ? "" : "s", holeStart);
   return true;
 }
