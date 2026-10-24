@@ -58,6 +58,15 @@ Vent::Vent(struct _pascalFent *fp)
   this->children = this->next = NULL;
 }
 
+void dosCatalogName(const struct _dosFdEntry *fe, char out[31])
+{
+  for (int i = 0; i < 30; i++)
+    out[i] = fe->fileName[i] & 0x7F;
+  out[30] = '\0';
+  for (int i = 29; i >= 0 && out[i] == ' '; i--)
+    out[i] = '\0';
+}
+
 time_t prodosDateToEpoch(uint8_t prodosDate[4])
 {
   // ProDOS treats a zero date word as "no date" (CAT shows <NO DATE>)
@@ -171,15 +180,7 @@ Vent::Vent(struct _dosFdEntry *fe)
   activeFileCount = 0;
   pascalStartBlock = pascalNextBlock = pascalByteCount = pascalType = 0;
 
-  // Names are padded with spaces, but a space inside one is part of the
-  // name ("BAS BIG"), so only the padding comes off
-  for (int i=0; i<30; i++) {
-    name[i] = fe->fileName[i] ^ 0x80;
-  }
-  name[30] = '\0';
-  for (int i=29; i>=0 && name[i] == ' '; i--) {
-    name[i] = '\0';
-  }
+  dosCatalogName(fe, name);
   switch (fe->fileTypeAndFlags & 0x7F) {
   case 0:
     fileType = FT_TXT;

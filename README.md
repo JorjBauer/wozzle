@@ -155,6 +155,13 @@ needs `-p`; neither DOS 3.3 nor Pascal has directories.
 
 Wozit is an interactive disk inspection tool. Once started, it expects one of these commands:
 
+Arguments are split at spaces, the way a shell does it, so a name with a
+space in it (DOS 3.3 allows them) needs quoting: *cpout "BAS BIG" out.bin*.
+Single quotes, double quotes and a backslash all work. A command's last
+argument is still the rest of the line if you don't quote any of it, so
+*cat BAS BIG* and *cpout FOO my file.bin* do what they look like. Inside a
+*-c*, that means quotes within quotes: *-c 'cpout "BAS BIG" out.bin'*.
+
 *ls*
 
 Lists the directory of the disk image.
@@ -265,8 +272,6 @@ Limitations
 * In ProDOS mode, it only references files by filename - not by directory. So two files
   with the same name in different directories won't be readable (it will pick the first
   one it finds).
-* Arguments are split at spaces, so a DOS 3.3 file whose name has a space in it can't
-  be named on the command line. It shows up in *ls*, and wozfuse can read it.
   
 
 

@@ -532,15 +532,9 @@ bool DosSpector::setFileLocked(const char *fileName, bool locked)
       if (c0 == 0x00 || c0 == 0xFF)
         continue; // empty or deleted slot
 
-      // Match names the same way the lister and rm do.
+      // Match names the same way the lister and rm do
       char clean[31];
-      int n = 0;
-      for (int j = 0; j < 30; j++) {
-        char ch = fe->fileName[j] & 0x7F;
-        if (ch == ' ') break;
-        clean[n++] = ch;
-      }
-      clean[n] = '\0';
+      dosCatalogName(fe, clean);
       if (strcmp(clean, fileName) != 0)
         continue;
 
@@ -589,17 +583,10 @@ bool DosSpector::removeFile(const char *fileName)
       if (c0 == 0x00 || c0 == 0xFF)
         continue; // empty or already-deleted slot
 
-      // Clean the on-disk name exactly the way the directory lister does:
-      // strip the high bit and stop at the first space. That keeps "what
-      // ls shows" and "what rm matches" identical.
+      // The same name ls shows, so "what ls shows" and "what rm matches"
+      // stay identical
       char clean[31];
-      int n = 0;
-      for (int j = 0; j < 30; j++) {
-        char ch = fe->fileName[j] & 0x7F;
-        if (ch == ' ') break;
-        clean[n++] = ch;
-      }
-      clean[n] = '\0';
+      dosCatalogName(fe, clean);
       if (strcmp(clean, fileName) != 0)
         continue;
 

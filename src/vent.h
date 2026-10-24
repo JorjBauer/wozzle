@@ -141,6 +141,12 @@ enum _pascalKind {
   PK_SECDIR  = 8, // securedir
 };
 
+// A DOS 3.3 catalog entry's name as text: high bits off, and the padding
+// spaces at the end trimmed. A space inside a name is part of it ("BAS
+// BIG"). Everything that shows or matches DOS names goes through this, so
+// what ls shows is what rm and friends match.
+void dosCatalogName(const struct _dosFdEntry *fe, char out[31]);
+
 struct _tsPair {
   uint8_t track;
   uint8_t sector;

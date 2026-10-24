@@ -22,6 +22,11 @@
 #include "wozops.h"
 #include "clireport.h"
 
+#include <string>
+#include <vector>
+
+using namespace std;
+
 #ifndef MAXPATH
 #define MAXPATH 1023
 #endif
@@ -59,7 +64,94 @@ void usage(char *name)
   printf("\n");
 }
 
-typedef void (*cmdParser)(char *cmd);
+// A command's arguments, split the way a shell would: whitespace between
+// them, '...' taken literally, "..." with \" and \\ inside, and a
+// backslash escaping the next character anywhere else. That's how a name
+// with a space in it ("BAS BIG" on a DOS disk) gets through.
+//
+// A command's last argument has always been the rest of the line, so
+// `cat BAS BIG` and `cpout FOO my file.bin` work as they always did.
+// rest() keeps that: if nothing from there on was quoted, it's the line as
+// typed, spaces and all.
+struct Args {
+  vector<string> v;
+  vector<size_t> start;  // where each argument began in raw
+  vector<bool> quoted;   // had a quote or a backslash in it
+  string raw;
+
+  size_t size() const { return v.size(); }
+  const char *operator[](size_t i) const { return v[i].c_str(); }
+  bool isFlag(size_t i, const char *flag) const {
+    return i < v.size() && !quoted[i] && v[i] == flag;
+  }
+
+  // Everything from argument i on, as one argument. False if there's more
+  // than one argument there and some of it was quoted, since then there's
+  // no telling what was meant.
+  bool rest(size_t i, string *out) const {
+    if (i >= v.size()) { *out = ""; return true; }
+    if (i == v.size() - 1) { *out = v[i]; return true; }
+    for (size_t j = i; j < v.size(); j++)
+      if (quoted[j]) return false;
+    size_t end = raw.find_last_not_of(" \t");
+    *out = raw.substr(start[i], end + 1 - start[i]);
+    return true;
+  }
+};
+
+// Split `line` into args. False (having said why) on an unterminated quote.
+static bool splitArgs(const char *line, Args *args)
+{
+  args->raw = line;
+  const char *p = line;
+  while (true) {
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p) return true;
+    string a;
+    bool quoted = false;
+    size_t start = p - line;
+    while (*p && *p != ' ' && *p != '\t') {
+      if (*p == '\'') {
+        quoted = true;
+        const char *close = strchr(p + 1, '\'');
+        if (!close) {
+          printf("ERROR: unterminated ' quote\n");
+          return false;
+        }
+        a.append(p + 1, close - p - 1);
+        p = close + 1;
+      } else if (*p == '"') {
+        quoted = true;
+        p++;
+        while (*p && *p != '"') {
+          if (*p == '\\' && (p[1] == '"' || p[1] == '\\')) p++;
+          a += *p++;
+        }
+        if (!*p) {
+          printf("ERROR: unterminated \" quote\n");
+          return false;
+        }
+        p++;
+      } else if (*p == '\\' && p[1]) {
+        quoted = true;
+        a += p[1];
+        p += 2;
+      } else {
+        a += *p++;
+      }
+    }
+    args->v.push_back(a);
+    args->start.push_back(start);
+    args->quoted.push_back(quoted);
+  }
+}
+
+static void tooManyArgs()
+{
+  printf("ERROR: too many arguments (quote a name that has spaces in it)\n");
+}
+
+typedef void (*cmdParser)(const Args &args);
 
 struct _cmdInfo {
   char cmdName[20];
@@ -67,12 +159,14 @@ struct _cmdInfo {
   char helpInfo[80];
 };
 
-void lsHandler(char *cmd)
+void lsHandler(const Args &args)
 {
   // With an argument, list that subdirectory (ProDOS); with none, dump the
   // whole tree as before.
-  if (cmd && strlen(cmd)) {
-    Vent *list = inspector->getDirectoryListing(cmd);
+  string dir;
+  if (!args.rest(0, &dir)) { tooManyArgs(); return; }
+  if (!dir.empty()) {
+    Vent *list = inspector->getDirectoryListing(dir.c_str());
     printListing(list);
     inspector->freeListing(list);
     return;
@@ -112,15 +206,19 @@ static void dumpFileContents(const char *cmd, bool forceStripHi)
   }
 }
 
-void catHandler(char *cmd)
+void catHandler(const Args &args)
 {
-  dumpFileContents(cmd, false);
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  dumpFileContents(name.c_str(), false);
 }
 
-void cat7Handler(char *cmd)
+void cat7Handler(const Args &args)
 {
   // Always strips the high bit, regardless of the `strip` toggle.
-  dumpFileContents(cmd, true);
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  dumpFileContents(name.c_str(), true);
 }
 
 // Detokenize an Applesoft or Integer BASIC file to a host text file.
@@ -148,42 +246,34 @@ static bool listBasicToHostFile(Vent *fp, uint8_t *dat, uint32_t s,
   return ok;
 }
 
-void cpoutHandler(char *cmd)
+void cpoutHandler(const Args &args)
 {
   // cpout: copy from a file in the image to a file outside the image
-  // cpout [-r] <image filename> <output filename>
+  // cpout [-r] [-B] <image filename> <output filename>
   //   (source may be a ProDOS path; -r takes the resource fork of a GS/OS
   //    extended file instead of its data fork)
   bool wantResourceFork = false;
   bool wantBasicListing = false;
-  // Accept leading -r and -B flags in any order (e.g. "-B -r SRC DST")
-  while (cmd && cmd[0] == '-' && cmd[1] &&
-         (cmd[2] == ' ' || cmd[2] == '\0')) {
-    if (cmd[1] == 'r')
+  // Leading -r and -B flags, in any order (e.g. "-B -r SRC DST")
+  size_t a = 0;
+  for (; a < args.size(); a++) {
+    if (args.isFlag(a, "-r"))
       wantResourceFork = true;
-    else if (cmd[1] == 'B')
+    else if (args.isFlag(a, "-B"))
       wantBasicListing = true;
     else
-      break; // unrecognized flag; let the argument parse report it
-    cmd += 2;
-    while (*cmd == ' ') cmd++;
+      break;
   }
 
-  char buf[256];
-  char *p = strstr(cmd, " ");
-  if (!p) {
+  if (args.size() < a + 2) {
     printf("Error parsing arguments. Usage: cpout [-r|-B] <SOURCE> <DEST>\n");
     return;
   }
-  uint32_t len = p-cmd;
-  if (len > sizeof(buf)-1) {
-    printf("Invalid filename\n");
-    return;
-  }
-  strncpy(buf, cmd, p-cmd);
-  buf[p-cmd] = '\0';
-  p++; // pass the space
-    
+  const char *buf = args[a];
+  string dest;
+  if (!args.rest(a + 1, &dest)) { tooManyArgs(); return; }
+  const char *p = dest.c_str();
+
   Vent *fp = findFileByName(buf);
   if (!fp) {
     printf("File '%s' not found\n", buf);
@@ -221,7 +311,7 @@ void cpoutHandler(char *cmd)
   wozFree(dat);
 }
 
-void infoHandler(char *cmd)
+void infoHandler(const Args &args)
 {
   // FIXME: handle arguments? Or throw error?
   // Verbose mode adds the track-level detail
@@ -229,7 +319,7 @@ void infoHandler(char *cmd)
   printVolumeInfo(inspector);
 }
 
-void cpinHandler(char *cmd)
+void cpinHandler(const Args &args)
 {
   // cpin: copy a local file in to a file image.
   // cpin <filename> <dest filename>
@@ -244,43 +334,25 @@ void cpinHandler(char *cmd)
   // type/aux are ProDOS hex values (a leading 0x is optional). When given
   // they win over everything; otherwise we fall back to AppleSingle
   // metadata, then to a .SYSTEM-name heuristic, then to plain BIN/$2000.
-  char fn[MAXPATH+1];
-  char destfn[256];
-  char typeStr[16];
-  char auxStr[16];
   uint8_t filetype = 0x06; // ProDOS type numbers (more expressive than DOS)
   uint32_t fileSize = 0;
   uint16_t auxTypeData = 0x2000;
-  memset(fn, 0, sizeof(fn));
-  memset(destfn, 0, sizeof(destfn));
-  memset(typeStr, 0, sizeof(typeStr));
-  memset(auxStr, 0, sizeof(auxStr));
 
+  // A leading -B: tokenize an Applesoft text listing on the way in, rather
+  // than copying the bytes through untouched
   bool wantTokenize = false;
-  if (!cmd) {
-    printf("Usage: cpin [-B] <source> <dest> [type [aux]]\n");
-    return;
-  }
-  // Support a leading -B flag: tokenize an Applesoft text listing on the
-  // way in, rather than copying the bytes through untouched.
-  while (cmd[0] == '-' && cmd[1] && (cmd[2] == ' ' || cmd[2] == '\0')) {
-    if (cmd[1] != 'B')
-      break; // unrecognized flag; let the argument parse report it
+  size_t a = 0;
+  for (; args.isFlag(a, "-B"); a++)
     wantTokenize = true;
-    cmd += 2;
-    while (*cmd == ' ') cmd++;
-  }
-  // Width must match MAXPATH: a narrower %s silently splits a long host
-  // path across the following tokens instead of failing.
-  int nargs = sscanf(cmd, "%1023s %255s %15s %15s", fn, destfn, typeStr, auxStr);
-  if (nargs < 2) {
+  if (args.size() < a + 2) {
     printf("Usage: cpin [-B] <source> <dest> [type [aux]]   (type/aux are hex)\n");
     return;
   }
-  if (strlen(fn) >= MAXPATH && cmd[MAXPATH] && cmd[MAXPATH] != ' ') {
-    printf("ERROR: source path is longer than %d chars\n", MAXPATH);
-    return;
-  }
+  if (args.size() > a + 4) { tooManyArgs(); return; }
+  const char *fn = args[a];
+  const char *destfn = args[a + 1];
+  const char *typeStr = args.size() > a + 2 ? args[a + 2] : "";
+  const char *auxStr = args.size() > a + 3 ? args[a + 3] : "";
 
   bool explicitType = (typeStr[0] != '\0');
   bool explicitAux  = (auxStr[0] != '\0');
@@ -328,29 +400,25 @@ void cpinHandler(char *cmd)
   free(fileContents);
 }
 
-void dumptrackHandler(char *cmd)
+void dumptrackHandler(const Args &args)
 {
   // dumptrack <track#> <outfile>
   // Dumps one NIBTRACKSIZE-byte revolution of latched nibbles for the
   // given physical track to a raw binary file. Intended for analyzing
   // non-standard disk formats (rwts18, copy-protected layouts) where
   // the normal catalog / filesystem layers can't help.
-  if (!cmd || !cmd[0]) {
+  if (args.size() < 2) {
     printf("Usage: dumptrack <track#> <outfile>\n");
     return;
   }
-
-  char *sp = strchr(cmd, ' ');
-  if (!sp) {
-    printf("Usage: dumptrack <track#> <outfile>\n");
-    return;
-  }
-  int trackNum = atoi(cmd);
+  int trackNum = atoi(args[0]);
   if (trackNum < 0 || trackNum > 39) {
     printf("ERROR: track number %d out of range (0..39)\n", trackNum);
     return;
   }
-  const char *outPath = sp + 1;
+  string out;
+  if (!args.rest(1, &out)) { tooManyArgs(); return; }
+  const char *outPath = out.c_str();
   if (!*outPath) {
     printf("ERROR: output filename is blank\n");
     return;
@@ -378,7 +446,7 @@ void dumptrackHandler(char *cmd)
          NIBTRACKSIZE, trackNum, outPath);
 }
 
-void resizeHandler(char *cmd)
+void resizeHandler(const Args &args)
 {
   // resize <blocks>: shrink a ProDOS volume, and the image file holding
   // it, to the given size. Refuses if anything is allocated up there.
@@ -388,18 +456,19 @@ void resizeHandler(char *cmd)
   }
   // -n: don't move anything; refuse if the tail is occupied.
   bool relocate = true;
-  if (cmd && !strncmp(cmd, "-n ", 3)) {
+  size_t a = 0;
+  if (args.isFlag(a, "-n")) {
     relocate = false;
-    cmd += 3;
-    while (*cmd == ' ') cmd++;
+    a++;
   }
 
-  char tok[32];
-  if (!cmd || sscanf(cmd, "%31s", tok) != 1) {
+  if (args.size() < a + 1) {
     printf("Usage: resize [-n] <blocks>   (a block count, or 140k/800k/4m/"
            "5m/8m/10m/16m/32m; -n: refuse rather than move blocks down)\n");
     return;
   }
+  if (args.size() > a + 1) { tooManyArgs(); return; }
+  const char *tok = args[a];
   int32_t blocks = wozParseSizeSpec(tok);
   if (blocks < 1) {
     printf("ERROR: bad size '%s' (a block count 1-65535, or 140k, 800k, "
@@ -418,9 +487,12 @@ void resizeHandler(char *cmd)
   }
 }
 
-void volnameHandler(char *cmd)
+void volnameHandler(const Args &args)
 {
-  if (!cmd || !cmd[0]) {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  const char *cmd = name.c_str();
+  if (!cmd[0]) {
     if (pascalMode)
       printf("Usage: volname <newname>   (1-7 chars, printable ASCII, not "
              "$=?,[#:)\n");
@@ -449,9 +521,12 @@ void volnameHandler(char *cmd)
   printf("Volume renamed to '%s'; use 'save' to make it permanent.\n", vol);
 }
 
-void bootblocksHandler(char *cmd)
+void bootblocksHandler(const Args &args)
 {
-  const bool fromDonor = (cmd && cmd[0]);
+  string donor;
+  if (!args.rest(0, &donor)) { tooManyArgs(); return; }
+  const char *cmd = donor.c_str();
+  const bool fromDonor = (cmd[0] != '\0');
   if (!wozInstallBootBlocks(inspector, fromDonor ? cmd : NULL))
     return;
   printf("Boot blocks installed%s%s; use 'save' to make it permanent.\n",
@@ -467,9 +542,9 @@ void bootblocksHandler(char *cmd)
            "BASIC.SYSTEM) in the volume root.\n");
 }
 
-void formatHandler(char *cmd)
+void formatHandler(const Args &args)
 {
-  if (!cmd || !cmd[0]) {
+  if (!args.size()) {
     printf("Usage: format <filename> [<volume>] [<size>] [bootable]\n");
     printf("  DOS mode:    <volume> is 1-254 (default 254); always 140k.\n");
     printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK);\n");
@@ -492,11 +567,11 @@ void formatHandler(char *cmd)
     return;
   }
 
-  char *tok[4] = {0};
-  int ntok = 0;
-  for (char *t = strtok(cmd, " "); t && ntok < 4; t = strtok(NULL, " ")) {
-    tok[ntok++] = t;
-  }
+  // The file name, then up to three of volume, size, and "bootable"
+  int ntok = (int)args.size();
+  if (ntok > 4) ntok = 4;
+  const char *tok[4];
+  for (int i = 0; i < ntok; i++) tok[i] = args[i];
   const char *fname = tok[0];
 
   // Sort out volume vs size arguments. In ProDOS mode sizes always start
@@ -596,8 +671,9 @@ void formatHandler(char *cmd)
   }
 }
 
-void stripHandler(char *cmd)
+void stripHandler(const Args &args)
 {
+  const char *cmd = args.size() == 1 ? args[0] : "";
   if (!strcmp(cmd, "on")) {
     striphi = true;
     printf("Strip high bit: true\n");
@@ -609,11 +685,13 @@ void stripHandler(char *cmd)
   }
 }
 
-void saveHandler(char *cmd)
+void saveHandler(const Args &args)
 {
   // With no argument, overwrite the image we originally loaded (infoname);
   // with an argument, save to that path instead.
-  const char *dest = (cmd && cmd[0]) ? cmd : infoname;
+  string path;
+  if (!args.rest(0, &path)) { tooManyArgs(); return; }
+  const char *dest = path.empty() ? infoname : path.c_str();
   if (!dest[0]) {
     printf("Usage: save [file name]\n");
     return;
@@ -625,48 +703,54 @@ void saveHandler(char *cmd)
   printf("Saved to '%s'\n", dest);
 }
 
-void mkdirHandler(char *cmd)
+void mkdirHandler(const Args &args)
 {
-  char name[256];
-  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  if (name.empty()) {
     printf("Usage: mkdir <dirname>\n");
     return;
   }
-  inspector->makeDirectory(name);
+  inspector->makeDirectory(name.c_str());
 }
 
-void rmHandler(char *cmd)
+void rmHandler(const Args &args)
 {
-  char tok1[256], tok2[256];
-  int n = cmd ? sscanf(cmd, "%255s %255s", tok1, tok2) : 0;
-  if (n < 1) {
+  if (!args.size()) {
     printf("Usage: rm [-r] <filename>\n");
     return;
   }
   // "rm -r <dir>" removes a directory and everything beneath it.
-  if (!strcmp(tok1, "-r") || !strcmp(tok1, "-R")) {
-    if (n < 2) {
+  bool recursive = args.isFlag(0, "-r") || args.isFlag(0, "-R");
+  string name;
+  if (!args.rest(recursive ? 1 : 0, &name)) { tooManyArgs(); return; }
+  if (recursive) {
+    if (name.empty()) {
       printf("Usage: rm -r <directory>\n");
       return;
     }
-    inspector->removeDirectoryRecursive(tok2);
+    inspector->removeDirectoryRecursive(name.c_str());
     return;
   }
-  inspector->removeFile(tok1);
+  inspector->removeFile(name.c_str());
 }
 
-void rmdirHandler(char *cmd)
+void rmdirHandler(const Args &args)
 {
-  char name[256];
-  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  if (name.empty()) {
     printf("Usage: rmdir <dirname>\n");
     return;
   }
-  inspector->removeDirectory(name);
+  inspector->removeDirectory(name.c_str());
 }
 
-void listHandler(char *cmd)
+void listHandler(const Args &args)
 {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  const char *cmd = name.c_str();
   if (cmd[0] == 0) {
     printf("Bad arguments. Usage: list <filename>\n");
     return;
@@ -699,8 +783,11 @@ void listHandler(char *cmd)
   wozFree(dat);
 }
 
-void inspectHandler(char *cmd)
+void inspectHandler(const Args &args)
 {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  const char *cmd = name.c_str();
   Vent *fp = findFileByName(cmd);
   if (fp) {
     printf("Entry dump for '%s':\n", cmd);
@@ -711,25 +798,26 @@ void inspectHandler(char *cmd)
   }
 }
 
-void krunchHandler(char *cmd)
+void krunchHandler(const Args &args)
 {
   // krunch takes no arguments: consolidate free space at the end of the
   // volume (all files pack toward the front).
   inspector->krunch(NULL);
 }
 
-void krunchafterHandler(char *cmd)
+void krunchafterHandler(const Args &args)
 {
-  char name[256];
-  if (!cmd || sscanf(cmd, "%255s", name) != 1) {
+  string name;
+  if (!args.rest(0, &name)) { tooManyArgs(); return; }
+  if (name.empty()) {
     printf("Usage: krunchafter <filename>   (put the free space right after "
            "<filename>)\n");
     return;
   }
-  inspector->krunch(name);
+  inspector->krunch(name.c_str());
 }
 
-void helpHandler(char *cmd); // forward decl for commands[]
+void helpHandler(const Args &args); // forward decl for commands[]
 
 struct _cmdInfo commands[] = {
   {"bootblocks", bootblocksHandler, "[<donor>]  : install boot code (embedded, or from a donor image)" },
@@ -755,9 +843,9 @@ struct _cmdInfo commands[] = {
   {"volname", volnameHandler, "<newname>     : rename the volume (ProDOS only)"},
   {"", 0, ""} };
 
-void helpHandler(char *cmd)
+void helpHandler(const Args &args)
 {
-  // Ignoring cmd for now
+  (void)args;
   printf("List of wozit commands:\n");
   struct _cmdInfo *p = commands;
   while (p->cmdName[0]) {
@@ -781,10 +869,9 @@ void performCommand(char *cmd)
     size_t nl = strlen(p->cmdName);
     if (!strncmp(p->cmdName, cmd, nl) &&
         (cmd[nl] == '\0' || cmd[nl] == ' ')) {
-      // If there's no argument, pass the null terminator itself instead
-      // of reading one byte past it.
-      char *arg = cmd[nl] ? &cmd[nl + 1] : &cmd[nl];
-      p->fp(arg);
+      Args args;
+      if (splitArgs(cmd + nl, &args))
+        p->fp(args);
       handled = true;
       break;
     }
