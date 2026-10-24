@@ -568,7 +568,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
   if (bestSize < neededBlocks) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: no contiguous free region big enough (need %u blocks, "
                           "largest gap is %u). Pascal files must be contiguous; the disk "
-                          "may need a K)runch.", neededBlocks, bestSize);
+                          "may need a K)runch.", (unsigned)neededBlocks, bestSize);
     free(dirBuf);
     return false;
   }
@@ -590,7 +590,7 @@ bool PascalSpector::createFile(const uint8_t *contents, const char *fileName,
     uint32_t take = (fileSize - copied < 512) ? (fileSize - copied) : 512;
     if (take > 0) memcpy(block, contents + copied, take);
     if (!writeBlock((uint16_t)(bestStart + b), block)) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write data block %u", bestStart + b);
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write data block %u", (unsigned)(bestStart + b));
       free(dirBuf);
       return false;
     }
@@ -925,7 +925,7 @@ bool PascalSpector::krunch(const char *afterFile)
 
   if (!changed) {
     wozMsg(WOZ_MSG_INFO, "Free space is already contiguous (%u blocks at block %u); "
-                         "nothing to do.", freeBlocks, holeStart);
+                         "nothing to do.", (unsigned)freeBlocks, holeStart);
     free(dirBuf);
     return true;
   }
@@ -950,6 +950,6 @@ bool PascalSpector::krunch(const char *afterFile)
   createTree();
   wozMsg(WOZ_MSG_INFO, "Krunched: %u free block%s now contiguous at block %u; "
                        "use 'save' to make it permanent.",
-                       freeBlocks, freeBlocks == 1 ? "" : "s", holeStart);
+                       (unsigned)freeBlocks, freeBlocks == 1 ? "" : "s", holeStart);
   return true;
 }

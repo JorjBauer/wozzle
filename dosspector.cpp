@@ -493,7 +493,7 @@ uint32_t DosSpector::getFileContents(Vent *e, char **toWhere)
       // caller gets the full file (listers skip the header via
       // applesoftHeaderBytes()).
       fileLength = dataPtr[0] + 256*dataPtr[1] + 2;
-      if (verbose) wozMsg(WOZ_MSG_DEBUG, "BAS/INT file length %d", fileLength);
+      if (verbose) wozMsg(WOZ_MSG_DEBUG, "BAS/INT file length %u", (unsigned)fileLength);
       break;
     case FT_SYS: // 'S' type
     case FT_REL: // 'R' type

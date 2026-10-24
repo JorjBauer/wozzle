@@ -227,7 +227,7 @@ bool ApplesoftLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
 
 static bool tokErr(uint32_t srcLine, const char *msg)
 {
-  wozMsg(WOZ_MSG_ERROR, "ERROR: source line %u: %s", srcLine, msg);
+  wozMsg(WOZ_MSG_ERROR, "ERROR: source line %u: %s", (unsigned)srcLine, msg);
   return false;
 }
 
@@ -500,7 +500,7 @@ uint8_t *tokenizeApplesoft(const char *text, uint32_t textLen,
     if (lineLen > APPLESOFT_MAX_SRCLINE) {
       wozMsg(WOZ_MSG_WARNING,
              "WARNING: source line %u (Applesoft line %ld) is too long to "
-             "edit on an Apple II", srcLineNum, lineNum);
+             "edit on an Apple II", (unsigned)srcLineNum, lineNum);
     }
   }
 

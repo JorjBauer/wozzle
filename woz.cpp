@@ -879,7 +879,7 @@ bool Woz::readHdvFile(const char *filename)
   hdvByteSize = (uint32_t)st.st_size;
   hdvData = (uint8_t *)malloc(hdvByteSize);
   if (!hdvData) {
-    wozMsg(WOZ_MSG_ERROR, "Out of memory loading HDV (%u bytes)", hdvByteSize);
+    wozMsg(WOZ_MSG_ERROR, "Out of memory loading HDV (%u bytes)", (unsigned)hdvByteSize);
     close(fd); fd = -1;
     return false;
   }
@@ -887,7 +887,7 @@ bool Woz::readHdvFile(const char *filename)
   close(fd); fd = -1;
   if (got != (ssize_t)hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Short read on HDV (%zd of %u bytes)",
-            got, hdvByteSize);
+            got, (unsigned)hdvByteSize);
     free(hdvData); hdvData = NULL;
     return false;
   }
@@ -906,7 +906,7 @@ bool Woz::truncateHdv(uint32_t newByteSize)
   }
   if (newByteSize > hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Can't grow an image from %u to %u bytes",
-            hdvByteSize, newByteSize);
+            (unsigned)hdvByteSize, (unsigned)newByteSize);
     return false;
   }
   if (!newByteSize || (newByteSize % 512)) {
@@ -937,7 +937,7 @@ bool Woz::writeHdvFile(const char *filename)
   close(fdout);
   if (wrote != (ssize_t)hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Short write on HDV (%zd of %u bytes)",
-            wrote, hdvByteSize);
+            wrote, (unsigned)hdvByteSize);
     return false;
   }
   return true;

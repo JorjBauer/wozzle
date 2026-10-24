@@ -359,7 +359,7 @@ Vent *ProdosSpector::descendTree(uint16_t fromBlock)
              "but the full scan found %u. ProDOS 1.1.1 will only see "
              "the first %u via CAT.",
              ret->getName(), declared,
-             activeEntriesFound, declared);
+             (unsigned)activeEntriesFound, declared);
     }
   }
 
@@ -383,7 +383,7 @@ bool ProdosSpector::findFreeBlock(uint16_t *blockOut)
       freeBlockBitmap[ptr] &= ~bits;
       // return the value
       *blockOut = (uint16_t)i;
-      if (verbose) wozMsg(WOZ_MSG_DEBUG, "> use block %u (0x%X)", i, i);
+      if (verbose) wozMsg(WOZ_MSG_DEBUG, "> use block %u (0x%X)", (unsigned)i, (unsigned)i);
       // return that we succeeded in finding a free block
       return true;
     }
@@ -546,7 +546,7 @@ bool ProdosSpector::findBlockUseAtOrAbove(uint32_t limit, char *what,
 
     uint32_t hi = highestBlockInFork(p->getStorageType(), p->keyPointerVal());
     if (hi >= limit) {
-      snprintf(what, whatSz, "file '%s' occupies block %u", p->getName(), hi);
+      snprintf(what, whatSz, "file '%s' occupies block %u", p->getName(), (unsigned)hi);
       return true;
     }
   }
@@ -725,8 +725,8 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
            "ERROR: %zu block%s sit%s at or past block %u, but only %u free "
            "block%s below it - %zu more needed. Nothing changed.",
            toMove.size(), toMove.size() == 1 ? "" : "s",
-           toMove.size() == 1 ? "s" : "", limit, freeBelow,
-           freeBelow == 1 ? "" : "s", toMove.size() - freeBelow);
+           toMove.size() == 1 ? "s" : "", (unsigned)limit, (unsigned)freeBelow,
+           freeBelow == 1 ? "" : "s", (size_t)(toMove.size() - freeBelow));
     return false;
   }
 
@@ -762,7 +762,7 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
       wozMsg(WOZ_MSG_ERROR,
              "ERROR: ran out of free blocks below %u while moving block "
              "%u; the volume in memory is now inconsistent - do NOT save "
-             "it", limit, src);
+             "it", (unsigned)limit, (unsigned)src);
       return false;
     }
 
@@ -792,7 +792,7 @@ bool ProdosSpector::relocateBlocksBelow(uint32_t limit, uint32_t *movedOut)
     wozMsg(WOZ_MSG_WARNING,
            "WARNING: %u block%s past block %u %s marked allocated but "
            "belonged to no file or directory; released",
-           orphans, orphans == 1 ? "" : "s", limit,
+           (unsigned)orphans, orphans == 1 ? "" : "s", (unsigned)limit,
            orphans == 1 ? "was" : "were");
   }
 
@@ -852,14 +852,14 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
   uint32_t oldBlocks = numBlocksTotal;
   if (newBlocks == oldBlocks) {
     wozMsg(WOZ_MSG_INFO,
-           "Volume is already %u blocks; nothing to do", newBlocks);
+           "Volume is already %u blocks; nothing to do", (unsigned)newBlocks);
     return true;
   }
   if (newBlocks > oldBlocks) {
     wozMsg(WOZ_MSG_ERROR,
            "ERROR: this volume is %u blocks; resize only shrinks a volume "
            "(growing one means formatting a bigger image and copying into "
-           "it)", oldBlocks);
+           "it)", (unsigned)oldBlocks);
     return false;
   }
 
@@ -871,7 +871,7 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
     wozMsg(WOZ_MSG_ERROR,
            "ERROR: %u blocks is too small; the boot blocks, volume "
            "directory and bitmap need at least %u",
-           newBlocks, lastReserved + 1);
+           (unsigned)newBlocks, (unsigned)(lastReserved + 1));
     return false;
   }
 
@@ -884,8 +884,8 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
       return false;
     if (moved)
       wozMsg(WOZ_MSG_INFO,
-             "Moved %u block%s below block %u", moved,
-             moved == 1 ? "" : "s", newBlocks);
+             "Moved %u block%s below block %u", (unsigned)moved,
+             moved == 1 ? "" : "s", (unsigned)newBlocks);
   }
 
   // Nothing may live at or past the new end. Check the bitmap first (it's
@@ -906,8 +906,8 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
     wozMsg(WOZ_MSG_ERROR,
            "ERROR: %u block%s at or past block %u %s still allocated (first "
            "is block %u); nothing changed",
-           inUse, inUse == 1 ? "" : "s", newBlocks,
-           inUse == 1 ? "is" : "are", firstInUse);
+           (unsigned)inUse, inUse == 1 ? "" : "s", (unsigned)newBlocks,
+           inUse == 1 ? "is" : "are", (unsigned)firstInUse);
     return false;
   }
 
@@ -915,7 +915,7 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
   if (findBlockUseAtOrAbove(newBlocks, what, sizeof(what))) {
     wozMsg(WOZ_MSG_ERROR,
            "ERROR: %s, at or past the requested new end of %u blocks; "
-           "nothing changed", what, newBlocks);
+           "nothing changed", what, (unsigned)newBlocks);
     return false;
   }
 
@@ -1301,7 +1301,7 @@ uint32_t ProdosSpector::readForkBlocks(uint8_t indexType, uint16_t kp,
     wozMsg(WOZ_MSG_WARNING,
            "WARNING: '%s' has %u block pointer%s outside the volume; "
            "those parts read as zeros.",
-           name, badPointers, badPointers == 1 ? "" : "s");
+           name, (unsigned)badPointers, badPointers == 1 ? "" : "s");
   }
   return l;
 }

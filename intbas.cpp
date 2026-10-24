@@ -219,7 +219,7 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
         }
 
         if (binary) {
-          snprintf(num, sizeof(num), "{binary: %u bytes:", remEnd - pos);
+          snprintf(num, sizeof(num), "{binary: %u bytes:", (unsigned)(remEnd - pos));
           line.text += num;
           for (uint32_t i = pos; i < remEnd; i++) {
             snprintf(num, sizeof(num), " %.2X", buf[i]);
@@ -265,7 +265,7 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
           }
         } else {
           wozMsg(WOZ_MSG_WARNING, "WARNING: unexpected byte 0x%.2X at offset 0x%X",
-                 b, pos - 1);
+                 b, (unsigned)(pos - 1));
         }
       } else {
         // Plain token: print with surrounding spaces (applesoft.cpp style).
@@ -287,7 +287,7 @@ bool IntegerLister::listFile(uint8_t *buf, uint32_t ssize, uint8_t skipBytes,
     if (actualLen != lineLen) {
       wozMsg(WOZ_MSG_WARNING,
              "WARNING: line %u stored length %u != actual %u - resyncing",
-             lineNumber, lineLen, actualLen);
+             lineNumber, lineLen, (unsigned)actualLen);
       uint32_t target = lineStart + lineLen;
       if (target > ssize) {
         wozMsg(WOZ_MSG_ERROR, "ERROR: stored line length runs past end of buffer");
