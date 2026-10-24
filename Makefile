@@ -1,60 +1,73 @@
 FUSELIBS=-losxfuse
 MACFLAGS=-mmacosx-version-min=10.15
 
-CFLAGS = -Wall -g -I/usr/local/include/osxfuse -I/opt/homebrew/opt/readline/include -D_FILE_OFFSET_BITS=64
+include wozcore.mk
+
+CFLAGS = -Wall -g $(WOZCORE_CFLAGS) -I/usr/local/include/osxfuse -I/opt/homebrew/opt/readline/include -D_FILE_OFFSET_BITS=64
 CXXFLAGS = $(CFLAGS)
 
-WOZSRCS=woz.cpp wozzle.cpp crc32.c wozmsg.c nibutil.cpp
-WOZOBJS=woz.o crc32.o wozmsg.o nibutil.o wozzle.o
+# The disk image core (src/, listed in wozcore.mk) is built once into a
+# static library that every tool links against
+LIBWOZCORE = libwozcore.a
 
-FUSESRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozfuse.cpp
-FUSEOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozfuse.o
+WOZSRCS=wozzle.cpp
+WOZOBJS=wozzle.o
 
-WOZITSRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozit.cpp applesoft.cpp intbas.cpp
-WOZITOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozit.o applesoft.o intbas.o
+FUSESRCS=dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozfuse.cpp
+FUSEOBJS=dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozfuse.o
 
-WOZMOSISSRCS=woz.cpp crc32.c wozmsg.c nibutil.cpp dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
-WOZMOSISOBJS=woz.o crc32.o wozmsg.o nibutil.o dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozmosis.o
+WOZITSRCS=dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp clireport.cpp wozit.cpp applesoft.cpp intbas.cpp
+WOZITOBJS=dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o clireport.o wozit.o applesoft.o intbas.o
+
+WOZMOSISSRCS=dosspector.cpp prodosspector.cpp pascalspector.cpp vent.cpp wozspector.cpp wozmosis.cpp
+WOZMOSISOBJS=dosspector.o prodosspector.o pascalspector.o vent.o wozspector.o wozmosis.o
 
 .PHONY: test clean unit-tests
 
 all: wozzle wozit wozmosis
 
-UNIT_BINS = tests/unit-intbas tests/unit-applesoft tests/unit-nib
+$(LIBWOZCORE): $(WOZCORE_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $(WOZCORE_OBJS)
+
+UNIT_BINS = tests/unit-intbas tests/unit-applesoft tests/unit-nib tests/unit-host
 
 unit-tests: $(UNIT_BINS)
 
-tests/unit-intbas: tests/unit-intbas.cpp intbas.o wozmsg.o
-	$(CXX) $(CFLAGS) -I. tests/unit-intbas.cpp intbas.o wozmsg.o -o $@
+tests/unit-intbas: tests/unit-intbas.cpp intbas.o $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -I. tests/unit-intbas.cpp intbas.o $(LIBWOZCORE) -o $@
 
-tests/unit-applesoft: tests/unit-applesoft.cpp applesoft.o wozmsg.o
-	$(CXX) $(CFLAGS) -I. tests/unit-applesoft.cpp applesoft.o wozmsg.o -o $@
+tests/unit-applesoft: tests/unit-applesoft.cpp applesoft.o $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -I. tests/unit-applesoft.cpp applesoft.o $(LIBWOZCORE) -o $@
 
-tests/unit-nib: tests/unit-nib.cpp nibutil.o wozmsg.o
-	$(CXX) $(CFLAGS) -I. tests/unit-nib.cpp nibutil.o wozmsg.o -o $@
+tests/unit-nib: tests/unit-nib.cpp $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -I. tests/unit-nib.cpp $(LIBWOZCORE) -o $@
 
-wozzle: $(WOZOBJS)
-	$(CXX) $(CFLAGS) -o wozzle $(WOZOBJS) 
+tests/unit-host: tests/unit-host.cpp $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -I. tests/unit-host.cpp $(LIBWOZCORE) -o $@
 
-wozfuse: $(FUSEOBJS)
-	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) 
+wozzle: $(WOZOBJS) $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -o wozzle $(WOZOBJS) $(LIBWOZCORE)
 
-wozit: $(WOZITOBJS)
-	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -o wozit $(WOZITOBJS) -lreadline -lncurses
+wozfuse: $(FUSEOBJS) $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) $(LIBWOZCORE)
 
-wozmosis: $(WOZMOSISOBJS)
-	$(CXX) $(CFLAGS) -o wozmosis $(WOZMOSISOBJS)
+wozit: $(WOZITOBJS) $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -o wozit $(WOZITOBJS) $(LIBWOZCORE) -lreadline -lncurses
+
+wozmosis: $(WOZMOSISOBJS) $(LIBWOZCORE)
+	$(CXX) $(CFLAGS) -o wozmosis $(WOZMOSISOBJS) $(LIBWOZCORE)
 
 depend: .depend
 
-.depend: $(WOZSRCS) $(FUSESRCS) $(WOZITSRCS) $(WOZMOSISSRCS)
+.depend: $(WOZCORE_SRCS) $(WOZSRCS) $(FUSESRCS) $(WOZITSRCS) $(WOZMOSISSRCS)
 	rm -f ./.depend
-	$(CC) $(CFLAGS) -MM $^ >  ./.depend;
+	for f in $^; do $(CC) $(CFLAGS) -MM -MT $${f%.*}.o $$f; done > ./.depend
 
 include .depend
 
 clean:
-	rm -f $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) pascalspector.o wozzle wozit wozmosis *~ $(UNIT_BINS)
+	rm -f $(WOZCORE_OBJS) $(LIBWOZCORE) $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) pascalspector.o wozzle wozit wozmosis *~ $(UNIT_BINS)
 	rm -rf *.dSYM tests/*.dSYM
 	rm -f tests/nib-test tests/test-pattern tests/make-test-disk
 	rm -f tests/pattern.dsk tests/pattern-out.dsk

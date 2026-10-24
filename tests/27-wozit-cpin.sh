@@ -17,7 +17,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Deterministic, varied seedling-sized payload (< 512 bytes) from a
 # committed source file, so corruption is easy to detect on round-trip.
-head -c 400 crc32.c > "$TMP/blob.bin"
+head -c 400 src/crc32.c > "$TMP/blob.bin"
 blob_hash=$(hash_file "$TMP/blob.bin")
 
 # A blank ProDOS volume to write into.

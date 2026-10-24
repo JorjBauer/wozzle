@@ -14,6 +14,23 @@ Building
 
 Wozzle is written in C++, and expects to find g++ for compilation.
 
+Using the library in another program
+------------------------------------
+
+The disk image code itself (woz, nibutil, crc32, wozmsg, wozhost) lives in src/. The tools here link it as libwozcore.a, and I also use it in my Aiie emulator, on both the Mac and a Teensy 4.1. That's why it's laid out the way it is.
+
+If you're building with make, include wozcore.mk and use its variables instead of naming the files, so you don't have to chase my file list:
+
+```
+include wozzle/wozcore.mk
+CXXFLAGS += $(WOZCORE_CFLAGS)
+myprogram: $(MYOBJS) $(WOZCORE_OBJS)
+```
+
+If you're building with Arduino, the top of this repository is an Arduino library (library.properties plus src/). Hand it to arduino-cli with `--library path/to/wozzle`.
+
+The library never touches files, memory or the terminal directly. File I/O and allocation go through hooks in wozhost.h, and messages go through wozmsg.h. On a POSIX system the defaults just work. Arduino has no POSIX file layer, so there you have to install file hooks (wozSetHost) before you open an image. wozhost.h also has two settings for slow storage: keepFilesOpen, and skipChecksum (which writes a 0 CRC, which the WOZ spec allows).
+
 Usage
 -----
 

@@ -1,46 +1,43 @@
 #include "woz.h"
 #include <errno.h>
 #include <string.h>
-#include <sys/stat.h>
 #include "crc32.h"
 #include "nibutil.h"
-#include "version.h"
+#include "wozhost.h"
 #include "wozmsg.h"
+#include "wozversion.h"
 
 // Block number we start packing data bits after (Woz 2.0 images)
 #define STARTBLOCK 3
 
-#if defined(AIIE) || defined(TEENSYDUINO)
-#define LAZYFD
-#include "fscompat.h"
-#endif
+// Size of a file by name, or -1 if it can't be opened. This goes through
+// the host's hooks (rather than stat) so it works wherever open does.
+static long sizeOfFile(const char *filename)
+{
+  int sfd = wozOpen(filename, WOZ_OPEN_READ);
+  if (sfd == -1)
+    return -1;
+  long size = wozSeek(sfd, 0, SEEK_END);
+  wozClose(sfd);
+  return size;
+}
 
-#ifdef TEENSYDUINO
-// This junk is for my AiiE project. I need to abstract it out better.
-#include "iocompat.h"
-#define SKIPCHECKSUM
-#define malloc extmem_malloc
-#define free extmem_free
-#define calloc extmem_calloc
-#define realloc extmem_realloc
-#endif
-
-#define PREP_SECTION(fd, t) {      \
-  uint32_t type = t;               \
-  if (!write32(fd, type))           \
-    return false;                  \
-  if (!write32(fd, 0))              \
-    return false;                  \
-  curpos = lseek(fd, 0, SEEK_CUR); \
+#define PREP_SECTION(fd, t) {        \
+  uint32_t type = t;                 \
+  if (!write32(fd, type))            \
+    return false;                    \
+  if (!write32(fd, 0))               \
+    return false;                    \
+  curpos = wozSeek(fd, 0, SEEK_CUR); \
  }
 
-#define END_SECTION(fd) {                   \
-  long endpos = lseek(fd, 0, SEEK_CUR);	    \
-  lseek(fd, curpos-4, SEEK_SET);            \
-  uint32_t chunksize = endpos - curpos;                                 \
-  if (!write32(fd, chunksize))               \
-    return false;                           \
-  lseek(fd, endpos, SEEK_SET);                   \
+#define END_SECTION(fd) {                     \
+  long endpos = wozSeek(fd, 0, SEEK_CUR);     \
+  wozSeek(fd, curpos-4, SEEK_SET);            \
+  uint32_t chunksize = endpos - curpos;       \
+  if (!write32(fd, chunksize))                \
+    return false;                             \
+  wozSeek(fd, endpos, SEEK_SET);              \
   }
 
 Woz::Woz(bool verbose)
@@ -68,22 +65,22 @@ Woz::Woz(bool verbose)
 Woz::~Woz()
 {
   if (fd != -1) {
-    close(fd);
+    wozClose(fd);
     fd = -1;
   }
 
   for (int i=0; i<160; i++) {
     if (tracks[i].trackData) {
-      free(tracks[i].trackData);
+      wozFree(tracks[i].trackData);
       tracks[i].trackData = NULL;
     }
   }
   if (metaData) {
-    free(metaData);
+    wozFree(metaData);
     metaData = NULL;
   }
   if (hdvData) {
-    free(hdvData);
+    wozFree(hdvData);
     hdvData = NULL;
   }
 }
@@ -333,7 +330,7 @@ uint8_t Woz::nextRawWozByte(uint8_t datatrack)
 
 static bool write8(int fd, uint8_t v)
 {
-  if (write(fd, &v, 1) != 1)
+  if (wozWrite(fd, &v, 1) != 1)
     return false;
   return true;
 }
@@ -361,7 +358,7 @@ static bool write32(int fd, uint32_t v)
 static bool read8(int fd, uint8_t *toWhere)
 {
   uint8_t r;
-  if (read(fd, &r, 1) != 1)
+  if (wozRead(fd, &r, 1) != 1)
     return false;
   *toWhere = r;
 
@@ -468,14 +465,14 @@ bool Woz::writeWozFile(const char *filename, uint8_t subtype)
 {
   int fdout = -1;
 
-  fdout = open(filename, O_TRUNC|O_CREAT|O_RDWR, S_IRUSR|S_IWUSR);
+  fdout = wozOpen(filename, WOZ_OPEN_CREATE);
   if (fdout == -1) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: Unable to open output file: %s", strerror(errno));
     return false;
   }
 
   bool retval = writeWozFile(fdout, subtype);
-  close(fdout);
+  wozClose(fdout);
 
   return retval;
 }
@@ -496,7 +493,7 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
     wozMsg(WOZ_MSG_ERROR, "ERROR: version must be 1 or 2");
     goto done;
   }
-  lseek(fdout, 0, SEEK_SET);
+  wozSeek(fdout, 0, SEEK_SET);
   
   // header
   if (version == 1) {
@@ -515,7 +512,7 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
   }
 
   // We'll come back and write the checksum later
-  crcPos = lseek(fdout, 0, SEEK_CUR);
+  crcPos = wozSeek(fdout, 0, SEEK_CUR);
   tmp32 = 0;
   if (!write32(fdout, tmp32)) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write");
@@ -546,7 +543,7 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
   // Write the metadata if we have any
   if (metaData) {
     PREP_SECTION(fdout, 0x4154454D); // 'META'
-    if ((size_t)write(fdout, metaData, strlen(metaData)) != strlen(metaData)) {
+    if ((size_t)wozWrite(fdout, metaData, strlen(metaData)) != strlen(metaData)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write META chunk");
       goto done;
     }
@@ -557,35 +554,35 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
 
   // Fix up the checksum. Optional; the spec says it can be 0 meaning
   // "don't verify"
-#ifndef SKIPCHECKSUM
-  endPos = lseek(fdout, 0, SEEK_CUR);
-  crcDataSize = endPos-crcPos-4;
-  crcData = (uint8_t *)malloc(crcDataSize);
-  if (!crcData) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to malloc crc data chunk");
-    goto done;
-  }
-    
-  // Read the data in for checksumming
-  if (lseek(fdout, crcPos+4, SEEK_SET) == -1) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to fseek to crcPos+4 (0x%llX)", (unsigned long long)(crcPos+4));
-    goto done;
-  }
+  if (!wozGetHost()->skipChecksum) {
+    endPos = wozSeek(fdout, 0, SEEK_CUR);
+    crcDataSize = endPos-crcPos-4;
+    crcData = (uint8_t *)wozMalloc(crcDataSize);
+    if (!crcData) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to malloc crc data chunk");
+      goto done;
+    }
 
-  tmp32 = read(fdout, crcData, crcDataSize);
-  if (tmp32 != crcDataSize) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to read in data for checksum [read %lu, wanted %lu]", (unsigned long)tmp32, (unsigned long)crcDataSize);
-    goto done;
+    // Read the data in for checksumming
+    if (wozSeek(fdout, crcPos+4, SEEK_SET) == -1) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to fseek to crcPos+4 (0x%llX)", (unsigned long long)(crcPos+4));
+      goto done;
+    }
+
+    tmp32 = wozRead(fdout, crcData, crcDataSize);
+    if (tmp32 != crcDataSize) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to read in data for checksum [read %lu, wanted %lu]", (unsigned long)tmp32, (unsigned long)crcDataSize);
+      goto done;
+    }
+
+    tmp32 = compute_crc_32(crcData, crcDataSize);
+    // Write it back out
+    wozSeek(fdout, crcPos, SEEK_SET);
+    if (!write32(fdout, tmp32)) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write CRC");
+      goto done;
+    }
   }
-    
-  tmp32 = compute_crc_32(crcData, crcDataSize);
-  // Write it back out
-  lseek(fdout, crcPos, SEEK_SET);
-  if (!write32(fdout, tmp32)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write CRC");
-    goto done;
-  }
-#endif
   
   for (int i=0; i<160; i++) {
     tracks[i].dirty = false;
@@ -596,21 +593,21 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
 
  done:
   if (crcData)
-    free(crcData);
+    wozFree(crcData);
 
   return retval;
 }
 
 bool Woz::writeDskFile(const char *filename, uint8_t subtype)
 {
-  int fdout = open(filename, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
   if (fdout == -1) {
     wozMsg(WOZ_MSG_ERROR, "Failed to open output file: %s", strerror(errno));
     return false;
   }
 
   bool retval = writeDskFile(fdout, subtype);
-  close(fdout);
+  wozClose(fdout);
   return retval;
 }
 
@@ -619,7 +616,7 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
   if (isSynchronized()) {
     wozMsg(WOZ_MSG_WARNING, "WARNING: disk image has synchronized tracks; it may not work as a DSK or NIB file.");
   }
-  lseek(fdout, 0, SEEK_SET);
+  wozSeek(fdout, 0, SEEK_SET);
 
   uint8_t sectorData[256*16];
   for (int phystrack=0; phystrack<35; phystrack++) {
@@ -627,7 +624,7 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
       wozMsg(WOZ_MSG_ERROR, "Failed to decode track %d; aborting", phystrack);
       return false;
     }
-    ssize_t numWritten = write(fdout, sectorData, 256*16);
+    ssize_t numWritten = wozWrite(fdout, sectorData, 256*16);
     if (numWritten != 256*16) {
       wozMsg(WOZ_MSG_ERROR, "Failed[2] to write to track; aborting: %s", strerror(errno));
       return false;
@@ -643,14 +640,14 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
 
 bool Woz::writeNibFile(const char *filename)
 {
-  int fdout = open(filename, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
   if (fdout == -1) {
     wozMsg(WOZ_MSG_ERROR, "Failed to open output file: %s", strerror(errno));
     return false;
   }
 
   bool retval = writeNibFile(fdout);
-  close(fdout);
+  wozClose(fdout);
   return retval;
 }
 
@@ -659,7 +656,7 @@ bool Woz::writeNibFile(int fdout)
   if (isSynchronized()) {
     wozMsg(WOZ_MSG_WARNING, "WARNING: disk image has synchronized tracks; it may not work as a DSK or NIB file.");
   }
-  lseek(fdout, 0, SEEK_SET);
+  wozSeek(fdout, 0, SEEK_SET);
 
   nibSector nibData[16];
   for (int phystrack=0; phystrack<35; phystrack++) {
@@ -667,7 +664,7 @@ bool Woz::writeNibFile(int fdout)
       wozMsg(WOZ_MSG_ERROR, "Failed to decode track %d; aborting", phystrack);
       return false;
     }
-    if (write(fdout, nibData, NIBTRACKSIZE) != NIBTRACKSIZE) {
+    if (wozWrite(fdout, nibData, NIBTRACKSIZE) != NIBTRACKSIZE) {
       wozMsg(WOZ_MSG_ERROR, "Failed[1] to write track %d; aborting", phystrack);
       return false;
     }
@@ -720,7 +717,7 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     for (int i=0; i<160; i++) {
       // Don't flush any tracks that are dirty
       if (tracks[i].trackData && !tracks[i].dirty) {
-        free(tracks[i].trackData);
+        wozFree(tracks[i].trackData);
         tracks[i].trackData = NULL;
       }
     }
@@ -744,14 +741,14 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     
     static uint8_t sectorData[256*16];
 
-    lseek(fd, 256*16*phystrack, SEEK_SET);
+    wozSeek(fd, 256*16*phystrack, SEEK_SET);
 
-    if (read(fd, sectorData, 256*16) != 256*16) {
+    if (wozRead(fd, sectorData, 256*16) != 256*16) {
       wozMsg(WOZ_MSG_ERROR, "Failed to read sector");
       return false;
     }
 
-    tracks[datatrack].trackData = (uint8_t *)calloc(NIBTRACKSIZE, 1);
+    tracks[datatrack].trackData = (uint8_t *)wozCalloc(NIBTRACKSIZE, 1);
     if (!tracks[datatrack].trackData) {
       wozMsg(WOZ_MSG_ERROR, "Failed to malloc track data");
       return false;
@@ -772,14 +769,14 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     // If the source was a NIB file, then the datatrack is directly
     // mapped 1:1 to the physical track
     uint8_t phystrack = datatrack; // used for clarity of which kind of track we mean, below
-    tracks[datatrack].trackData = (uint8_t *)malloc(NIBTRACKSIZE);
+    tracks[datatrack].trackData = (uint8_t *)wozMalloc(NIBTRACKSIZE);
     if (!tracks[datatrack].trackData) {
       wozMsg(WOZ_MSG_ERROR, "Failed to malloc track data");
       return false;
     }
 
-    lseek(fd, NIBTRACKSIZE * phystrack, SEEK_SET);
-    read(fd, tracks[datatrack].trackData, NIBTRACKSIZE);
+    wozSeek(fd, NIBTRACKSIZE * phystrack, SEEK_SET);
+    wozRead(fd, tracks[datatrack].trackData, NIBTRACKSIZE);
       // FIXME: no error checking
     
     tracks[datatrack].startingBlock = STARTBLOCK + 13*phystrack;
@@ -805,8 +802,8 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   autoFlushTrackData = !preloadTracks;
   imageType = subtype;
 
-  if (fd != -1) close(fd);
-  fd = open(filename, O_RDWR, S_IRUSR|S_IWUSR);
+  if (fd != -1) wozClose(fd);
+  fd = wozOpen(filename, WOZ_OPEN_READWRITE);
   if (fd == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open input file: %s", strerror(errno));
     goto done;
@@ -818,13 +815,13 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   if (preloadTracks) {
     uint8_t sectorData[256*16];
     for (int phystrack=0; phystrack<35; phystrack++) {
-      uint32_t bytesRead = read(fd, sectorData, 256*16);
+      uint32_t bytesRead = wozRead(fd, sectorData, 256*16);
       if (bytesRead != 256*16) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to read DSK data; got %lu bytes, wanted %d", (unsigned long)bytesRead, 256);
 	goto done;
       }
       uint8_t datatrack = quarterTrackMap[phystrack*4];
-      tracks[datatrack].trackData = (uint8_t *)calloc(NIBTRACKSIZE, 1);
+      tracks[datatrack].trackData = (uint8_t *)wozCalloc(NIBTRACKSIZE, 1);
       if (!tracks[datatrack].trackData) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to malloc track data");
 	goto done;
@@ -839,12 +836,10 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   retval = true;
 
  done:
-#ifndef LAZYFD
-  if (preloadTracks && fd != -1) {
-    close(fd);
+  if (preloadTracks && fd != -1 && !wozGetHost()->keepFilesOpen) {
+    wozClose(fd);
     fd = -1;
   }
-#endif
   return retval;
 }
 
@@ -856,39 +851,39 @@ bool Woz::readHdvFile(const char *filename)
   imageType = T_HDV;
   autoFlushTrackData = false;
 
-  if (fd != -1) close(fd);
-  fd = open(filename, O_RDONLY, S_IRUSR);
+  if (fd != -1) wozClose(fd);
+  fd = wozOpen(filename, WOZ_OPEN_READ);
   if (fd == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open input file: %s", strerror(errno));
     return false;
   }
-  struct stat st;
-  if (fstat(fd, &st) != 0) {
-    wozMsg(WOZ_MSG_ERROR, "Unable to stat input file: %s", strerror(errno));
-    close(fd); fd = -1;
+  long fileSize = wozSeek(fd, 0, SEEK_END);
+  if (fileSize < 0 || wozSeek(fd, 0, SEEK_SET) != 0) {
+    wozMsg(WOZ_MSG_ERROR, "Unable to find the size of the input file: %s", strerror(errno));
+    wozClose(fd); fd = -1;
     return false;
   }
-  if (st.st_size == 0 || (st.st_size % 512) != 0) {
-    wozMsg(WOZ_MSG_ERROR, "HDV image '%s' has a bad size (%lld bytes)",
-            filename, (long long)st.st_size);
-    close(fd); fd = -1;
+  if (fileSize == 0 || (fileSize % 512) != 0) {
+    wozMsg(WOZ_MSG_ERROR, "HDV image '%s' has a bad size (%ld bytes)",
+            filename, fileSize);
+    wozClose(fd); fd = -1;
     return false;
   }
 
-  if (hdvData) { free(hdvData); hdvData = NULL; }
-  hdvByteSize = (uint32_t)st.st_size;
-  hdvData = (uint8_t *)malloc(hdvByteSize);
+  if (hdvData) { wozFree(hdvData); hdvData = NULL; }
+  hdvByteSize = (uint32_t)fileSize;
+  hdvData = (uint8_t *)wozMalloc(hdvByteSize);
   if (!hdvData) {
     wozMsg(WOZ_MSG_ERROR, "Out of memory loading HDV (%u bytes)", (unsigned)hdvByteSize);
-    close(fd); fd = -1;
+    wozClose(fd); fd = -1;
     return false;
   }
-  ssize_t got = read(fd, hdvData, hdvByteSize);
-  close(fd); fd = -1;
+  ssize_t got = wozRead(fd, hdvData, hdvByteSize);
+  wozClose(fd); fd = -1;
   if (got != (ssize_t)hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Short read on HDV (%zd of %u bytes)",
             got, (unsigned)hdvByteSize);
-    free(hdvData); hdvData = NULL;
+    wozFree(hdvData); hdvData = NULL;
     return false;
   }
 
@@ -915,7 +910,7 @@ bool Woz::truncateHdv(uint32_t newByteSize)
   }
   // Hand the tail back if the allocator will take it. Keeping the bigger
   // buffer is harmless either way: hdvByteSize is what gets written.
-  uint8_t *smaller = (uint8_t *)realloc(hdvData, newByteSize);
+  uint8_t *smaller = (uint8_t *)wozRealloc(hdvData, newByteSize);
   if (smaller)
     hdvData = smaller;
   hdvByteSize = newByteSize;
@@ -928,13 +923,13 @@ bool Woz::writeHdvFile(const char *filename)
     wozMsg(WOZ_MSG_ERROR, "No HDV buffer to write");
     return false;
   }
-  int fdout = open(filename, O_TRUNC|O_CREAT|O_WRONLY, S_IRUSR|S_IWUSR);
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
   if (fdout == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open output HDV file: %s", strerror(errno));
     return false;
   }
-  ssize_t wrote = write(fdout, hdvData, hdvByteSize);
-  close(fdout);
+  ssize_t wrote = wozWrite(fdout, hdvData, hdvByteSize);
+  wozClose(fdout);
   if (wrote != (ssize_t)hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Short write on HDV (%zd of %u bytes)",
             wrote, (unsigned)hdvByteSize);
@@ -948,8 +943,8 @@ bool Woz::readNibFile(const char *filename, bool preloadTracks)
   autoFlushTrackData = !preloadTracks;
   imageType = T_NIB;
 
-  if (fd != -1) close(fd);
-  fd = open(filename, O_RDWR, S_IRUSR|S_IWUSR);
+  if (fd != -1) wozClose(fd);
+  fd = wozOpen(filename, WOZ_OPEN_READWRITE);
   if (fd == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open input file: %s", strerror(errno));
     return false;
@@ -961,13 +956,13 @@ bool Woz::readNibFile(const char *filename, bool preloadTracks)
   if (preloadTracks) {
     nibSector nibData[16];
     for (int phystrack=0; phystrack<35; phystrack++) {
-      uint32_t bytesRead = read(fd, nibData, NIBTRACKSIZE);
+      uint32_t bytesRead = wozRead(fd, nibData, NIBTRACKSIZE);
       if (bytesRead != NIBTRACKSIZE) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to read NIB data; got %lu bytes, wanted %d", (unsigned long)bytesRead, NIBTRACKSIZE);
 	return false;
       }
       uint8_t datatrack = quarterTrackMap[phystrack * 4];
-      tracks[datatrack].trackData = (uint8_t *)calloc(NIBTRACKSIZE, 1);
+      tracks[datatrack].trackData = (uint8_t *)wozCalloc(NIBTRACKSIZE, 1);
       if (!tracks[datatrack].trackData) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to malloc track data");
 	return false;
@@ -979,12 +974,10 @@ bool Woz::readNibFile(const char *filename, bool preloadTracks)
       tracks[datatrack].bitCount = NIBTRACKSIZE*8;
     }
   }
-#ifndef LAZYFD
-  if (preloadTracks && fd != -1) {
-    close(fd);
+  if (preloadTracks && fd != -1 && !wozGetHost()->keepFilesOpen) {
+    wozClose(fd);
     fd = -1;
   }
-#endif
   return true;
 }
 
@@ -993,8 +986,8 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
   imageType = T_WOZ;
   autoFlushTrackData = !preloadTracks;
 
-  if (fd != -1) close(fd);
-  fd = open(filename, O_RDWR, S_IRUSR|S_IWUSR);
+  if (fd != -1) wozClose(fd);
+  fd = wozOpen(filename, WOZ_OPEN_READWRITE);
   if (fd == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open input file: %s", strerror(errno));
     return false;
@@ -1010,7 +1003,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
   } else {
     wozMsg(WOZ_MSG_ERROR, "Unknown disk image type; can't continue");
     if (preloadTracks && fd != -1)
-      close(fd);
+      wozClose(fd);
     return false;
   }
 
@@ -1018,13 +1011,13 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
   if (!read32(fd, &tmp)) {
     wozMsg(WOZ_MSG_ERROR, "Read failure");
     if (preloadTracks && fd != -1)
-      close(fd);
+      wozClose(fd);
     return false;
   }
   if (tmp != 0x0A0D0AFF) {
     wozMsg(WOZ_MSG_ERROR, "WOZ header failure; exiting");
     if (preloadTracks && fd != -1)
-      close(fd);
+      wozClose(fd);
     return false;
   }
   uint32_t crc32;
@@ -1045,7 +1038,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
 #define cTRKS 4
 
   while (1) {
-    if (lseek(fd, fpos, SEEK_SET) == -1) {
+    if (wozSeek(fd, fpos, SEEK_SET) == -1) {
       break;
     }
 
@@ -1058,7 +1051,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     if ((int32_t)chunkDataSize < 0) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: data size < 0?");
       if (preloadTracks && fd != -1)
-	close(fd);
+	wozClose(fd);
       return false;
     }
 
@@ -1068,7 +1061,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x4F464E49: // 'INFO'
       if (verbose) {
 	wozMsg(WOZ_MSG_DEBUG, "Reading INFO chunk starting at byte 0x%llX",
-	       (unsigned long long)lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long)wozSeek(fd, 0, SEEK_CUR));
       }
       isOk = parseInfoChunk(chunkDataSize);
       haveData |= cINFO;
@@ -1076,7 +1069,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x50414D54: // 'TMAP'
       if (verbose) {
 	wozMsg(WOZ_MSG_DEBUG, "Reading TMAP chunk starting at byte 0x%llX",
-	       (unsigned long long)lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long)wozSeek(fd, 0, SEEK_CUR));
       }
       isOk = parseTMAPChunk(chunkDataSize);
       haveData |= cTMAP;
@@ -1084,7 +1077,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x534B5254: // 'TRKS'
       if (verbose) {
 	wozMsg(WOZ_MSG_DEBUG, "Reading TRKS chunk starting at byte 0x%llX",
-	       (unsigned long long) lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long) wozSeek(fd, 0, SEEK_CUR));
       }
       isOk = parseTRKSChunk(chunkDataSize);
       haveData |= cTRKS;
@@ -1092,7 +1085,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     case 0x4154454D: // 'META'
       if (verbose) {
 	wozMsg(WOZ_MSG_DEBUG, "Reading META chunk starting at byte 0x%llX",
-	       (unsigned long long) lseek(fd, 0, SEEK_CUR));
+	       (unsigned long long) wozSeek(fd, 0, SEEK_CUR));
       }	  
       isOk = parseMetaChunk(chunkDataSize);
       break;
@@ -1111,7 +1104,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     if (!isOk) {
       wozMsg(WOZ_MSG_ERROR, "Chunk parsing [0x%lX] failed; exiting", (unsigned long)chunkType);
       if (preloadTracks && fd != -1)
-	close(fd);
+	wozClose(fd);
       return false;
     }
     fpos += chunkDataSize + 8; // 8 bytes for the ChunkID and the ChunkSize
@@ -1131,7 +1124,7 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
       if (!readWozDataTrack(i)) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to read Woz datatrack %d", i);
 	if (fd != -1) {
-	  close(fd);
+	  wozClose(fd);
 	  fd = -1;
 	}
 	return false;
@@ -1139,12 +1132,10 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
     }
   }
 
-#ifndef LAZYFD
-  if (preloadTracks && fd != -1) {
-    close(fd);
+  if (preloadTracks && fd != -1 && !wozGetHost()->keepFilesOpen) {
+    wozClose(fd);
     fd = -1;
   }
-#endif
   return true;
 }
 
@@ -1180,12 +1171,12 @@ bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
   // 35-track geometry the other paths assume; promote it to T_HDV so the
   // raw-block path is used instead.
   if (forceType == T_PO || forceType == T_DSK) {
-    struct stat st;
-    if (stat(filename, &st) == 0 && st.st_size > 35 * 16 * 256) {
+    long fileSize = sizeOfFile(filename);
+    if (fileSize > 35 * 16 * 256) {
       if (verbose) {
-        wozMsg(WOZ_MSG_DEBUG, "Input file is larger than a floppy (%lld bytes); "
+        wozMsg(WOZ_MSG_DEBUG, "Input file is larger than a floppy (%ld bytes); "
                "treating as ProDOS hard-disk image.",
-               (long long)st.st_size);
+               fileSize);
       }
       forceType = T_HDV;
       hdvPromotedFromFloppyExt = true;
@@ -1232,7 +1223,7 @@ bool Woz::parseTRKSChunk(uint32_t chunkSize)
     tracks[trackNumber].startingByte = trackNumber * 6656 + 256;
     tracks[trackNumber].startingBlock = 0; // v2-specific
     tracks[trackNumber].blockCount = 13;
-    lseek(fd, (trackNumber * 6656 + 256) + 6648, SEEK_SET);
+    wozSeek(fd, (trackNumber * 6656 + 256) + 6648, SEEK_SET);
     uint16_t numBits;
     if (!read16(fd, &numBits)) {
       return false;
@@ -1363,11 +1354,11 @@ bool Woz::parseInfoChunk(uint32_t chunkSize)
 
 bool Woz::parseMetaChunk(uint32_t chunkSize)
 {
-  metaData = (char *)calloc(chunkSize+1, 1);
+  metaData = (char *)wozCalloc(chunkSize+1, 1);
   if (!metaData)
     return false;
 
-  if ((uint32_t)read(fd, metaData, chunkSize) != chunkSize)
+  if ((uint32_t)wozRead(fd, metaData, chunkSize) != chunkSize)
     return false;
 
   metaData[chunkSize] = 0;
@@ -1399,7 +1390,7 @@ bool Woz::readWozDataTrack(uint8_t datatrack)
     // This track has no data; do nothing, and we'll be successful at it
     return true;
   }
-  tracks[datatrack].trackData = (uint8_t *)calloc(count, 1);
+  tracks[datatrack].trackData = (uint8_t *)wozCalloc(count, 1);
   if (!tracks[datatrack].trackData) {
     wozMsg(WOZ_MSG_ERROR, "Failed to alloc buf to read track magnetic data: %s", strerror(errno));
     return false;
@@ -1411,7 +1402,7 @@ bool Woz::readWozDataTrack(uint8_t datatrack)
 	     datatrack,
 	     (unsigned long)tracks[datatrack].startingByte);
     }
-    if (lseek(fd, tracks[datatrack].startingByte, SEEK_SET) == -1) {
+    if (wozSeek(fd, tracks[datatrack].startingByte, SEEK_SET) == -1) {
       wozMsg(WOZ_MSG_ERROR, "Failed to seek to start of block: %s", strerror(errno));
       return false;
     }
@@ -1421,12 +1412,12 @@ bool Woz::readWozDataTrack(uint8_t datatrack)
 	     datatrack,
 	     (unsigned long)(bitsStartBlock*512));
     }
-    if (lseek(fd, bitsStartBlock*512, SEEK_SET) == -1) {
+    if (wozSeek(fd, bitsStartBlock*512, SEEK_SET) == -1) {
       wozMsg(WOZ_MSG_ERROR, "Failed to seek to start of block: %s", strerror(errno));
       return false;
     }
   }
-  uint32_t didRead = read(fd, tracks[datatrack].trackData, count);
+  uint32_t didRead = wozRead(fd, tracks[datatrack].trackData, count);
   if (didRead != count) {
     wozMsg(WOZ_MSG_ERROR, "Failed to read all track data for track [read %lu, wanted %lu]", (unsigned long)didRead, (unsigned long)count);
     return false;
@@ -1743,7 +1734,7 @@ bool Woz::writeTRKSChunk(uint8_t version, int fdout)
     
     if (tracks[i].startingBlock &&
 	tracks[i].blockCount) {
-      if (lseek(fdout, tracks[i].startingBlock * 512, SEEK_SET) == -1) {
+      if (wozSeek(fdout, tracks[i].startingBlock * 512, SEEK_SET) == -1) {
 	wozMsg(WOZ_MSG_ERROR, "Failed to seek before writing track");
 	return false;
       }
@@ -1752,7 +1743,7 @@ bool Woz::writeTRKSChunk(uint8_t version, int fdout)
       // ... but in practice, the tracks are all padded to NIBTRACKSIZE bytes;
       // and we alloc'd a buffer of that size, too; so write the whole thing,
       // since it would have been calloc'd initially.
-      ssize_t numWritten = write(fdout, tracks[i].trackData, NIBTRACKSIZE);
+      ssize_t numWritten = wozWrite(fdout, tracks[i].trackData, NIBTRACKSIZE);
       if (numWritten != NIBTRACKSIZE) {
 	int err = errno;
 	wozMsg(WOZ_MSG_ERROR, "Failed to write track [%d]", (int)numWritten);
@@ -1861,12 +1852,12 @@ bool Woz::decodeWozTrack13ToDsk(uint8_t phystrack, uint8_t sectorData[256*13])
   // buffer the 6-and-2 path builds: they have a different address
   // prologue and a larger per-sector data field. Instead, pull the raw
   // nib stream and scan it with the 13-sector denibblizer.
-  uint8_t *nibStream = (uint8_t *)calloc(NIBTRACKSIZE, 1);
+  uint8_t *nibStream = (uint8_t *)wozCalloc(NIBTRACKSIZE, 1);
   if (!nibStream) return false;
-  if (!readRawNibStream(phystrack, nibStream)) { free(nibStream); return false; }
+  if (!readRawNibStream(phystrack, nibStream)) { wozFree(nibStream); return false; }
 
   nibErr rc = denibblizeTrack13(nibStream, sectorData);
-  free(nibStream);
+  wozFree(nibStream);
   if (rc != errorNone) {
     wozMsg(WOZ_MSG_ERROR, "failed to denib 13-sector track (err %d)", (int)rc);
     return false;

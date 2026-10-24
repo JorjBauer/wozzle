@@ -436,14 +436,18 @@ nibErr denibblizeTrack13(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuff
 
     // Address epilogue: DE AA EB (last byte only partially checked to
     // match 6-and-2 tolerance above).
-    if (input[i % NIBTRACKSIZE] != 0xDE) continue; i++;
-    if (input[i % NIBTRACKSIZE] != 0xAA) continue; i++;
+    if (input[i % NIBTRACKSIZE] != 0xDE) continue;
+    i++;
+    if (input[i % NIBTRACKSIZE] != 0xAA) continue;
+    i++;
 
     // Skip gap to data prologue.
     while (input[i % NIBTRACKSIZE] != 0xD5) i++;
     i++;
-    if (input[i % NIBTRACKSIZE] != 0xAA) continue; i++;
-    if (input[i % NIBTRACKSIZE] != 0xAD) continue; i++;
+    if (input[i % NIBTRACKSIZE] != 0xAA) continue;
+    i++;
+    if (input[i % NIBTRACKSIZE] != 0xAD) continue;
+    i++;
 
     // Pull the 411 data bytes into a contiguous buffer (track may wrap).
     uint8_t nibData[411];
@@ -454,9 +458,12 @@ nibErr denibblizeTrack13(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuff
     if (!_decode53Data(nibData, sectorOut)) return errorBadData;
     i += 411;
 
-    if (input[i % NIBTRACKSIZE] != 0xDE) continue; i++;
-    if (input[i % NIBTRACKSIZE] != 0xAA) continue; i++;
-    if (input[i % NIBTRACKSIZE] != 0xEB) continue; i++;
+    if (input[i % NIBTRACKSIZE] != 0xDE) continue;
+    i++;
+    if (input[i % NIBTRACKSIZE] != 0xAA) continue;
+    i++;
+    if (input[i % NIBTRACKSIZE] != 0xEB) continue;
+    i++;
 
     if (sectorNum >= 13) return errorBadData;
     uint8_t logicalSector = dephys13[sectorNum];

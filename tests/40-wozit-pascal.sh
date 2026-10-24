@@ -40,7 +40,7 @@ assert_eq "$(hash_file "$TMP/a.bin")" "$(hash_file "$TMP/b.bin")" "cpout is dete
 [ -s "$TMP/a.bin" ]; assert_eq 0 $? "cpout produced a non-empty file"
 
 # --- cpin round-trip ---------------------------------------------------
-head -c 2000 crc32.c > "$TMP/payload.bin"
+head -c 2000 src/crc32.c > "$TMP/payload.bin"
 ph=$(hash_file "$TMP/payload.bin")
 cp "$IMG" "$TMP/rt.$ext"
 ./wozit -P -I "$TMP/rt.$ext" -c "cpin $TMP/payload.bin MYFILE.DATA" -c save >/dev/null 2>&1
