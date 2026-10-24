@@ -33,6 +33,18 @@ If you're building with Arduino, the top of this repository is an Arduino librar
 
 The library never touches files, memory or the terminal directly. File I/O and allocation go through hooks in wozhost.h, and messages go through wozmsg.h. On a POSIX system the defaults just work. Arduino has no POSIX file layer, so there you have to install file hooks (wozSetHost) before you open an image. wozhost.h also has two settings for slow storage: keepFilesOpen, and skipChecksum (which writes a 0 CRC, which the WOZ spec allows). There's a clock hook too (now), for dating new Pascal files; on Arduino it defaults to "don't know", and they get no date.
 
+There's also a WebAssembly build, which is what the GUI is going to use. *make wasm* builds it with Emscripten (I've used 6.0.5) into wasm/build/, and wasm/wozzle.mjs wraps it in JavaScript that deals in byte arrays:
+
+```
+import { loadWozzle } from './wasm/wozzle.mjs';
+const woz = await loadWozzle();
+const img = woz.open(bytes, 'disk.po');
+for (const e of img.list()) console.log(e.name, e.length);
+const woz2 = img.save('disk.woz');
+```
+
+Images sit in Emscripten's in-memory filesystem while they're open, so the library's default file hooks work unchanged and nothing touches real files. wasm/test.mjs runs through most of it under node, and the test suite runs that if the build is there.
+
 Buffers the library hands back (file contents, for instance) come from the allocator hook, so give them back with wozFree, not free. On a POSIX system with the default hooks it's the same thing, but it isn't on a Teensy with its allocator pointed at PSRAM.
 
 None of this is thread safe. The hooks and the message sink are global, and nothing is locked. If you're calling it from a GUI, do all of it from one thread.

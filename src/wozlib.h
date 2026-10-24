@@ -166,6 +166,11 @@ bool wozCreateBlankImage(const char *path, wozFsType type,
                          const char *volumeName, int dosVolume,
                          uint32_t blocks, bool bootable);
 
+// Convert an image from one format to another, as wozzle does: the
+// formats follow the extensions. It works below the filesystem, so a
+// copy-protected disk converts as well as any other.
+bool wozConvertImage(const char *inPath, const char *outPath);
+
 // A size token ("140k", "800k", "32m", a block count) as blocks, or -1
 int32_t wozParseSize(const char *token);
 

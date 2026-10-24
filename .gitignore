@@ -10,3 +10,4 @@ libwozcore.a
 *.d
 wozmosis
 wozfuse
+wasm/build/

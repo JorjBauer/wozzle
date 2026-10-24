@@ -26,7 +26,27 @@ WOZITOBJS=clireport.o wozit.o
 WOZMOSISSRCS=wozmosis.cpp
 WOZMOSISOBJS=wozmosis.o
 
-.PHONY: test clean unit-tests
+# The WebAssembly build (make wasm), for the GUI: the library plus
+# wasm/wozjs.cpp, as an ES module that wasm/wozzle.mjs wraps. Needs
+# Emscripten (emcc and em++).
+EMCC ?= emcc
+EMXX ?= em++
+WASM_BUILD = wasm/build
+WASM_OBJS = $(addprefix $(WASM_BUILD)/obj/,$(notdir $(addsuffix .o,$(basename $(WOZCORE_SRCS))))) \
+	$(WASM_BUILD)/obj/wozjs.o
+WASM_FUNCS = wozMalloc wozFree malloc free wozLastError wozClearError \
+	wozImageOpen wozImageClose wozImageDetect wozImageFsType wozImageProbe \
+	wozImageIsDirty wozImageSave wozImageReadFile wozImageListBasic \
+	wozImageWriteFile wozImageDelete wozImageRemoveDirectory \
+	wozImageMakeDirectory wozImageRenameVolume wozImageInstallBootBlocks \
+	wozImageKrunch wozImageResize wozCreateBlankImage wozConvertImage \
+	wozParseSize wozJsInit wozJsVolumeInfo wozJsList wozJsStat wozJsCopy
+comma := ,
+space := $(subst ,, )
+WASM_EXPORTS = $(subst $(space),$(comma),$(strip $(addprefix _,$(WASM_FUNCS))))
+WASM_RUNTIME = ccall,FS,UTF8ToString,stringToNewUTF8,HEAPU8,HEAPU32
+
+.PHONY: test clean unit-tests wasm
 
 all: wozzle wozit wozmosis $(if $(FUSE_LIBS),wozfuse)
 
@@ -74,6 +94,27 @@ wozit: $(WOZITOBJS) $(LIBWOZCORE)
 wozmosis: $(WOZMOSISOBJS) $(LIBWOZCORE)
 	$(CXX) $(CFLAGS) -o wozmosis $(WOZMOSISOBJS) $(LIBWOZCORE)
 
+wasm: $(WASM_BUILD)/wozcore.mjs
+
+$(WASM_BUILD)/obj/%.o: src/%.cpp src/*.h
+	@mkdir -p $(WASM_BUILD)/obj
+	$(EMXX) -O2 $(WOZCORE_CFLAGS) -c $< -o $@
+
+$(WASM_BUILD)/obj/%.o: src/%.c src/*.h
+	@mkdir -p $(WASM_BUILD)/obj
+	$(EMCC) -O2 $(WOZCORE_CFLAGS) -c $< -o $@
+
+$(WASM_BUILD)/obj/wozjs.o: wasm/wozjs.cpp src/*.h
+	@mkdir -p $(WASM_BUILD)/obj
+	$(EMXX) -O2 $(WOZCORE_CFLAGS) -c $< -o $@
+
+$(WASM_BUILD)/wozcore.mjs: $(WASM_OBJS)
+	$(EMXX) -O2 $(WASM_OBJS) -o $@ -sMODULARIZE -sEXPORT_ES6 \
+	  -sEXPORT_NAME=createWozModule -sALLOW_MEMORY_GROWTH \
+	  -sENVIRONMENT=web,worker,node \
+	  -sEXPORTED_FUNCTIONS=$(WASM_EXPORTS) \
+	  -sEXPORTED_RUNTIME_METHODS=$(WASM_RUNTIME)
+
 depend: .depend
 
 .depend: $(WOZCORE_SRCS) $(WOZSRCS) $(FUSESRCS) $(WOZITSRCS) $(WOZMOSISSRCS)
@@ -84,7 +125,7 @@ include .depend
 
 clean:
 	rm -f $(WOZCORE_OBJS) $(LIBWOZCORE) $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) wozzle wozit wozmosis wozfuse *~ $(UNIT_BINS)
-	rm -rf *.dSYM tests/*.dSYM
+	rm -rf *.dSYM tests/*.dSYM $(WASM_BUILD)
 	rm -f tests/nib-test tests/test-pattern tests/make-test-disk tests/unit-capi.o tests/unit-dosref.o
 	rm -f tests/pattern.dsk tests/pattern-out.dsk
 

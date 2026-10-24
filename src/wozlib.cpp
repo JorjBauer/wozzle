@@ -373,6 +373,20 @@ bool wozCreateBlankImage(const char *path, wozFsType type,
   return ok;
 }
 
+bool wozConvertImage(const char *inPath, const char *outPath)
+{
+  Woz w(false);
+  if (!w.readFile(inPath, true)) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to read '%s'", inPath);
+    return false;
+  }
+  if (!w.writeFile(outPath)) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write '%s'", outPath);
+    return false;
+  }
+  return true;
+}
+
 int32_t wozParseSize(const char *token)
 {
   return wozParseSizeSpec(token);
