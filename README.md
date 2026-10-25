@@ -21,9 +21,9 @@ Releases
 
 There are github releases for each of the GUI versions, cross-platform: MacOS, Windows, Linux. The GUI app is only missing FUSE support to mount images as a local filesystem.
 
-The CLI utilities are built for MacOS, and have a release named "wozzle-tools-<version>-darwin-universal.tar.gz" and should work on MacOS 12 or newer. If you want to use FUSE mounts you have to install [macFUSE](https://macfuse.github.io/). Other platforms, you'll need to build yourself.
+The CLI utilities are built for MacOS, and have a release named "wozzle-tools-<version>-darwin-universal.tar.gz" and should work on MacOS 12 or newer. If you want to use FUSE mounts you have to install [macFUSE](https://macfuse.github.io/). Other platforms are built via github.
 
-None of the tools are signed with a developer certificate, so you will likely be told that it can't be opened (MacOS: unzip, open, System Settings, Privacy & Security, click "Open Anyway") the first time you try to launch each one.
+None of the tools are signed with a developer certificate, so you will likely be told that it can't be opened (MacOS: unzip, open, System Settings, Privacy & Security, click "Open Anyway"; Windows, "More Info" and "Run Anyway") the first time you try to launch each one.
 
 Using the library in another program
 ------------------------------------

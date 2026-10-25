@@ -118,15 +118,15 @@ else
     # From that paragraph to the next heading. The README's headings are
     # underlined, so a line is only known not to be one by the line after.
     awk '
-      /^None of these are signed/ { on = 1 }
+      /^None of .* signed/ { on = 1 }
       !on { next }
       /^(-+|=+)$/ { stop = 1; exit }
       { if (have) print prev; prev = $0; have = 1 }
       END { if (have && !stop) print prev }
     ' README.md
   } > "$NOTES"
-  grep -q 'None of these are signed' "$NOTES" ||
-    die "couldn't find the first-launch section in README.md (it starts \"None of these are signed\")"
+  grep -q '^None of .* signed' "$NOTES" ||
+    die "couldn't find the first-launch section in README.md (a paragraph starting \"None of ... signed\")"
   echo
   echo "About to publish $TAG to https://github.com/$REPO/releases"
   [ -n "$REMOTE_TAG" ] || echo "  and tag $SHORT as $TAG on GitHub$([ -n "$LOCAL" ] || echo ' and here')"
