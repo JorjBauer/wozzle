@@ -2052,6 +2052,10 @@ bool Woz::readNibSectorDataFromDataTrack(uint8_t dataTrack, uint8_t sector, nibS
       return false;
     }
   }
+  // A track the image doesn't have loads as nothing. There's no sector on
+  // it, and searching it would read 0 a byte at a time (with a complaint
+  // for each one) for two revolutions.
+  if (!tracks[dataTrack].trackData) return false;
 
   memset(sectorData->gap1, 0xFF, sizeof(sectorData->gap1));
   memset(sectorData->gap2, 0xFF, sizeof(sectorData->gap2));
@@ -2365,6 +2369,7 @@ bool Woz::readRawNibStream(uint8_t phystrack, uint8_t out[])
   if (!tracks[dataTrack].trackData) {
     if (!loadMissingTrackFromImage(dataTrack)) return false;
   }
+  if (!tracks[dataTrack].trackData) return false;
   for (uint32_t i = 0; i < NIBTRACKSIZE; i++) {
     out[i] = nextDiskByte(dataTrack);
   }
@@ -2473,6 +2478,7 @@ uint8_t Woz::scanTrackOrderedSectors(uint8_t datatrack, trackSectorDump *out,
 #define denib(a, b) ((((a) & ~0xAA) << 1) | ((b) & ~0xAA))
   // Look at the sectors in the order they're found on the track, for up
   // to two revolutions
+  if (!tracks[datatrack].trackData) return 0;
   trackPointer = 0;
   trackBitIdx = 0x80;
   trackBitCounter = 0;

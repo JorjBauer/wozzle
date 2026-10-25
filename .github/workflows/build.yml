@@ -70,7 +70,9 @@ jobs:
           path: wasm/build
       # Newer than the sources, so make doesn't try to build it again
       - run: find wasm/build -type f -exec touch {} +
+      # The tests take about a minute; a hang shouldn't take hours
       - run: make test
+        timeout-minutes: 15
       - run: make dist
       - name: Add to the release
         if: env.RELEASING == 'true'
@@ -126,6 +128,7 @@ jobs:
       # here is reported without stopping the build
       - run: make test
         continue-on-error: true
+        timeout-minutes: 15
       - run: make dist
       - name: Add to the release
         if: env.RELEASING == 'true'

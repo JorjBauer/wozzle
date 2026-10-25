@@ -31,6 +31,10 @@ static int tOpen(const char *path, wozOpenMode mode, void *ctx)
   (void)ctx;
   int flags = (mode == WOZ_OPEN_READ) ? O_RDONLY : O_RDWR;
   if (mode == WOZ_OPEN_CREATE) flags |= O_CREAT|O_TRUNC;
+#ifdef O_BINARY
+  // Windows opens files as text otherwise
+  flags |= O_BINARY;
+#endif
   int fd = open(path, flags, S_IRUSR|S_IWUSR);
   if (fd != -1) counts.opens++;
   return fd;
