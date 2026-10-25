@@ -124,10 +124,7 @@ jobs:
           name: wasm
           path: wasm/build
       - run: find wasm/build -type f -exec touch {} +
-      # The tests haven't been run on Windows before, so for now a failure
-      # here is reported without stopping the build
       - run: make test
-        continue-on-error: true
         timeout-minutes: 15
       - run: make dist
       - name: Add to the release
