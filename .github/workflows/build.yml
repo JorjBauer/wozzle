@@ -1,0 +1,142 @@
+# Linux and Windows builds. make release, on a Mac, makes the GitHub
+# release with the Mac files; publishing it starts this, which builds the
+# same things here and adds them to that release (tools/release.sh add).
+#
+# Run it by hand from the Actions tab to build without releasing: the
+# files are then kept as the run's artifacts, which is the way to try a
+# change before tagging a version.
+#
+# The wasm is built once, on Linux, and handed to both builds, since
+# it's the same everywhere and Emscripten is awkward under MSYS2.
+
+name: build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  EMSCRIPTEN_VERSION: 6.0.5
+  NODE_VERSION: 24
+  # make installs the GUI's packages with npm ci, which doesn't rewrite
+  # package-lock.json, so release.sh still sees a clean tree
+  NPM_INSTALL: ci
+  RELEASING: ${{ github.event_name == 'release' }}
+
+jobs:
+  wasm:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+      - run: make wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: wasm/build
+
+  # 22.04 rather than the newest, so the tools and the AppImage run on
+  # older systems too (they need at least this glibc)
+  linux:
+    needs: wasm
+    runs-on: ubuntu-22.04
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release.sh checks that the commit is on a branch here
+          fetch-depth: 0
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config file zip \
+            libreadline-dev libfuse3-dev libfuse2 \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: wasm/build
+      # Newer than the sources, so make doesn't try to build it again
+      - run: find wasm/build -type f -exec touch {} +
+      - run: make test
+      - run: make dist
+      - name: Add to the release
+        if: env.RELEASING == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_YES: 1
+        run: sh tools/release.sh add
+      - uses: actions/upload-artifact@v4
+        if: env.RELEASING != 'true'
+        with:
+          name: linux
+          path: |
+            gui/dist/Wozzle-*
+            dist/release/wozzle-tools-*
+
+  # The tools are built with MSYS2's MinGW compiler, and the app with
+  # Rust's own MSVC toolchain, which the runner already has; make runs in
+  # MSYS2's shell and finds node, cargo, git and gh on the Windows PATH.
+  windows:
+    needs: wasm
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # Otherwise git turns the scripts' line endings into CRLF, and bash
+      # can't run them
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: >-
+            make zip diffutils python
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-readline
+            mingw-w64-ucrt-x86_64-termcap
+            mingw-w64-ucrt-x86_64-pkgconf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm
+          path: wasm/build
+      - run: find wasm/build -type f -exec touch {} +
+      # The tests haven't been run on Windows before, so for now a failure
+      # here is reported without stopping the build
+      - run: make test CC=gcc CXX=g++
+        continue-on-error: true
+      - run: make dist CC=gcc CXX=g++
+      - name: Add to the release
+        if: env.RELEASING == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_YES: 1
+        run: sh tools/release.sh add
+      - uses: actions/upload-artifact@v4
+        if: env.RELEASING != 'true'
+        with:
+          name: windows
+          path: |
+            gui/dist/Wozzle-*
+            dist/release/wozzle-tools-*
