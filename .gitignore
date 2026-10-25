@@ -12,3 +12,6 @@ wozmosis
 wozfuse
 wasm/build/
 dist/
+/tests/unit-*
+!/tests/unit-*.c
+!/tests/unit-*.cpp
