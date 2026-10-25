@@ -175,6 +175,19 @@ NPM ?= npm
 VERSION   := $(shell sed -n 's/^version=//p' library.properties)
 HOST_OS   := $(shell uname -s | sed -e 's/Darwin/darwin/' -e 's/Linux/linux/' -e 's/MINGW.*/win32/' -e 's/UCRT.*/win32/' -e 's/CLANG.*/win32/' -e 's/MSYS.*/win32/')
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')
+
+# MSYS2 has gcc and g++ but no cc. They're set here rather than on the
+# command line, since make hands command-line variables to everything it
+# runs, and Rust's build would then compile Tauri's C++ with MinGW, which
+# the MSVC linker can't read.
+ifeq ($(HOST_OS),win32)
+ifeq ($(origin CC),default)
+CC := gcc
+endif
+ifeq ($(origin CXX),default)
+CXX := g++
+endif
+endif
 REL_BUILD := dist/build
 REL_OUT   := dist/release
 GUI_BUILD := gui/build
@@ -335,7 +348,7 @@ APP_ROOT   := $(if $(filter win32,$(HOST_OS)),$(shell cygpath -m "$(CURDIR)"),$(
 APP_CONFIG := {"build":{"beforeBuildCommand":"","frontendDist":"$(APP_ROOT)/$(GUI_STAGE)"}}
 
 app: gui-stage
-	cd gui && npx tauri build $(APP_TARGET_FLAG) --bundles $(APP_BUNDLES) \
+	cd gui && env -u CC -u CXX npx tauri build $(APP_TARGET_FLAG) --bundles $(APP_BUNDLES) \
 	  --config '$(APP_CONFIG)'
 ifeq ($(HOST_OS),darwin)
 	codesign --force --deep --sign - "$(APP_BUNDLE_DIR)/macos/Wozzle.app"

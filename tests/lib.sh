@@ -3,6 +3,16 @@
 # Scripts are run from the project root by run-tests.sh, so relative paths
 # like ./wozit and "woz test images/..." work as-is.
 
+# Under MSYS2 on Windows, mktemp hands back /tmp/... paths that only the
+# shell understands. The tools are Windows programs, and a path inside a
+# quoted wozit command isn't translated for them, so we use the Windows
+# spelling of the temp folder (D:/...) instead, which both understand.
+# The unit tests read TMPDIR too.
+if command -v cygpath >/dev/null 2>&1; then
+  TMPDIR=$(cygpath -m "${TMPDIR:-/tmp}")
+  export TMPDIR
+fi
+
 # Portable MD5 of a file. macOS ships `md5 -q`; Linux ships `md5sum`.
 # Falls back to `shasum` (SHA-1) as a deterministic hash if nothing else
 # is available - tests should treat the output as opaque.
