@@ -1,7 +1,7 @@
 Wozzle v2.0.0
 ===========
 
-©2019 Jorj Bauer. MIT license.
+©2019-2026 Jorj Bauer. MIT license.
 
 Wozzle is a Woz disk image swizzler - a utility to swish around the bits to make them conform to some other standard.
 
@@ -26,8 +26,9 @@ Apple Silicon and Intel, for macOS 12 or newer. wozfuse also needs
 *make dist* builds the same files, the tools into dist/release/ and the
 app into gui/dist/ (*make tools* and *make app* build the pieces), and *make release* runs the tests, builds
 them, and publishes them to GitHub after asking; tools/release.sh says
-what it checks first. The version comes from library.properties, and
-*make version* checks it's the same everywhere it's written.
+what it checks first. The version is set in library.properties and
+nowhere else: make copies it into src/wozversion.h and gui/package.json,
+the two places that need it as a file of their own.
 
 None of these are signed with a developer certificate, so macOS won't open
 them the first time you try. For the app: unzip it, try to open it once,

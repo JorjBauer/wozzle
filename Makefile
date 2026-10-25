@@ -158,10 +158,15 @@ test: all unit-tests
 # files, and a Linux machine (or, one day, Windows) would add its own to
 # the same release with "sh tools/release.sh add".
 #
-# The version lives in library.properties, and has to match
-# src/wozversion.h and the GUI's three copies (package.json,
-# tauri.conf.json, Cargo.toml). make version says which don't.
+# The version is set in one place, library.properties. Two copies of it
+# have to exist as files: src/wozversion.h, because the Arduino IDE and
+# the other projects using src/ compile it without make, and the GUI's
+# package.json, which Tauri reads (tauri.conf.json points at it, and
+# Cargo.toml has none; npm keeps package-lock.json's in step). make
+# writes both from library.properties before anything that uses them,
+# and make version always writes them.
 
+NPM ?= npm
 VERSION   := $(shell sed -n 's/^version=//p' library.properties)
 HOST_OS   := $(shell uname -s | sed -e 's/Darwin/darwin/' -e 's/Linux/linux/' -e 's/MINGW.*/win32/' -e 's/MSYS.*/win32/')
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')
@@ -246,18 +251,28 @@ APP_CONTENTS := Contents/Info.plist Contents/MacOS/wozzle-gui \
 
 .PHONY: version tools app dist release rel-tools rel-app gui-stage gui-ship-check
 
+# sed -i.bak works with both BSD and GNU sed. npm version sets
+# package-lock.json's copy along with package.json's.
+SET_H_VERSION   = sed -i.bak 's/"Wozzle v[^"]*"/"Wozzle v$(VERSION)"/' src/wozversion.h && rm -f src/wozversion.h.bak
+SET_GUI_VERSION = cd gui && $(NPM) version $(VERSION) --no-git-tag-version --allow-same-version >/dev/null
+
+src/wozversion.h: library.properties
+	$(SET_H_VERSION)
+
+gui/package.json: library.properties
+	$(SET_GUI_VERSION)
+
+# Not by the files' times: a checkout, or an edit undone within the
+# second, can leave a copy looking newer than library.properties
 version:
-	@ok=1; \
-	check() { if [ "$$2" != "$(VERSION)" ]; then echo "$$1 says '$$2', not $(VERSION)"; ok=0; fi; }; \
-	check src/wozversion.h "$$(sed -n 's/.*"Wozzle v\(.*\)".*/\1/p' src/wozversion.h)"; \
-	check gui/package.json "$$(sed -n 's/^  "version": "\(.*\)",/\1/p' gui/package.json)"; \
-	check gui/src-tauri/tauri.conf.json "$$(sed -n 's/^  "version": "\(.*\)",/\1/p' gui/src-tauri/tauri.conf.json)"; \
-	check gui/src-tauri/Cargo.toml "$$(sed -n 's/^version = "\(.*\)"/\1/p' gui/src-tauri/Cargo.toml | head -1)"; \
-	[ $$ok = 1 ] && echo "version $(VERSION) everywhere"
+	@$(SET_H_VERSION)
+	@$(SET_GUI_VERSION)
+	@grep -q '"Wozzle v$(VERSION)"' src/wozversion.h && \
+	  grep -q '^  "version": "$(VERSION)",' gui/package.json || \
+	  { echo "couldn't write version $(VERSION) into src/wozversion.h and gui/package.json" >&2; exit 1; }
+	@echo "version $(VERSION)"
 
 tools: $(REL_TOOLS)
-
-NPM ?= npm
 
 gui/node_modules: gui/package.json
 	cd gui && $(NPM) install

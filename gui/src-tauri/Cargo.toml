@@ -1,6 +1,5 @@
 [package]
 name = "wozzle-gui"
-version = "2.0.0"
 description = "Apple II disk images: wozzle, wozit and wozmosis in a window"
 authors = ["Jorj Bauer"]
 license = "MIT"

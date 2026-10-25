@@ -32,7 +32,9 @@ case "$MODE" in
 esac
 
 [ -n "$VERSION" ] || die "no version= line in library.properties"
-make -s version >/dev/null || die "the version isn't the same everywhere: run make version"
+make -s version >/dev/null || die "make version couldn't write the version from library.properties"
+git diff --quiet -- src/wozversion.h gui/package.json ||
+  die "src/wozversion.h or gui/package.json didn't match library.properties; make version has updated them, so commit that"
 
 command -v gh >/dev/null || die "needs the GitHub CLI: brew install gh, then gh auth login"
 gh auth status >/dev/null 2>&1 || die "gh isn't logged in: run gh auth login"

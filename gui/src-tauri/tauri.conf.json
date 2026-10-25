@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Wozzle",
-  "version": "2.0.0",
+  "version": "../package.json",
   "identifier": "org.jorj.wozzle",
   "build": {
     "frontendDist": "../build/web",
