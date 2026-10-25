@@ -60,6 +60,7 @@ Woz::Woz(bool verbose)
   headWindow = 0;
   hdvData = NULL;
   hdvByteSize = 0;
+  hdvDirty = false;
 }
 
 Woz::~Woz()
@@ -427,15 +428,22 @@ bool Woz::writeFile(const char *filename, uint8_t forceType)
     }
   }
 
-  // Mirror the promotion readFile does. An oversized .po/.dsk was read as
-  // raw blocks, so write it back as raw blocks instead of refusing:
-  // otherwise an 800K .po (how real Apple Pascal 3.5" disks and plenty of
-  // ProDOS volumes ship) could be read and modified but never saved,
-  // except by renaming it .hdv. This deliberately does not apply to a
-  // genuine .hdv/.img, so asking to convert a hard-disk image into a
-  // floppy format is still the error it always was.
-  if (imageType == T_HDV && hdvPromotedFromFloppyExt &&
-      (forceType == T_PO || forceType == T_DSK))
+  // A .po bigger than a floppy is raw ProDOS-order blocks, which is just
+  // what a hard-disk image holds, so any of them can be written as one (an
+  // 800K .po is how real Apple Pascal 3.5" disks and plenty of ProDOS
+  // volumes ship). It has to be at least a floppy's size, or it would be
+  // read back through the floppy loader. An oversized .dsk that was read
+  // as raw blocks goes back the same way; a genuine .hdv/.img can't
+  // become a DOS-order image.
+  if (imageType == T_HDV && forceType == T_PO) {
+    if (hdvByteSize < 35 * 16 * 256) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: a hard-disk image smaller than a floppy "
+             "(%u bytes) must stay .hdv or .img", (unsigned)hdvByteSize);
+      return false;
+    }
+    forceType = T_HDV;
+  }
+  if (imageType == T_HDV && hdvPromotedFromFloppyExt && forceType == T_DSK)
     forceType = T_HDV;
 
   // Anything genuinely floppy-oriented (.woz, .nib) still can't represent
@@ -871,6 +879,7 @@ bool Woz::readHdvFile(const char *filename)
   }
 
   if (hdvData) { wozFree(hdvData); hdvData = NULL; }
+  hdvDirty = false;
   hdvByteSize = (uint32_t)fileSize;
   hdvData = (uint8_t *)wozMalloc(hdvByteSize);
   if (!hdvData) {
@@ -914,6 +923,7 @@ bool Woz::truncateHdv(uint32_t newByteSize)
   if (smaller)
     hdvData = smaller;
   hdvByteSize = newByteSize;
+  hdvDirty = true;
   return true;
 }
 
@@ -935,6 +945,7 @@ bool Woz::writeHdvFile(const char *filename)
             wrote, (unsigned)hdvByteSize);
     return false;
   }
+  hdvDirty = false;
   return true;
 }
 
@@ -2012,6 +2023,8 @@ bool Woz::flush()
 
 bool Woz::isDirty()
 {
+  if (hdvDirty)
+    return true;
   for (int i=0; i<160; i++) {
     if (tracks[i].dirty)
       return true;

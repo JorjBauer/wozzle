@@ -200,7 +200,7 @@ bool PascalSpector::writeBlock(uint16_t blockNum, const uint8_t data[512])
   memcpy(&trackData[512 * blockNum], data, 512);
 
   if (isHdv()) {
-    memcpy(hdvBuffer() + 512 * blockNum, data, 512);
+    memcpy(hdvBufferForWrite() + 512 * blockNum, data, 512);
     return true;
   }
 

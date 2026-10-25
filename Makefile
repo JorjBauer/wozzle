@@ -46,7 +46,7 @@ space := $(subst ,, )
 WASM_EXPORTS = $(subst $(space),$(comma),$(strip $(addprefix _,$(WASM_FUNCS))))
 WASM_RUNTIME = ccall,FS,UTF8ToString,stringToNewUTF8,HEAPU8,HEAPU32
 
-.PHONY: test clean unit-tests wasm
+.PHONY: test clean distclean unit-tests wasm
 
 all: wozzle wozit wozmosis $(if $(FUSE_LIBS),wozfuse)
 
@@ -121,15 +121,218 @@ depend: .depend
 	rm -f ./.depend
 	for f in $^; do $(CC) $(CFLAGS) -MM -MT $${f%.*}.o $$f; done > ./.depend
 
+# Cleaning doesn't need the dependencies, and including .depend would
+# make it first, only for distclean to delete it again
+ifeq ($(filter clean distclean,$(MAKECMDGOALS)),)
 include .depend
+endif
 
 clean:
 	rm -f $(WOZCORE_OBJS) $(LIBWOZCORE) $(WOZOBJS) $(FUSEOBJS) $(WOZITOBJS) $(WOZMOSISOBJS) wozzle wozit wozmosis wozfuse *~ $(UNIT_BINS)
 	rm -rf *.dSYM tests/*.dSYM $(WASM_BUILD)
 	rm -f tests/nib-test tests/test-pattern tests/make-test-disk tests/unit-capi.o tests/unit-dosref.o
 	rm -f tests/pattern.dsk tests/pattern-out.dsk
+	rm -rf dist gui/dist gui/build gui/src-tauri/gen/schemas
+	rmdir gui/src-tauri/gen 2>/dev/null || true
+
+# clean, and the things a build fetches or generates along the way: the
+# GUI's npm packages (make app installs them again) and .depend
+distclean: clean
+	rm -rf gui/node_modules .depend
 
 test: all unit-tests
 	./run-tests.sh
+
+# ---- release builds ----
+#
+#   make version    check the version is the same everywhere it's written
+#   make tools      the command line tools, built for release, in dist/build/bin/
+#   make app        the GUI app for this computer, in gui/dist/
+#   make dist       both, packed for a release: the tools into dist/release/,
+#                   the app into gui/dist/
+#   make release    publish those as a GitHub release (see tools/release.sh)
+#
+# The GUI's transient files (Vite's output, Rust's build) are in gui/build.
+#
+# Releases are built for the computer you're on: a Mac builds the Mac
+# files, and a Linux machine (or, one day, Windows) would add its own to
+# the same release with "sh tools/release.sh add".
+#
+# The version lives in library.properties, and has to match
+# src/wozversion.h and the GUI's three copies (package.json,
+# tauri.conf.json, Cargo.toml). make version says which don't.
+
+VERSION   := $(shell sed -n 's/^version=//p' library.properties)
+HOST_OS   := $(shell uname -s | sed -e 's/Darwin/darwin/' -e 's/Linux/linux/' -e 's/MINGW.*/win32/' -e 's/MSYS.*/win32/')
+HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')
+REL_BUILD := dist/build
+REL_OUT   := dist/release
+GUI_BUILD := gui/build
+GUI_OUT   := gui/dist
+
+# The tools are built apart from the everyday ones (their own objects, in
+# dist/build), optimized, and on a Mac for both Apple Silicon and Intel.
+# wozit links the system's readline (libedit on a Mac) rather than
+# Homebrew's, so it runs on a Mac that doesn't have Homebrew. wozfuse
+# still needs macFUSE (or libfuse3) installed wherever it runs.
+# macOS 12 is the oldest macFUSE 5 (and so wozfuse) runs on; the current
+# SDK's C++ library won't go back past 11 anyway.
+ifeq ($(HOST_OS),darwin)
+REL_ARCHFLAGS := -arch arm64 -arch x86_64 -mmacosx-version-min=12.0
+TOOLS_ARCH    := universal
+else
+REL_ARCHFLAGS :=
+TOOLS_ARCH    := $(HOST_ARCH)
+endif
+REL_CFLAGS := -O2 -Wall $(WOZCORE_CFLAGS) -D_FILE_OFFSET_BITS=64 $(REL_ARCHFLAGS)
+REL_OBJ    := $(REL_BUILD)/obj
+REL_CORE   := $(addprefix $(REL_OBJ)/,$(notdir $(addsuffix .o,$(basename $(WOZCORE_SRCS)))))
+REL_TOOLS  := $(addprefix $(REL_BUILD)/bin/,wozzle wozit wozmosis $(if $(FUSE_LIBS),wozfuse))
+TOOLS_PKG  := wozzle-tools-$(VERSION)-$(HOST_OS)-$(TOOLS_ARCH)
+# Everything that goes in the tools tarball, and nothing else
+TOOLS_SHIP := $(REL_TOOLS) README.md LICENSE
+
+$(REL_OBJ)/%.o: src/%.cpp src/*.h
+	@mkdir -p $(REL_OBJ)
+	$(CXX) $(REL_CFLAGS) -c $< -o $@
+
+$(REL_OBJ)/%.o: src/%.c src/*.h
+	@mkdir -p $(REL_OBJ)
+	$(CC) $(REL_CFLAGS) -c $< -o $@
+
+$(REL_OBJ)/%.o: %.cpp src/*.h
+	@mkdir -p $(REL_OBJ)
+	$(CXX) $(REL_CFLAGS) $(if $(filter wozfuse.cpp,$<),$(FUSE_CFLAGS)) -c $< -o $@
+
+$(REL_BUILD)/bin/wozzle: $(REL_OBJ)/wozzle.o $(REL_CORE)
+	@mkdir -p $(dir $@)
+	$(CXX) $(REL_CFLAGS) -o $@ $^
+
+$(REL_BUILD)/bin/wozit: $(REL_OBJ)/clireport.o $(REL_OBJ)/wozit.o $(REL_CORE)
+	@mkdir -p $(dir $@)
+	$(CXX) $(REL_CFLAGS) -o $@ $^ -lreadline
+
+$(REL_BUILD)/bin/wozmosis: $(REL_OBJ)/wozmosis.o $(REL_CORE)
+	@mkdir -p $(dir $@)
+	$(CXX) $(REL_CFLAGS) -o $@ $^
+
+$(REL_BUILD)/bin/wozfuse: $(REL_OBJ)/wozfuse.o $(REL_CORE)
+	@mkdir -p $(dir $@)
+	$(CXX) $(REL_CFLAGS) -o $@ $^ $(FUSE_LIBS)
+
+# The GUI is built for this computer's architecture. A universal Mac app
+# needs Rust's x86_64-apple-darwin target as well (rustup can add it); then
+# APP_TARGET=universal-apple-darwin builds one.
+APP_TARGET ?=
+APP_ARCH   := $(if $(filter universal-apple-darwin,$(APP_TARGET)),universal,$(HOST_ARCH))
+APP_TARGET_FLAG := $(if $(APP_TARGET),--target $(APP_TARGET))
+APP_BUNDLE_DIR  := $(GUI_BUILD)/target/$(if $(APP_TARGET),$(APP_TARGET)/)release/bundle
+APP_PKG    := Wozzle-$(VERSION)-$(HOST_OS)-$(APP_ARCH)
+
+# The app gets the front end's index.html, its favicon, and Vite's assets/
+# (the code, styles and wasm it built from src/), and nothing else. Tauri
+# would embed all of Vite's output, which also has a copy of whatever is in
+# gui/public, so a stray file there (notes, a .env) could end up inside a
+# public release; instead only these are staged, and that's what's
+# embedded. gui-ship-check stops the build if index.html refers to a
+# top-level file the list leaves out, since the app would then go without
+# it. Widen the list first.
+GUI_SHIP     := index.html favicon.svg assets
+GUI_WEB      := $(GUI_BUILD)/web
+GUI_STAGE    := $(GUI_BUILD)/frontend
+# Which files the finished Mac app may hold: what Tauri itself puts there
+APP_CONTENTS := Contents/Info.plist Contents/MacOS/wozzle-gui \
+	Contents/Resources/icon.icns Contents/_CodeSignature/CodeResources
+
+.PHONY: version tools app dist release rel-tools rel-app gui-stage gui-ship-check
+
+version:
+	@ok=1; \
+	check() { if [ "$$2" != "$(VERSION)" ]; then echo "$$1 says '$$2', not $(VERSION)"; ok=0; fi; }; \
+	check src/wozversion.h "$$(sed -n 's/.*"Wozzle v\(.*\)".*/\1/p' src/wozversion.h)"; \
+	check gui/package.json "$$(sed -n 's/^  "version": "\(.*\)",/\1/p' gui/package.json)"; \
+	check gui/src-tauri/tauri.conf.json "$$(sed -n 's/^  "version": "\(.*\)",/\1/p' gui/src-tauri/tauri.conf.json)"; \
+	check gui/src-tauri/Cargo.toml "$$(sed -n 's/^version = "\(.*\)"/\1/p' gui/src-tauri/Cargo.toml | head -1)"; \
+	[ $$ok = 1 ] && echo "version $(VERSION) everywhere"
+
+tools: $(REL_TOOLS)
+
+NPM ?= npm
+
+gui/node_modules: gui/package.json
+	cd gui && $(NPM) install
+	@touch $@
+
+# Tauri signs the program inside the app but not the bundle around it, so
+# it gets an ad hoc signature (no certificate) as a whole, which is what
+# an Apple Silicon Mac wants before it'll launch a downloaded app at all.
+gui-stage: version wasm gui/node_modules
+	cd gui && $(NPM) run build
+	@$(MAKE) -s gui-ship-check
+	rm -rf $(GUI_STAGE)
+	mkdir -p $(GUI_STAGE)
+	cd $(GUI_WEB) && cp -R $(GUI_SHIP) "$(CURDIR)/$(GUI_STAGE)/"
+
+gui-ship-check:
+	@missing=$$(grep -oE '(href|src)="/[^"]*"' $(GUI_WEB)/index.html | \
+	  sed -E 's#^[a-z]+="/##; s#[/"?].*##' | sort -u | \
+	  while read -r f; do \
+	    case " $(GUI_SHIP) " in (*" $$f "*) ;; (*) echo "$$f" ;; esac; \
+	  done); \
+	if [ -n "$$missing" ]; then \
+	  echo "$(GUI_WEB)/index.html uses $$missing, but GUI_SHIP only ships $(GUI_SHIP); widen it" >&2; \
+	  exit 1; \
+	fi
+
+# The front end's already built and staged, so Tauri is told not to build
+# it again and to embed the staged copy rather than all of $(GUI_WEB).
+APP_CONFIG := {"build":{"beforeBuildCommand":"","frontendDist":"$(CURDIR)/$(GUI_STAGE)"}}
+
+app: gui-stage
+	cd gui && npx tauri build $(APP_TARGET_FLAG) $(if $(filter darwin,$(HOST_OS)),--bundles app) \
+	  --config '$(APP_CONFIG)'
+ifeq ($(HOST_OS),darwin)
+	codesign --force --deep --sign - "$(APP_BUNDLE_DIR)/macos/Wozzle.app"
+	@extra=$$(cd "$(APP_BUNDLE_DIR)/macos/Wozzle.app" && find . -type f | sed 's#^\./##' | \
+	  while read -r f; do \
+	    case " $(APP_CONTENTS) " in (*" $$f "*) ;; (*) echo "$$f" ;; esac; \
+	  done); \
+	if [ -n "$$extra" ]; then \
+	  echo "Wozzle.app holds files that aren't in APP_CONTENTS: $$extra" >&2; \
+	  exit 1; \
+	fi
+	@mkdir -p $(GUI_OUT)
+	rm -rf "$(GUI_OUT)/Wozzle.app"
+	ditto "$(APP_BUNDLE_DIR)/macos/Wozzle.app" "$(GUI_OUT)/Wozzle.app"
+endif
+
+dist: version rel-tools rel-app
+
+rel-tools: tools
+	@mkdir -p $(REL_OUT)
+	rm -rf "$(REL_BUILD)/$(TOOLS_PKG)"
+	mkdir -p "$(REL_BUILD)/$(TOOLS_PKG)"
+	cp $(TOOLS_SHIP) "$(REL_BUILD)/$(TOOLS_PKG)/"
+	tar -C $(REL_BUILD) -czf "$(REL_OUT)/$(TOOLS_PKG).tar.gz" "$(TOOLS_PKG)"
+
+# ditto keeps the Mac bundle's symlinks and signature intact. On Linux,
+# Tauri's own AppImage and .deb are already single files.
+rel-app: app
+	@mkdir -p $(GUI_OUT)
+ifeq ($(HOST_OS),darwin)
+	rm -f "$(GUI_OUT)/$(APP_PKG).zip"
+	ditto -c -k --keepParent "$(GUI_OUT)/Wozzle.app" "$(GUI_OUT)/$(APP_PKG).zip"
+else
+	for f in $(APP_BUNDLE_DIR)/appimage/*.AppImage $(APP_BUNDLE_DIR)/deb/*.deb; do \
+	  [ -f "$$f" ] && cp "$$f" "$(GUI_OUT)/$(APP_PKG).$${f##*.}"; \
+	done; true
+endif
+
+release:
+	sh tools/release.sh check
+	rm -rf $(REL_OUT) $(GUI_OUT)
+	$(MAKE) wasm
+	$(MAKE) test dist
+	sh tools/release.sh
 
 # DO NOT DELETE

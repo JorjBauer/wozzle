@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "wozlib.h"
 
@@ -111,6 +112,11 @@ int main(void)
   check(n == 1 && ents[0].length == sizeof(bin) && ents[0].auxType == 0x0800,
         "DATA has its length and aux type");
   check(wozImageList(img, "NOPE", ents, 8) == -1, "a missing directory is -1");
+  // ProDOS dates go to the minute, so allow for the clock ticking over
+  time_t now = time(NULL);
+  check(n == 1 && ents[0].created != -1 && ents[0].modified != -1 &&
+        now - ents[0].modified < 120 && ents[0].modified - now < 120,
+        "a new file is dated now");
 
   wozEntry st;
   check(wozImageStat(img, "SUB/DATA", &st) && st.fileType == 0x06,
@@ -243,6 +249,29 @@ int main(void)
   check(wozImageList(img, NULL, ents, 8) == 1, "it lists");
   check(wozImageKrunch(img, NULL), "krunch runs");
   wozImageClose(img);
+
+  // ---- a hard-disk image knows when it's changed ----
+  img = wozImageOpen(hdv, WOZ_FS_PRODOS);
+  check(img && !wozImageIsDirty(img), "a fresh hard-disk image is clean");
+  if (img) {
+    check(wozImageMakeDirectory(img, "NEWDIR") && wozImageIsDirty(img),
+          "and dirty once it's changed");
+    check(wozImageSave(img, NULL) && !wozImageIsDirty(img),
+          "and clean again once it's saved");
+    wozImageClose(img);
+  }
+
+  // ---- dates on a real disk ----
+  // ProDOS 2.4's files are from 2016, which ProDOS stores as year 16
+  img = wozImageOpen("ProDOS_2_4.po", WOZ_FS_PRODOS);
+  if (img) {
+    check(wozImageStat(img, "PRODOS", &st) && st.modified != -1,
+          "PRODOS on ProDOS 2.4 has a date");
+    time_t mod = (time_t)st.modified;
+    struct tm *lt = localtime(&mod);
+    check(lt && lt->tm_year + 1900 == 2016, "and it's in 2016, not 1916");
+    wozImageClose(img);
+  }
 
   // ---- errors ----
   check(wozImageOpen("/nonexistent/x.po", WOZ_FS_PRODOS) == NULL,

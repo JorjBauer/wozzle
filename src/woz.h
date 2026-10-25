@@ -108,12 +108,13 @@ class Woz {
   void dumpTrackState(uint8_t datatrack);
 
   // ProDOS hard-drive image accessors. Valid only when imageType == T_HDV.
-  // The buffer is owned by Woz and sized to hdvByteCount(); callers can
-  // read freely and may also write in place (writeFile will flush the
-  // modified buffer back to disk).
+  // The buffer is owned by Woz and sized to hdvByteCount(). Read it with
+  // hdvBuffer(); write through hdvBufferForWrite(), which marks the image
+  // dirty (writeFile flushes the modified buffer back to disk).
   bool isHdv() const { return imageType == T_HDV; }
   uint32_t hdvByteCount() const { return hdvByteSize; }
-  uint8_t *hdvBuffer() { return hdvData; }
+  const uint8_t *hdvBuffer() const { return hdvData; }
+  uint8_t *hdvBufferForWrite() { hdvDirty = true; return hdvData; }
   // Drop the tail of a hard-drive image: the buffer keeps its first
   // newByteSize bytes, and writeFile() then emits a file that much
   // smaller. Shrinking only - growing an image isn't something a
@@ -200,6 +201,8 @@ class Woz {
   // destructor frees it.
   uint8_t *hdvData;
   uint32_t hdvByteSize;
+  // Changed since it was read or last written
+  bool hdvDirty;
   // True when this HDV image came from a .po/.dsk that was larger than a
   // floppy, rather than from a genuine .hdv/.img. Such an image is raw
   // blocks under a floppy extension, so writeFile may write it back the

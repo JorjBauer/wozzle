@@ -84,8 +84,8 @@ out=$(./wozit -P -c "format $TMP/dflt.po" 2>&1)
 assert_match "volume 'BLANK'" "$out" "default volume name is BLANK"
 
 # --- container extension rules ------------------------------------------
-out=$(./wozit -P -c "format $TMP/x.po WORK 8m" 2>&1)
-assert_match "must be named .hdv or .img" "$out" "a hard-disk size refuses .po"
+out=$(./wozit -P -c "format $TMP/w8m.po WORK 8m" 2>&1)
+assert_match "volume 'WORK', 16384 blocks" "$out" "a hard-disk size takes .po"
 out=$(./wozit -P -c "format $TMP/x.dsk WORK 140k" 2>&1)
 assert_match "must be named .po, .hdv or .img" "$out" \
   ".dsk refused (it would force DOS sector order)"

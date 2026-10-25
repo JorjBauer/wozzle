@@ -17,10 +17,15 @@
 // A call that fails throws a WozError carrying the library's reason. The
 // messages a call produced (warnings, say) are in woz.messages afterward.
 //
-// The library is single-threaded, so keep one Wozzle to a thread (a Web
-// Worker of its own is a good home for it).
+// The library is single-threaded, so keep one Wozzle to a thread. To keep
+// it off a page's main thread, run it in a worker with wozzle-worker.mjs
+// and talk to it with wozzle-remote.mjs, which has this same API with
+// every call returning a promise.
 
 import createWozModule from './build/wozcore.mjs';
+import { WozError } from './wozerror.mjs';
+
+export { WozError };
 
 export const FS_UNKNOWN = 0;
 export const FS_DOS33 = 1;
@@ -34,14 +39,6 @@ export const MSG_DEBUG = 0;
 export const MSG_INFO = 1;
 export const MSG_WARNING = 2;
 export const MSG_ERROR = 3;
-
-export class WozError extends Error {
-  constructor(message, messages) {
-    super(message || 'wozzle: the operation failed');
-    this.name = 'WozError';
-    this.messages = messages;
-  }
-}
 
 function fsCode(t) {
   if (t === undefined || t === null) return FS_UNKNOWN;

@@ -86,7 +86,7 @@ fail=$(./wozit -I "$TMP/c.po" -p \
   -c "cpin $TMP/big.bin C" \
   -c "cpin $TMP/tiny.bin TINY" \
   -c "save $TMP/c.po" 2>&1)
-assert_match "Failed to find" "$fail" "the third big cpin runs out of space"
+assert_match "the disk is full" "$fail" "the third big cpin runs out of space"
 assert_no_match "C  " "$(./wozit -I "$TMP/c.po" -p -c "ls" 2>&1)" "the failed file left no entry"
 assert_match   "TINY" "$(./wozit -I "$TMP/c.po" -p -c "ls" 2>&1)" "the follow-up tiny file was written"
 # TINY is a one-block seedling: free must drop by exactly one, proving the

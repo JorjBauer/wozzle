@@ -36,8 +36,10 @@ check(po.length === 280 * 512, 'a blank ProDOS floppy is 140K');
 check(woz.detect(po, 'new.po') === 'prodos', 'and detects as ProDOS');
 throws(() => woz.createBlank({ name: 'x.po', fsType: 'prodos', volumeName: 'bad name!' }),
        'bad volume name', 'a bad volume name is refused, with the reason');
-throws(() => woz.createBlank({ name: 'x.po', fsType: 'prodos', blocks: 1600 }),
-       '.hdv or .img', 'an 800K .po is refused');
+check(woz.createBlank({ name: 'x.po', fsType: 'prodos', blocks: 1600 }).length === 1600 * 512,
+      'an 800K .po is fine');
+throws(() => woz.createBlank({ name: 'x.po', fsType: 'prodos', blocks: 100 }),
+       '.hdv or .img', 'a .po smaller than a floppy is refused');
 
 // ---- ProDOS ----
 let img = woz.open(po, 'new.po');
@@ -58,7 +60,10 @@ check(root.some((e) => e.name === 'SUB' && e.isDirectory), 'SUB is a directory')
 const hello = root.find((e) => e.name === 'HELLO');
 check(hello && hello.fileType === 0xfc && hello.auxType === 0x0801,
       'HELLO is BAS at $0801');
-check(hello && hello.modified === null, 'with no date');
+// ProDOS dates go to the minute, so allow for the clock ticking over
+const recent = (d) => d instanceof Date && Math.abs(Date.now() - d.getTime()) < 120000;
+check(hello && recent(hello.created) && recent(hello.modified), 'dated now');
+check(recent(root.find((e) => e.name === 'SUB')?.created), 'and so is SUB');
 const sub = img.list('SUB');
 check(sub.length === 1 && sub[0].length === 1000 && sub[0].auxType === 0x0800,
       'SUB/DATA has its length and aux type');
@@ -131,6 +136,18 @@ img.close();
 const nib = woz.convert(dsk, 'd.dsk', 'd.nib');
 check(nib.length === 35 * 6656, 'a DSK converts to NIB');
 check(same(woz.convert(nib, 'd.nib', 'back.dsk'), dsk), 'and back, byte for byte');
+
+// ---- a full disk says so ----
+{
+  const full = woz.open(woz.createBlank({ name: 'full.po', fsType: 'prodos', volumeName: 'FULL' }), 'full.po');
+  throws(() => full.write('BIG', new Uint8Array(200 * 1024)), 'the disk is full',
+         'a file too big for the disk fails with "the disk is full"');
+  full.close();
+  const dos = woz.open(woz.createBlank({ name: 'full.dsk', fsType: 'dos33' }), 'full.dsk');
+  throws(() => dos.write('BIG', new Uint8Array(200 * 1024), { fileType: 0x04 }),
+         'the disk is full', 'and so does DOS 3.3');
+  dos.close();
+}
 
 // ---- a real disk, if we were given one ----
 if (process.argv[2]) {

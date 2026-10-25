@@ -1,5 +1,6 @@
 #include "vent.h"
 #include "wozmsg.h"
+#include "wozhost.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -85,7 +86,9 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
   struct tm t;
   memset(&t, 0, sizeof(t));
   t.tm_isdst = -1;
-  t.tm_year = year; // 1900 + whatever. FIXME.
+  // Tech Note #28's two-digit years. Some newer tools store 100-127 for
+  // 2000-2027, which reads the same way here.
+  t.tm_year = year < 40 ? year + 100 : year;
   t.tm_mon = month - 1; // 0 for Jan
   t.tm_mday = day;
   t.tm_hour = hour;
@@ -93,6 +96,29 @@ time_t prodosDateToEpoch(uint8_t prodosDate[4])
   t.tm_sec = 0;
   
   return mktime(&t);
+}
+
+bool epochToProdosDate(time_t t, uint8_t prodosDate[4])
+{
+  memset(prodosDate, 0, 4);
+  if (t == NO_DATE)
+    return false;
+  struct tm *lt = localtime(&t);
+  // Only 1940-2039 has a two-digit year that reads back the same
+  if (!lt || lt->tm_year < 40 || lt->tm_year >= 140)
+    return false;
+  uint8_t year = lt->tm_year % 100;
+  uint8_t month = lt->tm_mon + 1;
+  prodosDate[0] = (uint8_t)(((month & 0x07) << 5) | (lt->tm_mday & 0x1F));
+  prodosDate[1] = (uint8_t)((year << 1) | (month >> 3));
+  prodosDate[2] = (uint8_t)lt->tm_min;
+  prodosDate[3] = (uint8_t)lt->tm_hour;
+  return true;
+}
+
+bool prodosDateNow(uint8_t prodosDate[4])
+{
+  return epochToProdosDate(wozNow(), prodosDate);
 }
 
 Vent::Vent(struct _subdirent *di)

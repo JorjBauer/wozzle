@@ -1,0 +1,4 @@
+# Rust's build goes in gui/build with the front end's, rather than in
+# src-tauri/target. The finished app is copied to gui/dist.
+[build]
+target-dir = "../build/target"

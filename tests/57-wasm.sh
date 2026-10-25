@@ -1,5 +1,6 @@
 #!/bin/bash
-# The WebAssembly build, through wasm/wozzle.mjs. Skips unless it's been
+# The WebAssembly build, through wasm/wozzle.mjs, and again from outside
+# a worker through wasm/wozzle-remote.mjs. Skips unless it's been
 # built (make wasm, which needs Emscripten) and node is installed.
 . "$(dirname "$0")/lib.sh"
 skip_if_missing "wasm/build/wozcore.mjs" "wasm build missing (run 'make wasm')"
@@ -16,4 +17,7 @@ fi
 node wasm/test.mjs "${args[@]}"
 rc=$?
 assert_eq 0 "$rc" "the wasm tests pass"
+node wasm/test-remote.mjs
+rc=$?
+assert_eq 0 "$rc" "the wasm worker tests pass"
 t_done

@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <ctype.h>
 
 // Prodos disk map parser
 
@@ -864,6 +866,10 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
       wozMsg(WOZ_MSG_INFO,
              "Moved %u block%s below block %u", (unsigned)moved,
              moved == 1 ? "" : "s", (unsigned)newBlocks);
+    // It rebuilt the tree, which reallocates trackData, so hdr has to be
+    // found again. (Through the old pointer, the new size only sometimes
+    // reached block 2, depending on whether malloc reused the address.)
+    hdr = (struct _subdirent *)(&trackData[512 * 2 + 4]);
   }
 
   // Nothing may live at or past the new end. Check the bitmap first (it's
@@ -973,7 +979,7 @@ bool ProdosSpector::writeBlock(uint16_t blockNum, uint8_t data[512])
   // flushes the raw buffer. Keep Woz's hdvData in sync so writeFile
   // picks up the change.
   if (isHdv()) {
-    memcpy(hdvBuffer() + 512 * blockNum, data, 512);
+    memcpy(hdvBufferForWrite() + 512 * blockNum, data, 512);
     return true;
   }
 
@@ -1291,9 +1297,12 @@ bool ProdosSpector::writeFileToImage(uint8_t *fileContents,
                                      uint32_t fileSize)
 {
   // Thin wrapper: build a metadata template with the classic defaults
-  // (unlocked, no dates, ProDOS 1.0 version bytes) and hand off.
+  // (unlocked, ProDOS 1.0 version bytes) and hand off. It's a new file,
+  // so it's created and modified now, if the host has a clock.
   struct _prodosFent meta;
   memset(&meta, 0, sizeof(meta));
+  if (prodosDateNow(meta.creationDate))
+    memcpy(meta.lastModified, meta.creationDate, sizeof(meta.lastModified));
   meta.fileType = fileType;
   meta.accessFlags = at_destroyed | at_renamed | at_written | at_read;
   meta.typeData[0] = auxTypeData & 0xFF;
@@ -1337,7 +1346,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     // Allocate one block for the file
     uint16_t firstBlock;
     if (!findFreeBlock(&firstBlock)) {
-      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the data");
+      wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the data)");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1359,7 +1368,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     blocksUsed++;
     uint16_t indexBlock;
     if (!findFreeBlock(&indexBlock)) {
-      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the index");
+      wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the index)");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1372,10 +1381,10 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     
     // Allocate the blocks for the file data and start copying it in
     uint32_t bytesRemaining = size;
-    for (int idx = 0; idx < size; idx+= 512, bytesRemaining -= 512) {
+    for (uint32_t idx = 0; idx < size; idx += 512, bytesRemaining -= 512) {
       uint16_t nextBlock;
       if (!findFreeBlock(&nextBlock)) {
-        wozMsg(WOZ_MSG_ERROR, "Failed to find next free block for the data");
+        wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the data)");
         reloadFreeBlockBitmap();
         return false;
       }
@@ -1407,7 +1416,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
 
     uint16_t masterBlock;
     if (!findFreeBlock(&masterBlock)) {
-      wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for the master index");
+      wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the master index)");
       reloadFreeBlockBitmap();
       return false;
     }
@@ -1423,7 +1432,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
     while (bytesRemaining) {
       uint16_t indexBlock;
       if (!findFreeBlock(&indexBlock)) {
-        wozMsg(WOZ_MSG_ERROR, "Failed to find a free block for an index");
+        wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for an index)");
         reloadFreeBlockBitmap();
         return false;
       }
@@ -1436,7 +1445,7 @@ bool ProdosSpector::writeForkBlocks(const uint8_t *contents, uint32_t size,
       for (int i = 0; i < 256 && bytesRemaining; i++) {
         uint16_t nextBlock;
         if (!findFreeBlock(&nextBlock)) {
-          wozMsg(WOZ_MSG_ERROR, "Failed to find next free block for the data");
+          wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the data)");
           reloadFreeBlockBitmap();
           return false;
         }
@@ -1490,19 +1499,15 @@ bool ProdosSpector::writeFileWithMeta(uint8_t *fileContents,
   // fileName may be a path; resolve the directory it lands in and the leaf
   // name within it. Everything below stores into `dirKey`.
   uint16_t dirKey;
-  char leaf[16];
-  if (!resolveDirAndLeaf(fileName, &dirKey, leaf, sizeof(leaf)))
+  char path[256], leaf[16];
+  if (!resolveDirAndLeaf(fileName, &dirKey, path, sizeof(path)) ||
+      !normalizeName(path, leaf))
     return false;
 
   // Construct a new filesystem entry structure
   struct _prodosFent fent;
   memset(&fent, 0, sizeof(fent));
   size_t leaflen = strlen(leaf);
-  if (leaflen < 1 || leaflen > 15) {
-    wozMsg(WOZ_MSG_ERROR,
-           "ERROR: file names may not exceed 15 chars in ProDOS");
-    return false;
-  }
   strncpy(fent.name, leaf, 15);
   // Set the low nybble of typelen to the length of the filename
   fent.typelen = leaflen;
@@ -1573,18 +1578,14 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
     createTree();
 
   uint16_t dirKey;
-  char leaf[16];
-  if (!resolveDirAndLeaf(fileName, &dirKey, leaf, sizeof(leaf)))
+  char path[256], leaf[16];
+  if (!resolveDirAndLeaf(fileName, &dirKey, path, sizeof(path)) ||
+      !normalizeName(path, leaf))
     return false;
 
   struct _prodosFent fent;
   memset(&fent, 0, sizeof(fent));
   size_t leaflen = strlen(leaf);
-  if (leaflen < 1 || leaflen > 15) {
-    wozMsg(WOZ_MSG_ERROR,
-           "ERROR: file names may not exceed 15 chars in ProDOS");
-    return false;
-  }
   strncpy(fent.name, leaf, 15);
   fent.typelen = (ft_extended << 4) | leaflen;
 
@@ -1610,7 +1611,7 @@ bool ProdosSpector::writeExtendedFileWithMeta(const uint8_t *dataFork,
   uint16_t extKeyBlock;
   if (!findFreeBlock(&extKeyBlock)) {
     wozMsg(WOZ_MSG_ERROR,
-           "Failed to find a free block for the extended key block");
+           "ERROR: the disk is full (no free block for the extended key block)");
     reloadFreeBlockBitmap();
     return false;
   }
@@ -1776,7 +1777,7 @@ bool ProdosSpector::growDirectoryForEntry(uint16_t dirKey, uint16_t lastBlock,
 
   uint16_t newBlock;
   if (!findFreeBlock(&newBlock)) {
-    wozMsg(WOZ_MSG_ERROR, "Error: no free block to extend the directory");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block to extend the directory)");
     return false;
   }
 
@@ -1968,7 +1969,9 @@ bool ProdosSpector::findEntryInDir(uint16_t dirKey, const char *name,
       if ((fe->typelen & 0xF0) == 0)
         continue; // empty or deleted slot
       uint8_t nl = fe->typelen & 0x0F;
-      if (nl == want && strncmp(fe->name, name, nl) == 0) {
+      // ProDOS names are upper case, and ProDOS matches without regard to
+      // case, so we do too
+      if (nl == want && strncasecmp(fe->name, name, nl) == 0) {
         *blockOut = currentBlock;
         *offsetOut = off;
         return true;
@@ -2047,7 +2050,7 @@ Vent *ProdosSpector::findEntry(const char *path)
   uint16_t kp = fe->keyPointer[1] * 256 + fe->keyPointer[0];
   for (Vent *v = tree; v; v = v->nextEnt()) {
     if (!v->isHeader() && v->keyPointerVal() == kp &&
-        !strcmp(v->getName(), leaf))
+        !strcasecmp(v->getName(), leaf))
       return v;
   }
   return NULL;
@@ -2295,16 +2298,11 @@ bool ProdosSpector::makeDirectory(const char *dirName)
     createTree();
 
   uint16_t dirKey;
-  char leaf[16];
-  if (!resolveDirAndLeaf(dirName, &dirKey, leaf, sizeof(leaf)))
+  char path[256], leaf[16];
+  if (!resolveDirAndLeaf(dirName, &dirKey, path, sizeof(path)) ||
+      !normalizeName(path, leaf))
     return false;
-
   size_t namelen = strlen(leaf);
-  if (namelen < 1 || namelen > 15) {
-    wozMsg(WOZ_MSG_ERROR,
-           "ERROR: directory names must be 1..15 chars in ProDOS");
-    return false;
-  }
 
   // Refuse to clobber an existing name (addDirectoryEntryForFile won't
   // check this for us).
@@ -2319,7 +2317,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   // directory block).
   uint16_t dirBlock;
   if (!findFreeBlock(&dirBlock)) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: no free block for the new directory");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (no free block for the new directory)");
     return false;
   }
 
@@ -2336,6 +2334,8 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   fent.eofLength[0] = 0x00;
   fent.eofLength[1] = 0x02; // 512 bytes
   fent.accessFlags = at_destroyed | at_renamed | at_written | at_read;
+  if (prodosDateNow(fent.creationDate))
+    memcpy(fent.lastModified, fent.creationDate, sizeof(fent.lastModified));
   fent.headerPointer[0] = dirKey & 0xFF; // parent directory's key block
   fent.headerPointer[1] = (dirKey >> 8);
 
@@ -2369,6 +2369,7 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   memcpy(sd->name, leaf, namelen);
   sd->subdir.fileType = 0x75; // ProDOS subdirectory-header signature byte
   sd->accessFlags = at_destroyed | at_renamed | at_written | at_read;
+  memcpy(sd->creationDate, fent.creationDate, sizeof(sd->creationDate));
   sd->entryLength = 0x27;
   sd->entriesPerBlock = 0x0D;
   sd->fileCount[0] = 0;
@@ -2387,6 +2388,30 @@ bool ProdosSpector::makeDirectory(const char *dirName)
   flushFreeBlockList();
   createTree(); // re-read so subsequent commands see the new directory
   wozMsg(WOZ_MSG_INFO, "Created directory '%s'", dirName);
+  return true;
+}
+
+bool ProdosSpector::normalizeName(const char *src, char out[16],
+                                  const char *what)
+{
+  size_t nl = strlen(src);
+  if (nl < 1 || nl > 15) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: %s must be 1-15 characters", what);
+    return false;
+  }
+  memset(out, 0, 16);
+  for (size_t i = 0; i < nl; i++) {
+    char c = (char)toupper((unsigned char)src[i]);
+    bool okc = (i == 0) ? (c >= 'A' && c <= 'Z')
+                        : ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                           c == '.');
+    if (!okc) {
+      wozMsg(WOZ_MSG_ERROR, "ERROR: bad %s '%s' (letter first, then "
+             "letters, digits, or periods)", what, src);
+      return false;
+    }
+    out[i] = c;
+  }
   return true;
 }
 

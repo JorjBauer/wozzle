@@ -418,7 +418,7 @@ bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
   if (!dataSectors) dataSectors = 1;
   uint32_t listSectors = (dataSectors + 121) / 122;
   if (dataSectors + listSectors > 35 * 16) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: unable to find enough free sectors");
+    wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (not enough free sectors)");
     return false;
   }
 
@@ -436,7 +436,7 @@ bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
   for (uint32_t i = 0; i < listSectors + dataSectors; i++) {
     int t, s;
     if (!findFreeSector(&t, &s)) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: unable to find enough free sectors");
+      wozMsg(WOZ_MSG_ERROR, "ERROR: the disk is full (not enough free sectors)");
       wozFree(lists);
       wozFree(data);
       createTree();

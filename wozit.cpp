@@ -550,13 +550,14 @@ void formatHandler(const Args &args)
     printf("  ProDOS mode: <volume> is a name 1-15 chars (default BLANK);\n");
     printf("    <size> is 140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m, or a block\n");
     printf("    count 5-65535 (default 140k). Sizes other than 140k must be\n");
-    printf("    named .hdv or .img. 'bootable' (a reserved word, not\n");
+    printf("    named .po, .hdv or .img (.hdv or .img below 140k).\n");
+    printf("    'bootable' (a reserved word, not\n");
     printf("    usable as a volume name here) installs the standard ProDOS\n");
     printf("    boot block; booting also needs PRODOS and a .SYSTEM file.\n");
     printf("  Pascal mode: <volume> is a name 1-7 chars, printable ASCII\n");
     printf("    but not space or any of  $ = ? , [ # :  (default BLANK).\n");
     printf("    <size> is any of the above presets or a block count 6-65535\n");
-    printf("    (default 140k); .po up to 800k, .hdv/.img above that.\n");
+    printf("    (default 140k); .po from 140k up, .hdv/.img at any size.\n");
     printf("    'bootable' installs the embedded p-System bootstrap that\n");
     printf("    suits the size; booting also needs SYSTEM.APPLE and\n");
     printf("    SYSTEM.PASCAL on the volume.\n");

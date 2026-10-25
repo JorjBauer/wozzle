@@ -85,6 +85,14 @@ class ProdosSpector : public Wozspector {
 
   virtual bool probe();
   virtual wozFsType fsType() const { return WOZ_FS_PRODOS; }
+
+  // Check a ProDOS name (a file, a directory or the volume) and upper-case
+  // it into out[16]: 1 to 15 characters, a letter first, then letters,
+  // digits or periods. ProDOS itself upper-cases what's typed, so
+  // lowercase is fine going in. Says why through wozMsg if it won't do;
+  // `what` names the thing in that message ("volume name", say).
+  static bool normalizeName(const char *src, char out[16],
+                            const char *what = "ProDOS name");
   virtual bool writeBootBlocks(const uint8_t block0[512],
                                const uint8_t block1[512]);
   // Read this volume's boot blocks (e.g. to use it as a boot-code donor).

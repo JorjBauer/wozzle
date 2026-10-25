@@ -39,6 +39,20 @@ assert_file_size "$TMP/f10.hdv" 9961472 "10m image is 19456*512 bytes"
 assert_file_size "$TMP/f32.hdv" 33553920 "32m image is 65535*512 bytes"
 verify "$TMP/f32.hdv" "blank 32m image is structurally clean (16 bitmap blocks)"
 
+# .po works at any size from a floppy up, since it's ProDOS-order blocks
+./wozit -p -c "format $TMP/f800.po W800 800k" >/dev/null 2>&1
+assert_file_size "$TMP/f800.po" 819200 "800k .po is 1600*512 bytes"
+verify "$TMP/f800.po" "800k .po is structurally clean"
+./wozit -p -c "format $TMP/f32.po BIGPO 32m" >/dev/null 2>&1
+assert_file_size "$TMP/f32.po" 33553920 "32m .po is 65535*512 bytes"
+head -c 1000 /dev/urandom > "$TMP/po.bin"
+./wozit -p -I "$TMP/f32.po" -c "cpin $TMP/po.bin DATA" -c "save" >/dev/null 2>&1
+./wozit -p -I "$TMP/f32.po" -c "cpout DATA $TMP/po.out" >/dev/null 2>&1
+assert_eq "$(hash_file "$TMP/po.bin")" "$(hash_file "$TMP/po.out")" "a 32m .po saves and reads back"
+# and a hard-disk image can be saved as one
+./wozit -p -I "$TMP/f5.hdv" -c "save $TMP/f5.po" >/dev/null 2>&1
+assert_file_size "$TMP/f5.po" 4980736 "a 5m .hdv saves as a 5m .po"
+
 ./wozit -p -c "format $TMP/fodd.hdv ODD 12345" >/dev/null 2>&1
 assert_file_size "$TMP/fodd.hdv" 6320640 "raw block count image is 12345*512 bytes"
 verify "$TMP/fodd.hdv" "odd-sized image is structurally clean"
@@ -47,8 +61,8 @@ out=$(./wozit -p -c "format $TMP/lc.hdv myvol.2 5m" 2>&1)
 assert_match "volume 'MYVOL.2'" "$out" "volume name is uppercased"
 
 # --- refusals -----------------------------------------------------------
-out=$(./wozit -p -c "format $TMP/bad.po 32m" 2>&1)
-assert_match "must be named .hdv or .img" "$out" "non-140k size refuses a .po name"
+out=$(./wozit -p -c "format $TMP/bad.po 100" 2>&1)
+assert_match "must be named .hdv or .img" "$out" "a sub-floppy size refuses a .po name"
 out=$(./wozit -p -c "format $TMP/bad.hdv 4" 2>&1)
 assert_match "bad size" "$out" "block count below 5 refused"
 out=$(./wozit -p -c "format $TMP/bad.hdv 65536" 2>&1)

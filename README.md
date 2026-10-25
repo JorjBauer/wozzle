@@ -1,4 +1,4 @@
-Wozzle v1.1-alpha
+Wozzle v2.0.0
 ===========
 
 ©2019 Jorj Bauer. MIT license.
@@ -13,6 +13,33 @@ Building
 *$ make*
 
 Wozzle is written in C++, and expects to find g++ for compilation.
+
+Releases
+--------
+
+Each release on GitHub has the Wozzle app (see gui/) and the command line
+tools, built for whatever I made the release on. As of this writing that's
+a Mac: the app for Apple Silicon, and the tools as universal binaries for
+Apple Silicon and Intel, for macOS 12 or newer. wozfuse also needs
+[macFUSE](https://macfuse.github.io/) installed.
+
+*make dist* builds the same files, the tools into dist/release/ and the
+app into gui/dist/ (*make tools* and *make app* build the pieces), and *make release* runs the tests, builds
+them, and publishes them to GitHub after asking; tools/release.sh says
+what it checks first. The version comes from library.properties, and
+*make version* checks it's the same everywhere it's written.
+
+None of these are signed with a developer certificate, so macOS won't open
+them the first time you try. For the app: unzip it, try to open it once,
+then go to System Settings, Privacy & Security, and click Open Anyway next
+to the message about Wozzle. (On macOS 14 or older, right-click the app,
+choose Open, and click Open in the dialog.) For the tools, which are run
+from a shell rather than opened, take the download mark off them instead:
+
+```
+tar xzf wozzle-tools-*.tar.gz
+xattr -dr com.apple.quarantine wozzle-tools-*/
+```
 
 Using the library in another program
 ------------------------------------
@@ -33,7 +60,7 @@ If you're building with Arduino, the top of this repository is an Arduino librar
 
 The library never touches files, memory or the terminal directly. File I/O and allocation go through hooks in wozhost.h, and messages go through wozmsg.h. On a POSIX system the defaults just work. Arduino has no POSIX file layer, so there you have to install file hooks (wozSetHost) before you open an image. wozhost.h also has two settings for slow storage: keepFilesOpen, and skipChecksum (which writes a 0 CRC, which the WOZ spec allows). There's a clock hook too (now), for dating new Pascal files; on Arduino it defaults to "don't know", and they get no date.
 
-There's also a WebAssembly build, which is what the GUI is going to use. *make wasm* builds it with Emscripten (I've used 6.0.5) into wasm/build/, and wasm/wozzle.mjs wraps it in JavaScript that deals in byte arrays:
+There's also a WebAssembly build, which is what the GUI uses. *make wasm* builds it with Emscripten (I've used 6.0.5) into wasm/build/, and wasm/wozzle.mjs wraps it in JavaScript that deals in byte arrays:
 
 ```
 import { loadWozzle } from './wasm/wozzle.mjs';
@@ -43,7 +70,11 @@ for (const e of img.list()) console.log(e.name, e.length);
 const woz2 = img.save('disk.woz');
 ```
 
+gui/ is the desktop app built on it (Tauri v2 and Svelte); its README says how to build it.
+
 Images sit in Emscripten's in-memory filesystem while they're open, so the library's default file hooks work unchanged and nothing touches real files. wasm/test.mjs runs through most of it under node, and the test suite runs that if the build is there.
+
+On a web page you'll want the library off the main thread, or a big image stalls the page while it works. wasm/wozzle-worker.mjs runs it in a worker (serveWozzle()), and wasm/wozzle-remote.mjs is the page's end of it: the same API, except that every call returns a promise. Images stay in the worker, and the page holds them by number. wasm/test-remote.mjs tests that pair under node's worker_threads, including a 32MB image.
 
 Buffers the library hands back (file contents, for instance) come from the allocator hook, so give them back with wozFree, not free. On a POSIX system with the default hooks it's the same thing, but it isn't on a Teensy with its allocator pointed at PSRAM.
 

@@ -147,6 +147,16 @@ enum _pascalKind {
 // what ls shows is what rm and friends match.
 void dosCatalogName(const struct _dosFdEntry *fe, char out[31]);
 
+// ProDOS dates (4 bytes: date word, minute, hour). Two-digit years follow
+// ProDOS Technical Note #28: 40-99 are 1940-1999 and 0-39 are 2000-2039.
+// prodosDateToEpoch returns NO_DATE for an empty date, and
+// epochToProdosDate leaves it empty (and returns false) for a time it
+// can't store.
+time_t prodosDateToEpoch(uint8_t prodosDate[4]);
+bool epochToProdosDate(time_t t, uint8_t prodosDate[4]);
+// Today, from the host's clock hook; empty if there's no clock
+bool prodosDateNow(uint8_t prodosDate[4]);
+
 struct _tsPair {
   uint8_t track;
   uint8_t sector;

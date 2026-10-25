@@ -11,3 +11,4 @@ libwozcore.a
 wozmosis
 wozfuse
 wasm/build/
+dist/

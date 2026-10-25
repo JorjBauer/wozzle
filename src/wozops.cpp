@@ -117,24 +117,8 @@ int32_t wozParseSizeSpec(const char *tok)
 
 bool wozNormalizeProdosVolumeName(const char *src, char out[16])
 {
-  size_t nl = strlen(src);
-  if (nl < 1 || nl > 15) {
-    wozMsg(WOZ_MSG_ERROR, "ERROR: volume name must be 1-15 characters");
-    return false;
-  }
-  memset(out, 0, 16);
-  for (size_t i = 0; i < nl; i++) {
-    char c = (char)toupper((unsigned char)src[i]);
-    bool okc = (i == 0) ? isalpha((unsigned char)c)
-                        : (isalnum((unsigned char)c) || c == '.');
-    if (!okc) {
-      wozMsg(WOZ_MSG_ERROR, "ERROR: bad volume name '%s' (letter first, "
-             "then letters, digits, or periods)", src);
-      return false;
-    }
-    out[i] = c;
-  }
-  return true;
+  // A volume name follows the same rule as any other ProDOS name
+  return ProdosSpector::normalizeName(src, out, "volume name");
 }
 
 static bool hasExtension(const char *fname, const char *ext)
@@ -145,16 +129,17 @@ static bool hasExtension(const char *fname, const char *ext)
 
 bool wozCheckImageName(wozFsType type, const char *fname, uint32_t blocks)
 {
+  // A .po is ProDOS-order blocks, which is what ProDOS and Pascal volumes
+  // are at any size: woz.cpp reads a .po bigger than a 5.25" floppy as raw
+  // blocks, and writes it back the same way. One smaller than a floppy
+  // would go through the floppy loader and fail, so that needs .hdv or
+  // .img.
+  bool po  = hasExtension(fname, ".po");
+  bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img");
+  bool poOk = (blocks >= 280);
   if (type == WOZ_FS_PASCAL) {
-    // A Pascal image is raw ProDOS-order blocks either way. A .po is read
-    // back through the 5.25" floppy loader at exactly 280 blocks, and
-    // through the raw-block path above that (woz.cpp promotes any .po
-    // bigger than a floppy), so .po covers real 5.25" and 3.5" media and
-    // nothing outside that range. Note .dsk is deliberately not accepted:
-    // it forces DOS sector order, which would scramble the blocks.
-    bool po  = hasExtension(fname, ".po");
-    bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img");
-    bool poOk = (blocks >= 280 && blocks <= 1600);
+    // Note .dsk is deliberately not accepted: it forces DOS sector order,
+    // which would scramble the blocks.
     if (!hdv && !(po && poOk)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: a %u-block Pascal image must be named %s",
              (unsigned)blocks, poOk ? ".po, .hdv or .img" : ".hdv or .img");
@@ -166,12 +151,11 @@ bool wozCheckImageName(wozFsType type, const char *fname, uint32_t blocks)
              "77-file directory can't usefully fill even that.",
              (unsigned)blocks);
     }
-  } else if (type == WOZ_FS_PRODOS && blocks != 280 &&
-             !hasExtension(fname, ".hdv") && !hasExtension(fname, ".img")) {
-    // Only a 280-block image round-trips through the .po/.dsk floppy
-    // loaders; anything else must be named for the raw-block HDV path.
-    wozMsg(WOZ_MSG_ERROR, "ERROR: a %u-block image must be named .hdv or .img",
-           (unsigned)blocks);
+  } else if (type == WOZ_FS_PRODOS && blocks != 280 && !hdv && !(po && poOk)) {
+    // Only a 280-block image round-trips through the .dsk and floppy
+    // loaders; anything else is raw blocks, as a .po, .hdv or .img.
+    wozMsg(WOZ_MSG_ERROR, "ERROR: a %u-block image must be named %s",
+           (unsigned)blocks, poOk ? ".po, .hdv or .img" : ".hdv or .img");
     return false;
   }
   return true;
@@ -232,6 +216,7 @@ static void buildBlankProdosPo(const char *volumeName, uint8_t *img,
   if (nl > 15) nl = 15;
   hdr->typelen = (0x0F << 4) | (uint8_t)nl;  // 0xF = volume directory hdr
   memcpy(hdr->name, volumeName, nl);
+  prodosDateNow(hdr->creationDate);
   hdr->accessFlags = 0xC3;    // destroy, rename, write, read
   hdr->entryLength = 0x27;
   hdr->entriesPerBlock = 0x0D;
@@ -666,10 +651,18 @@ bool wozImportFile(Wozspector *fs, const uint8_t *data, uint32_t len,
     fs->removeFile(destfn);
   }
 
+  // The filesystem says why a write failed, when it knows (a full disk,
+  // say), and that's the reason to leave for wozLastError
+  char before[160];
+  strncpy(before, wozLastError(), sizeof(before) - 1);
+  before[sizeof(before) - 1] = '\0';
+
   bool ok;
   if (wantExtended) {
     struct _prodosFent meta;
     memset(&meta, 0, sizeof(meta));
+    if (prodosDateNow(meta.creationDate))
+      memcpy(meta.lastModified, meta.creationDate, sizeof(meta.lastModified));
     meta.fileType = filetype;
     meta.accessFlags = 0xC3; // destroy/rename/write/read, as cpin always sets
     meta.typeData[0] = auxTypeData & 0xFF;
@@ -683,7 +676,7 @@ bool wozImportFile(Wozspector *fs, const uint8_t *data, uint32_t len,
                               auxTypeData, payloadSize);
   }
   wozFree(tokBuf);
-  if (!ok) {
+  if (!ok && !strncmp(before, wozLastError(), sizeof(before) - 1)) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: Failed to write file");
   }
   return ok;
