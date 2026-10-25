@@ -94,9 +94,11 @@ class Woz {
   // with the D5 AA B5 address prologue.
   bool decodeWozTrack13ToDsk(uint8_t phystrack, uint8_t sectorData[256*13]);
 
-  // True when the WOZ INFO chunk advertises the disk as 13-sector only
-  // (bootSectorFormat = 2). "Both" (= 3) disks are treated as 16-sector
-  // by default; callers that care can sniff per-track.
+  // True for a 13-sector (DOS 3.2) disk. A WOZ 2 INFO chunk that says
+  // 13-sector (bootSectorFormat = 2) or a .d13 file settles it; "both"
+  // (= 3) counts as 16-sector. Otherwise (WOZ 1, .nib, a nibble .2mg, or
+  // a WOZ 2 that doesn't say) we look at which address prologue the
+  // tracks use, once, and remember the answer.
   bool isThirteenSectorDisk();
 
   // Dump the raw latched-nibble byte stream for one physical track -
@@ -121,6 +123,20 @@ class Woz {
   // filesystem edit can ask for here.
   bool truncateHdv(uint32_t newByteSize);
 
+  // A .2mg (2IMG) image is a 64-byte header and then the image in one of
+  // three layouts: DOS order, ProDOS order or nibbles. readFile() reads
+  // the header and loads what's inside the usual way, so imageType says
+  // T_DSK, T_PO, T_NIB or T_HDV as it would for the bare file.
+  // writeFile() to a .2mg name writes the header back, along with the
+  // comment and creator data from the image it read, if any.
+  static bool isTwoImgName(const char *filename);
+  bool isTwoImg() const { return twoImg; }
+  // Write a freshly built blank image (DOS order for DOS 3.3, ProDOS
+  // order otherwise) to a new file: as it is, or inside a 2IMG header if
+  // the name is .2mg. The caller has already checked the name is free.
+  static bool writeBlankImageFile(const char *filename, const uint8_t *data,
+                                  uint32_t size, bool dosOrder);
+
  protected:
   bool writeWozFile(const char *filename, uint8_t subtype);
   bool writeWozFile(int fdout, uint8_t subtype);
@@ -139,8 +155,15 @@ class Woz {
   bool readWozFile(const char *filename, bool preloadTracks);
   bool readDskFile(const char *filename, bool preloadTracks, uint8_t subtype);
   bool readNibFile(const char *filename, bool preloadTracks);
-  bool readHdvFile(const char *filename);
+  // offset and length pick out a 2IMG file's blocks; 0 means the whole file
+  bool readHdvFile(const char *filename, uint32_t offset = 0, uint32_t length = 0);
   bool writeHdvFile(const char *filename);
+  bool writeHdvFile(int fdout);
+  bool writeD13File(const char *filename);
+  bool sniffThirteenSector();
+  bool readTwoImgFile(const char *filename, bool preloadTracks);
+  bool writeTwoImgFile(const char *filename);
+  void clearTwoImg();
 
   bool decodeWozTrackToNibFromDataTrack(uint8_t dataTrack, nibSector sectorData[16]);
 
@@ -208,6 +231,26 @@ class Woz {
   // blocks under a floppy extension, so writeFile may write it back the
   // same way; a real hard-disk image still refuses floppy-format output.
   bool hdvPromotedFromFloppyExt;
+
+  // isThirteenSectorDisk()'s answer when it had to look: -1 until then
+  int8_t thirteenSector;
+
+  // Where the image's data starts in its file: 0, except past a 2IMG
+  // header. Every read from fd adds it.
+  uint32_t dataOffset;
+  // Volume number for the address fields when we build tracks from
+  // sectors. DOS keeps its own copy in the VTOC; this is the one a 2IMG
+  // header can carry, and 254 when nothing says otherwise.
+  uint8_t sectorVolume;
+  // From the 2IMG header we read, so writing one back keeps them
+  bool twoImg;
+  uint8_t twoImgFormat;       // 0 DOS order, 1 ProDOS order, 2 nibbles
+  uint32_t twoImgFlags;
+  char twoImgCreator[4];
+  uint8_t *twoImgComment;
+  uint32_t twoImgCommentLen;
+  uint8_t *twoImgCreatorData;
+  uint32_t twoImgCreatorDataLen;
 };
 
 #endif

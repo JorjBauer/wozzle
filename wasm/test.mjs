@@ -39,7 +39,7 @@ throws(() => woz.createBlank({ name: 'x.po', fsType: 'prodos', volumeName: 'bad 
 check(woz.createBlank({ name: 'x.po', fsType: 'prodos', blocks: 1600 }).length === 1600 * 512,
       'an 800K .po is fine');
 throws(() => woz.createBlank({ name: 'x.po', fsType: 'prodos', blocks: 100 }),
-       '.hdv or .img', 'a .po smaller than a floppy is refused');
+       '.hdv, .img or .2mg', 'a .po smaller than a floppy is refused');
 
 // ---- ProDOS ----
 let img = woz.open(po, 'new.po');

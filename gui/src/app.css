@@ -9,6 +9,7 @@
   --selected: #dbe8fb;
   --danger: #c4271c;
   --error-bg: #fdecea;
+  --c02: #7a3fd1;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
@@ -28,6 +29,7 @@
     --selected: #24426b;
     --danger: #ff6b5e;
     --error-bg: #4a2320;
+    --c02: #c5a3ff;
   }
 }
 
@@ -75,19 +77,31 @@ input, select {
 
 .body { flex: 1; display: flex; min-height: 0; }
 
-.volume {
-  width: 220px;
+.details {
+  width: 240px;
   flex-shrink: 0;
   padding: 12px;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  background: var(--panel);
   overflow: auto;
 }
-.volume h2 { font-size: 16px; margin: 0 0 10px; word-break: break-all; }
-.volume dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
-.volume dt { color: var(--muted); }
-.volume dd { margin: 0; word-break: break-all; }
+.details h2 { font-size: 15px; margin: 0 0 10px; word-break: break-all; }
+.details dl + h2 { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.details dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; font-size: 13px; }
+.details dt { color: var(--muted); }
+.details dd { margin: 0; word-break: break-all; }
+.details .none { color: var(--muted); margin: 0; }
 
-.files { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.toolbar .grow { flex: 1; }
+button.on { background: var(--selected); border-color: var(--accent); }
+
+.files { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+/* A faint picture of what's open, behind the list */
+.files-art {
+  position: absolute; top: 50%; left: 50%; width: 220px; max-width: 60%;
+  transform: translate(-50%, -40%); opacity: 0.12; pointer-events: none;
+}
+.table-wrap { position: relative; }
 .crumbs { padding: 6px 10px; display: flex; gap: 4px; align-items: center; color: var(--muted); }
 
 table { width: 100%; border-collapse: collapse; }
@@ -101,7 +115,13 @@ tbody tr.selected { background: var(--selected); }
 td.empty { color: var(--muted); font-family: inherit; }
 
 .welcome { margin: auto; text-align: center; color: var(--muted); padding: 24px; }
-.welcome .hint { font-size: 12px; }
+.welcome p { margin: 6px 0; }
+.welcome p:first-of-type { font-size: 16px; color: var(--text); }
+.welcome .hint { font-size: 12px; line-height: 1.5; }
+.welcome-art { width: 120px; display: block; margin: 0 auto 12px; }
+/* While an image is dragged over the window, the arrow moves down to meet
+   the disk */
+.welcome.dragging .arrow { transform: translateY(6px); }
 
 .status {
   min-height: 26px;
@@ -152,6 +172,21 @@ td.empty { color: var(--muted); font-family: inherit; }
   padding: 10px;
   border-radius: 6px;
 }
+/* A dump's columns only line up if its lines aren't wrapped */
+.viewer.dump { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+/* The disassembly's columns, as aiie's debugger lays them out */
+.viewer.asm .aline { display: grid; grid-template-columns: 44px 90px 10em 1fr; gap: 6px; }
+.viewer.asm .dim { color: var(--muted); }
+.viewer.asm .label { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+.viewer.asm .c02 { color: var(--c02); }
+
+.segmented { display: flex; gap: 0; align-self: flex-start; }
+.segmented button { border-radius: 0; margin-left: -1px; }
+.segmented button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.segmented button:last-child { border-radius: 0 6px 6px 0; }
+.segmented button.on { position: relative; }
+
+.hint { color: var(--muted); font-size: 12px; }
 
 .body.busy { cursor: progress; }
 

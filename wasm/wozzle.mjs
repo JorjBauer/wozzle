@@ -12,7 +12,7 @@
 // Images live in Emscripten's in-memory filesystem while they're open, so
 // nothing here touches real files: bytes go in, bytes come out. The name
 // matters only for its extension, which picks the image format (.woz,
-// .dsk/.do, .po, .nib, .hdv/.img).
+// .dsk/.do, .po, .nib, .hdv/.img, .2mg).
 //
 // A call that fails throws a WozError carrying the library's reason. The
 // messages a call produced (warnings, say) are in woz.messages afterward.
@@ -175,7 +175,7 @@ export class Wozzle {
   }
 
   // A blank image, as bytes. name's extension picks the format; sizes
-  // other than a floppy's need .hdv or .img.
+  // other than a floppy's need .hdv, .img or .2mg.
   createBlank({ name, fsType, volumeName = null, dosVolume = 254,
                 blocks = 280, bootable = false }) {
     this.begin();

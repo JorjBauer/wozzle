@@ -98,7 +98,11 @@ Wozzle has two modes of operation. Its primary use is converting disk images fro
 
 *$ wozzle -i input.dsk -o output.woz*
 
-It's possible to convert between _.dsk_ (including _.po_ or _.do_), _.nib_, and _.woz_ formats. Yes, that means you can use this to convert from a DSK to a NIB, if that's what you need...
+It's possible to convert between _.dsk_ (including _.po_ or _.do_), _.nib_, _.hdv_ (or _.img_), _.2mg_, _.d13_ and _.woz_ formats. Yes, that means you can use this to convert from a DSK to a NIB, if that's what you need...
+
+A _.2mg_ file says in its header whether the disk inside is in DOS order, ProDOS order or nibbles, so wozzle reads whichever it is. When it writes one, it keeps the layout, comment and creator data of the _.2mg_ it read; otherwise a _.dsk_ goes in DOS order, a _.nib_ as nibbles, and everything else in ProDOS order. The header's write-protect flag and volume number are used too.
+
+13-sector (DOS 3.2) disks are read-only: you can list them, copy files out, and convert them to _.d13_, _.woz_, _.nib_ or _.2mg_ (as nibbles), but not change them. A _.dsk_ or _.po_ can't hold one, since those are 16 sectors a track. A _.woz_ from WOZ 2 says when a disk is 13-sector; for anything else, wozzle looks at the address fields on the disk to tell.
 
 *$ wozzle -i input.dsk -o output.nib*
 
@@ -302,7 +306,7 @@ then refused whenever the tail is occupied, which is the way to ask
 whether a volume can be shrunk without rewriting anything.
 
 Bitmap blocks the smaller volume no longer needs become free space. Raw
-block images only (.img/.hdv, or a .po larger than a floppy), and it only
+block images only (.img/.hdv, or a .po or .2mg larger than a floppy), and it only
 shrinks: growing a volume still means formatting a bigger image and
 copying into it. Takes effect on *save*.
 

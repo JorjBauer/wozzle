@@ -8,8 +8,6 @@
 #include <stdio.h>
 #include "disktypes.h"
 
-// Default disk volume identifier
-#define DISK_VOLUME 254
 
 // 4-and-4 encoding handlers
 #define         nib1(a) (((a & 0xAA) >> 1) | 0xAA)
@@ -184,7 +182,7 @@ static uint8_t _whichBit(uint8_t bitIdx)
 // nibbles (416*16 bytes). Returns the number of bits actually
 // encoded.
 uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrackBuffer[256*16],
-		       uint8_t diskType, int8_t track)
+		       uint8_t diskType, int8_t track, uint8_t volume)
 {
   int checksum;
   bitPtr ptr = { 0, 0x80 };
@@ -199,8 +197,8 @@ uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrac
     _packByte(outputBuffer, &ptr, 0xAA);
     _packByte(outputBuffer, &ptr, 0x96);
     
-    _packByte(outputBuffer, &ptr, nib1(DISK_VOLUME));
-    _packByte(outputBuffer, &ptr, nib2(DISK_VOLUME));
+    _packByte(outputBuffer, &ptr, nib1(volume));
+    _packByte(outputBuffer, &ptr, nib2(volume));
 
     _packByte(outputBuffer, &ptr, nib1(track));
     _packByte(outputBuffer, &ptr, nib2(track));
@@ -208,7 +206,7 @@ uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrac
     _packByte(outputBuffer, &ptr, nib1(sector));
     _packByte(outputBuffer, &ptr, nib2(sector));
     
-    checksum = DISK_VOLUME ^ track ^ sector;
+    checksum = volume ^ track ^ sector;
     _packByte(outputBuffer, &ptr, nib1(checksum));
     _packByte(outputBuffer, &ptr, nib2(checksum));
 
@@ -239,6 +237,56 @@ uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrac
     for (uint8_t i=0; i<16; i++) {
       _packGap(outputBuffer, &ptr);
     }
+  }
+
+  return (ptr.idx*8 + _whichBit(ptr.bitIdx));
+}
+
+// The 13-sector version, for DOS 3.2 disks: rawTrackBuffer holds the 13
+// sectors in the order of the sector numbers in their address fields
+// (which is also how a .d13 file holds them). The address prologue is
+// D5 AA B5 and the data is 5-and-3 encoded, 411 bytes a sector.
+uint32_t nibblizeTrack13(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrackBuffer[256*13],
+                         int8_t track, uint8_t volume)
+{
+  bitPtr ptr = { 0, 0x80 };
+
+  for (uint8_t sector=0; sector<13; sector++) {
+    for (uint8_t i=0; i<16; i++)
+      _packGap(outputBuffer, &ptr);
+
+    _packByte(outputBuffer, &ptr, 0xD5); // prolog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xB5);
+    _packByte(outputBuffer, &ptr, nib1(volume));
+    _packByte(outputBuffer, &ptr, nib2(volume));
+    _packByte(outputBuffer, &ptr, nib1(track));
+    _packByte(outputBuffer, &ptr, nib2(track));
+    _packByte(outputBuffer, &ptr, nib1(sector));
+    _packByte(outputBuffer, &ptr, nib2(sector));
+    int checksum = volume ^ track ^ sector;
+    _packByte(outputBuffer, &ptr, nib1(checksum));
+    _packByte(outputBuffer, &ptr, nib2(checksum));
+    _packByte(outputBuffer, &ptr, 0xDE); // epilog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xEB);
+
+    for (uint8_t i=0; i<5; i++)
+      _packGap(outputBuffer, &ptr);
+
+    _packByte(outputBuffer, &ptr, 0xD5); // data prolog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xAD);
+    uint8_t nibData[411];
+    _encode53Data(nibData, &rawTrackBuffer[sector * 256]);
+    for (int i=0; i<411; i++)
+      _packByte(outputBuffer, &ptr, nibData[i]);
+    _packByte(outputBuffer, &ptr, 0xDE); // data epilog
+    _packByte(outputBuffer, &ptr, 0xAA);
+    _packByte(outputBuffer, &ptr, 0xEB);
+
+    for (uint8_t i=0; i<16; i++)
+      _packGap(outputBuffer, &ptr);
   }
 
   return (ptr.idx*8 + _whichBit(ptr.bitIdx));

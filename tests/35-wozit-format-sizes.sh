@@ -62,7 +62,7 @@ assert_match "volume 'MYVOL.2'" "$out" "volume name is uppercased"
 
 # --- refusals -----------------------------------------------------------
 out=$(./wozit -p -c "format $TMP/bad.po 100" 2>&1)
-assert_match "must be named .hdv or .img" "$out" "a sub-floppy size refuses a .po name"
+assert_match "must be named .hdv, .img or .2mg" "$out" "a sub-floppy size refuses a .po name"
 out=$(./wozit -p -c "format $TMP/bad.hdv 4" 2>&1)
 assert_match "bad size" "$out" "block count below 5 refused"
 out=$(./wozit -p -c "format $TMP/bad.hdv 65536" 2>&1)

@@ -14,7 +14,7 @@ export interface PickedFile {
   path?: string;
 }
 
-export const IMAGE_EXTENSIONS = ['woz', 'dsk', 'do', 'po', 'nib', 'hdv', 'img'];
+export const IMAGE_EXTENSIONS = ['woz', 'dsk', 'do', 'po', 'nib', 'hdv', 'img', '2mg', '2img', 'd13'];
 
 export const native = isTauri();
 

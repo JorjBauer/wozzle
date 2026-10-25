@@ -30,6 +30,10 @@ npx tauri build --bundles app   # just the .app
 *npm run dev* on its own serves the front end at http://localhost:5173, to
 use as a web page.
 
+From the top directory, *make dev* does the same as *npm run tauri dev*
+(building the WebAssembly first if it needs to), and *make run* builds
+the app and opens it.
+
 For a release, *make app* or *make dist* in the top directory builds it
 (see the top README's Releases section), and the finished Wozzle.app (and,
 from *make dist*, its zip) lands in dist/. Everything built along the way
@@ -42,11 +46,16 @@ right-click, Open the first time.
 What it does so far
 -------------------
 
-* Open a .woz, .dsk/.do, .po, .nib, .hdv or .img image (DOS 3.3, ProDOS or
-  Apple Pascal), and browse it, ProDOS subdirectories included
+* Open a .woz, .dsk/.do, .po, .nib, .hdv, .img or .2mg image (DOS 3.3,
+  ProDOS or Apple Pascal), and browse it, ProDOS subdirectories included
 * Extract a file: its contents, everything allocated, or a BASIC program
   as a text listing
-* View a BASIC listing or a text file
+* View a file: a BASIC program as its listing, a text file as text, and
+  anything else as a hex dump or a 65C02 disassembly, numbered from its
+  load address. The disassembly is the same as aiie's debugger: its
+  opcode table, //e addresses by name (F8ROM:COUT, KBD), and an Lxxxx
+  label on each branch or jump target
+* Volume and file details in a drawer on the right (Details turns it off)
 * Add a file, with a file type and aux type, tokenizing an Applesoft
   listing on the way in
 * New folder (ProDOS) and delete

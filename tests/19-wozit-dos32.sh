@@ -48,4 +48,12 @@ assert_match "WARNING" "$w" "mode-mismatch warning on DOS-3.2 image with -p"
 w2=$(./wozit -I "$IMG" -d -c "ls" 2>&1)
 assert_no_match "WARNING" "$w2" "no warning on DOS-3.2 image with -d"
 
+# WOZ 1 has no field saying it's 13-sector, so this one is recognized
+# from its address fields
+IMG1="woz test images/WOZ 1.0/DOS 3.2 System Master.woz"
+if [ -f "$IMG1" ]; then
+  ls_out=$(./wozit -I "$IMG1" -d -c "ls" 2>&1)
+  assert_match "APPLE-TREK" "$ls_out" "the WOZ 1 copy is recognized as 13-sector"
+fi
+
 t_done

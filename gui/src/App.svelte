@@ -4,6 +4,7 @@
   import { getWozzle, typeName, hex, appleText } from './lib/woz';
   import { native, pickImage, pickAnyFile, saveAs, saveInPlace, type PickedFile } from './lib/files';
   import { diskName, looksLikeListing } from './lib/names';
+  import { loadAddress, hexDump, disassemble, type AsmLine } from './lib/dump';
   import {
     listenForDrops, prepareDragOut, releaseDragOut, startNativeDrag, setBrowserDragData,
     type DragOut,
@@ -11,6 +12,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, untrack } from 'svelte';
   import Modal from './lib/Modal.svelte';
+  import DiskArt, { diskKind } from './lib/DiskArt.svelte';
 
   let woz: RemoteWozzle | null = $state(null);
   let img: RemoteImage | null = $state(null);
@@ -51,6 +53,20 @@
 
   const selectedEntry = $derived(entries.find((e) => e.name === selected) ?? null);
   const fsLabel: Record<string, string> = { dos33: 'DOS 3.3', prodos: 'ProDOS', pascal: 'Pascal' };
+
+  // The detail drawer on the right: the volume, and the selected file.
+  // Whether it's open is remembered, where the webview lets us.
+  let showDetails = $state(readPref('details', true));
+  function readPref(key: string, fallback: boolean): boolean {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : v === '1';
+    } catch { return fallback; }
+  }
+  function toggleDetails() {
+    showDetails = !showDetails;
+    try { localStorage.setItem('details', showDetails ? '1' : '0'); } catch {}
+  }
 
   function say(text: string) {
     status = text;
@@ -217,6 +233,8 @@
     { ext: 'po', label: 'PO (ProDOS order)' },
     { ext: 'nib', label: 'NIB' },
     { ext: 'hdv', label: 'HDV (hard disk)' },
+    { ext: '2mg', label: '2MG' },
+    { ext: 'd13', label: 'D13 (13-sector)' },
   ];
   let saveExt = $state('woz');
 
@@ -325,15 +343,55 @@
   });
 
   // ---- View ----
+  // A BASIC program as its listing, text as text, and anything else as a
+  // hex dump; each of them can be switched to the other views.
+  type ViewMode = 'listing' | 'text' | 'hex' | 'asm';
+  const viewModeNames: Record<ViewMode, string> = {
+    listing: 'Listing', text: 'Text', hex: 'Hex', asm: '65C02',
+  };
+  // A dump is about 6 characters of text a byte, so a big file is cut
+  // short rather than handed to the window whole
+  const VIEW_LIMIT = 256 * 1024;
   let viewTitle = $state('');
-  let viewText = $state('');
+  let viewBytes: Uint8Array = $state(new Uint8Array());
+  let viewBase = $state(0);
+  let viewListing: string | null = $state(null);
+  let viewMode: ViewMode = $state('hex');
+  const viewModes = $derived<ViewMode[]>(viewListing !== null
+    ? ['listing', 'hex', 'asm', 'text'] : ['hex', 'asm', 'text']);
+  const viewShown = $derived(viewMode === 'listing' || viewMode === 'text'
+    ? viewBytes : viewBytes.subarray(0, VIEW_LIMIT));
+  const viewText = $derived(
+    viewMode === 'listing' ? viewListing ?? ''
+    : viewMode === 'text' ? appleText(viewShown)
+    : viewMode === 'hex' ? hexDump(viewShown, viewBase) : '');
+  // The disassembly is laid out in columns like aiie's debugger: address,
+  // bytes, label, instruction, with the 65C02's own instructions marked.
+  // It's built as markup because a big file has tens of thousands of
+  // lines, which is slow as separate components.
+  const viewAsm = $derived(viewMode === 'asm' ? asmHtml(disassemble(viewShown, viewBase)) : '');
+
+  function asmHtml(lines: AsmLine[]): string {
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    return lines.map((l) =>
+      `<div class="aline"><span class="dim">${l.addr.toString(16).toUpperCase().padStart(4, '0')}</span>` +
+      `<span class="dim">${l.bytes}</span><span class="label">${esc(l.label)}</span>` +
+      `<span${l.c02 ? ' class="c02" title="65C02 only"' : ''}>${esc(l.text)}</span></div>`).join('');
+  }
+
+  function isTextFile(fsType: string | null, fileType: number) {
+    return fsType === 'pascal' ? fileType === 3 : fileType === 0x04;
+  }
 
   const view = () => run(async () => {
     if (!img || !selectedEntry) return;
     const e = selectedEntry;
+    const path = pathOf(e.name);
     const isBasic = img.fsType !== 'pascal' && (e.fileType === 0xfc || e.fileType === 0xfa);
-    viewText = isBasic ? await img.listBasic(pathOf(e.name))
-                       : appleText(await img.read(pathOf(e.name)));
+    viewBytes = await img.read(path);
+    viewListing = isBasic ? await img.listBasic(path) : null;
+    viewBase = loadAddress(img.fsType, e.fileType, e.auxType);
+    viewMode = isBasic ? 'listing' : isTextFile(img.fsType, e.fileType) ? 'text' : 'hex';
     viewTitle = e.name;
     dialog = 'view';
   });
@@ -458,7 +516,8 @@
   <header class="toolbar">
     <button onclick={openImage} disabled={!woz || busy}>Open…</button>
     <button onclick={startNew} disabled={!woz || busy}>New…</button>
-    <button onclick={save} disabled={!img || busy}>Save</button>
+    <button onclick={save} disabled={!img || !imagePath || busy}
+            title={img && !imagePath ? "It hasn't been saved yet; use Save As" : undefined}>Save</button>
     <button onclick={() => (dialog = 'saveAs')} disabled={!img || busy}>Save As…</button>
     <span class="sep"></span>
     <button onclick={() => (dialog = 'extract')} disabled={busy || !selectedEntry || selectedEntry.isDirectory}>Extract…</button>
@@ -466,21 +525,14 @@
     <button onclick={startAdd} disabled={!img || busy}>Add File…</button>
     <button onclick={() => { folderName = ''; dialog = 'mkdir'; }} disabled={!img || busy || img.fsType !== 'prodos'}>New Folder…</button>
     <button onclick={() => (dialog = 'delete')} disabled={busy || !selectedEntry}>Delete</button>
+    <span class="grow"></span>
+    <!-- The chevron points the way the drawer will move -->
+    <button class:on={showDetails} aria-pressed={showDetails} onclick={toggleDetails}
+            title={showDetails ? 'Hide the details' : 'Show the details'}>{showDetails ? 'Details ›' : '‹ Details'}</button>
   </header>
 
   <main class="body" class:busy aria-busy={busy}>
     {#if img && info}
-      <aside class="volume">
-        <h2>{info.volumeName || `Volume ${info.dosVolume}`}{dirty ? ' •' : ''}</h2>
-        <dl>
-          <dt>Image</dt><dd>{imageName}</dd>
-          <dt>Filesystem</dt><dd>{fsLabel[info.fsType ?? ''] ?? 'unknown'}</dd>
-          <dt>Size</dt><dd>{info.totalUnits} {info.unitSize === 256 ? 'sectors' : 'blocks'}</dd>
-          <dt>Free</dt><dd>{info.freeUnits}</dd>
-          {#if info.creator}<dt>Creator</dt><dd>{info.creator}</dd>{/if}
-        </dl>
-      </aside>
-
       <section class="files" class:drop-here={dropTarget?.kind === 'add' && dropTarget.into === dir}>
         <nav class="crumbs">
           <button class="link" onclick={() => up(0)}>/</button>
@@ -488,6 +540,7 @@
             <span>›</span><button class="link" onclick={() => up(i + 1)}>{part}</button>
           {/each}
         </nav>
+        <DiskArt kind={diskKind(info.totalUnits * info.unitSize)} class="files-art" />
         <div class="table-wrap">
         <table>
           <thead>
@@ -520,10 +573,43 @@
         </div>
       </section>
     {:else}
-      <div class="welcome">
-        <p>Open an Apple II disk image (.woz, .dsk, .do, .po, .nib, .hdv, .img), or make a new one.</p>
-        <p class="hint">DOS 3.3, ProDOS and Apple Pascal volumes. You can drop an image on the window to open it.</p>
+      <div class="welcome" class:dragging={dropTarget?.kind === 'open'}>
+        <DiskArt kind="floppy525" arrow class="welcome-art" />
+        <p>Drop a disk image here</p>
+        <p class="hint">or use Open or New. DOS 3.3, ProDOS and Pascal volumes,<br />in .woz, .dsk, .do, .po, .nib, .hdv, .img or .2mg files.</p>
       </div>
+    {/if}
+    {#if showDetails}
+      <aside class="details">
+        {#if img && info}
+          <h2>{info.volumeName || `Volume ${info.dosVolume}`}{dirty ? ' •' : ''}</h2>
+          <dl>
+            <dt>Image</dt><dd>{imageName}</dd>
+            <dt>Filesystem</dt><dd>{fsLabel[info.fsType ?? ''] ?? 'unknown'}</dd>
+            <dt>Size</dt><dd>{info.totalUnits} {info.unitSize === 256 ? 'sectors' : 'blocks'}</dd>
+            <dt>Free</dt><dd>{info.freeUnits}</dd>
+            {#if info.creator}<dt>Creator</dt><dd>{info.creator}</dd>{/if}
+          </dl>
+          {#if selectedEntry}
+            {@const e = selectedEntry}
+            <h2>{e.name}{e.isDirectory ? '/' : ''}</h2>
+            <dl>
+              <dt>Type</dt><dd>{typeName(img.fsType, e.fileType)}</dd>
+              {#if img.fsType !== 'pascal' && !e.isDirectory}
+                <dt>{e.fileType === 0x06 ? 'Loads at' : 'Aux'}</dt><dd>{hex(e.auxType, 4)}</dd>
+              {/if}
+              {#if !e.isDirectory}<dt>Length</dt><dd>{e.length} bytes</dd>{/if}
+              <dt>Uses</dt><dd>{e.unitsUsed} {info.unitSize === 256 ? 'sectors' : 'blocks'}</dd>
+              {#if e.created}<dt>Created</dt><dd>{formatDate(e.created)}</dd>{/if}
+              {#if e.modified}<dt>Modified</dt><dd>{formatDate(e.modified)}</dd>{/if}
+              {#if e.locked}<dt>Locked</dt><dd>Yes</dd>{/if}
+              {#if e.hasResourceFork}<dt>Fork</dt><dd>Has a resource fork</dd>{/if}
+            </dl>
+          {/if}
+        {:else}
+          <p class="none">No image open</p>
+        {/if}
+      </aside>
     {/if}
   </main>
 
@@ -610,7 +696,20 @@
 
 {#if dialog === 'view'}
   <Modal title={viewTitle} wide onclose={() => (dialog = null)}>
-    <pre class="viewer">{viewText}</pre>
+    <div class="segmented" role="group" aria-label="Show as">
+      {#each viewModes as m}
+        <button class:on={viewMode === m} aria-pressed={viewMode === m}
+                onclick={() => (viewMode = m)}>{viewModeNames[m]}</button>
+      {/each}
+    </div>
+    {#if viewMode === 'asm'}
+      <div class="viewer dump asm">{@html viewAsm}</div>
+    {:else}
+      <pre class="viewer" class:dump={viewMode === 'hex'}>{viewText}</pre>
+    {/if}
+    {#if viewShown.length < viewBytes.length}
+      <p class="hint">The first {VIEW_LIMIT / 1024}K of {viewBytes.length} bytes. Extract the file to see the rest.</p>
+    {/if}
     {#snippet actions()}
       <button class="primary" onclick={() => (dialog = null)}>Close</button>
     {/snippet}

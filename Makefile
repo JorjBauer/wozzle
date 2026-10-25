@@ -148,6 +148,8 @@ test: all unit-tests
 #   make version    check the version is the same everywhere it's written
 #   make tools      the command line tools, built for release, in dist/build/bin/
 #   make app        the GUI app for this computer, in gui/dist/
+#   make run        make app, then open it
+#   make dev        run the GUI with its front end reloading as you edit
 #   make dist       both, packed for a release: the tools into dist/release/,
 #                   the app into gui/dist/
 #   make release    publish those as a GitHub release (see tools/release.sh)
@@ -249,7 +251,7 @@ GUI_STAGE    := $(GUI_BUILD)/frontend
 APP_CONTENTS := Contents/Info.plist Contents/MacOS/wozzle-gui \
 	Contents/Resources/icon.icns Contents/_CodeSignature/CodeResources
 
-.PHONY: version tools app dist release rel-tools rel-app gui-stage gui-ship-check
+.PHONY: version tools app run dev dist release rel-tools rel-app gui-stage gui-ship-check
 
 # sed -i.bak works with both BSD and GNU sed. npm version sets
 # package-lock.json's copy along with package.json's.
@@ -320,6 +322,19 @@ ifeq ($(HOST_OS),darwin)
 	rm -rf "$(GUI_OUT)/Wozzle.app"
 	ditto "$(APP_BUNDLE_DIR)/macos/Wozzle.app" "$(GUI_OUT)/Wozzle.app"
 endif
+
+ifeq ($(HOST_OS),darwin)
+run: app
+	open "$(GUI_OUT)/Wozzle.app"
+else
+run: app
+	"$(GUI_BUILD)/target/$(if $(APP_TARGET),$(APP_TARGET)/)release/wozzle-gui"
+endif
+
+# tauri dev builds a debug copy of the Rust side and serves the front end
+# from Vite, so an edit to gui/src shows up without a rebuild
+dev: version wasm gui/node_modules
+	cd gui && npx tauri dev
 
 dist: version rel-tools rel-app
 

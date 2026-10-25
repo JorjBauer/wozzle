@@ -361,12 +361,7 @@ bool wozCreateBlankImage(const char *path, wozFsType type,
     wozFree(imgData);
     return false;
   }
-  fd = wozOpen(path, WOZ_OPEN_CREATE);
-  bool ok = (fd != -1);
-  if (ok) {
-    ok = (wozWrite(fd, imgData, size) == (long)size);
-    ok = (wozClose(fd) == 0) && ok;
-  }
+  bool ok = Woz::writeBlankImageFile(path, imgData, size, type == WOZ_FS_DOS33);
   wozFree(imgData);
   if (!ok)
     wozMsg(WOZ_MSG_ERROR, "ERROR: failed to write '%s'", path);

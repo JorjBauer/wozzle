@@ -817,7 +817,7 @@ bool ProdosSpector::resizeVolume(uint32_t newBlocks, bool relocate)
 
   if (!isHdv()) {
     wozMsg(WOZ_MSG_ERROR,
-           "ERROR: only raw block images (.img/.hdv/.po) can be resized; a "
+           "ERROR: only raw block images (.img/.hdv/.po/.2mg) can be resized; a "
            "floppy image is a fixed 280 blocks");
     return false;
   }

@@ -203,12 +203,26 @@ bool DosSpector::findFreeSector(int *trackOut, int *sectorOut)
   return false;
 }
 
+// We can read DOS 3.2 disks but not write them: there's no 13-sector
+// sector writer yet. Every change checks here first, so nothing is half
+// done when it says no.
+bool DosSpector::refuseIfThirteenSector()
+{
+  if (!isThirteenSectorDisk())
+    return false;
+  wozMsg(WOZ_MSG_ERROR, "ERROR: this is a 13-sector (DOS 3.2) disk, which can be read "
+         "but not changed");
+  return true;
+}
+
 bool DosSpector::writeFileToImage(uint8_t *fileContents,
                                   char *fileName,
                                   uint8_t fileType,
                                   uint16_t fileStart,
                                   uint32_t fileSize)
 {
+  if (refuseIfThirteenSector())
+    return false;
   // The fileType we're handed is a ProDOS file type, because they're more
   // expressive than the DOS ones, so the callers can use just one
   uint8_t typeAndFlags;
@@ -404,6 +418,8 @@ bool DosSpector::freeDosFileSectors(uint8_t tsTrack, uint8_t tsSector)
 bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
                               uint8_t typeAndFlags, uint32_t size)
 {
+  if (refuseIfThirteenSector())
+    return false;
   if (!vtLoaded)
     createTree();
 
@@ -512,6 +528,8 @@ bool DosSpector::writeFileRaw(uint8_t *contents, const char *fileName,
 
 bool DosSpector::setFileLocked(const char *fileName, bool locked)
 {
+  if (refuseIfThirteenSector())
+    return false;
   if (!vtLoaded)
     createTree();
 
@@ -563,6 +581,8 @@ bool DosSpector::setFileLocked(const char *fileName, bool locked)
 
 bool DosSpector::removeFile(const char *fileName)
 {
+  if (refuseIfThirteenSector())
+    return false;
   if (!vtLoaded)
     createTree();
 

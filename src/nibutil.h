@@ -55,8 +55,14 @@ typedef struct _bitPtr {
   bool _decode53Data(const uint8_t trackBuffer[411], uint8_t output[256]);
   void _encode53Data(uint8_t outputBuffer[411], const uint8_t input[256]);
 
+// volume goes in every address field; 254 is what DOS 3.3 formats with
 uint32_t nibblizeTrack(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrackBuffer[256*16],
-		       uint8_t diskType, int8_t track);
+		       uint8_t diskType, int8_t track, uint8_t volume = 254);
+
+// The 13-sector (DOS 3.2) version: 5-and-3 data and a D5 AA B5 address
+// prologue, with the sectors in address-field order
+uint32_t nibblizeTrack13(uint8_t outputBuffer[NIBTRACKSIZE], const uint8_t rawTrackBuffer[256*13],
+                         int8_t track, uint8_t volume = 254);
 
 nibErr denibblizeTrack(const uint8_t input[NIBTRACKSIZE], uint8_t rawTrackBuffer[256*16],
 		       uint8_t diskType);

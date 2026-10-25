@@ -133,16 +133,23 @@ bool wozCheckImageName(wozFsType type, const char *fname, uint32_t blocks)
   // are at any size: woz.cpp reads a .po bigger than a 5.25" floppy as raw
   // blocks, and writes it back the same way. One smaller than a floppy
   // would go through the floppy loader and fail, so that needs .hdv or
-  // .img.
+  // .img. A .2mg says in its header what it holds, so any size works.
+  // We only read 13-sector disks, so we can't make one
+  if (hasExtension(fname, ".d13")) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: a .d13 is a 13-sector (DOS 3.2) disk, which we can "
+           "read but not make");
+    return false;
+  }
   bool po  = hasExtension(fname, ".po");
-  bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img");
+  bool hdv = hasExtension(fname, ".hdv") || hasExtension(fname, ".img") ||
+    Woz::isTwoImgName(fname);
   bool poOk = (blocks >= 280);
   if (type == WOZ_FS_PASCAL) {
     // Note .dsk is deliberately not accepted: it forces DOS sector order,
     // which would scramble the blocks.
     if (!hdv && !(po && poOk)) {
       wozMsg(WOZ_MSG_ERROR, "ERROR: a %u-block Pascal image must be named %s",
-             (unsigned)blocks, poOk ? ".po, .hdv or .img" : ".hdv or .img");
+             (unsigned)blocks, poOk ? ".po, .hdv, .img or .2mg" : ".hdv, .img or .2mg");
       return false;
     }
     if (blocks > 32768) {
@@ -153,9 +160,9 @@ bool wozCheckImageName(wozFsType type, const char *fname, uint32_t blocks)
     }
   } else if (type == WOZ_FS_PRODOS && blocks != 280 && !hdv && !(po && poOk)) {
     // Only a 280-block image round-trips through the .dsk and floppy
-    // loaders; anything else is raw blocks, as a .po, .hdv or .img.
+    // loaders; anything else is raw blocks, as a .po, .hdv, .img or .2mg.
     wozMsg(WOZ_MSG_ERROR, "ERROR: a %u-block image must be named %s",
-           (unsigned)blocks, poOk ? ".po, .hdv or .img" : ".hdv or .img");
+           (unsigned)blocks, poOk ? ".po, .hdv, .img or .2mg" : ".hdv, .img or .2mg");
     return false;
   }
   return true;

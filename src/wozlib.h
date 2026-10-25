@@ -52,7 +52,7 @@ bool wozImageProbe(wozImage *img);
 bool wozImageIsDirty(wozImage *img);
 
 // Write the image out. NULL means back where it came from. The format
-// follows the extension (.woz, .dsk/.do, .po, .nib, .hdv/.img), so this
+// follows the extension (.woz, .dsk/.do, .po, .nib, .hdv/.img, .2mg), so this
 // is also how an image is converted.
 bool wozImageSave(wozImage *img, const char *path);
 

@@ -107,6 +107,9 @@ protected:
   // 13-sector codec if the underlying WOZ says so. For 13-sector disks
   // only the first 13*256 bytes of `out` are populated.
   bool readLogicalTrack(uint8_t phystrack, uint8_t out[256*16]);
+  // Says why and returns true if this is a 13-sector disk, which we
+  // only read
+  bool refuseIfThirteenSector();
 
   // Reads a single DOS-logical sector. Implemented on top of
   // readLogicalTrack (slightly wasteful - decodes the whole track - but

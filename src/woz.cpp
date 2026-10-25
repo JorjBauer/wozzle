@@ -61,6 +61,10 @@ Woz::Woz(bool verbose)
   hdvData = NULL;
   hdvByteSize = 0;
   hdvDirty = false;
+  twoImgComment = NULL;
+  twoImgCreatorData = NULL;
+  clearTwoImg();
+  thirteenSector = -1;
 }
 
 Woz::~Woz()
@@ -84,6 +88,7 @@ Woz::~Woz()
     wozFree(hdvData);
     hdvData = NULL;
   }
+  clearTwoImg();
 }
 
 // external interface for a disk subsystem to write a bit
@@ -419,13 +424,26 @@ bool Woz::writeFile(const char *filename, uint8_t forceType)
     } else if (strcasecmp(p, ".nib") == 0) {
       forceType = T_NIB;
     } else if (strcasecmp(p, ".hdv") == 0 ||
-               strcasecmp(p, ".2mg") == 0 ||
                strcasecmp(p, ".img") == 0) {
       forceType = T_HDV;
+    } else if (isTwoImgName(filename)) {
+      forceType = T_2MG;
+    } else if (strcasecmp(p, ".d13") == 0) {
+      forceType = T_D13;
     } else {
       wozMsg(WOZ_MSG_ERROR, "Unable to determine file type of '%s'", filename);
       return false;
     }
+  }
+
+  if (forceType == T_2MG)
+    return writeTwoImgFile(filename);
+  if (forceType == T_D13)
+    return writeD13File(filename);
+  if ((forceType == T_DSK || forceType == T_PO) && isThirteenSectorDisk()) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: this is a 13-sector disk, and a .dsk or .po holds 16 "
+           "sectors a track; save it as .d13, .woz, .nib or .2mg");
+    return false;
   }
 
   // A .po bigger than a floppy is raw ProDOS-order blocks, which is just
@@ -502,6 +520,10 @@ bool Woz::writeWozFile(int fdout, uint8_t subtype)
     goto done;
   }
   wozSeek(fdout, 0, SEEK_SET);
+
+  // A 13-sector disk we recognized from its tracks says so in INFO
+  if (di.bootSectorFormat == 0 && isThirteenSectorDisk())
+    di.bootSectorFormat = 2;
   
   // header
   if (version == 1) {
@@ -624,7 +646,6 @@ bool Woz::writeDskFile(int fdout, uint8_t subtype)
   if (isSynchronized()) {
     wozMsg(WOZ_MSG_WARNING, "WARNING: disk image has synchronized tracks; it may not work as a DSK or NIB file.");
   }
-  wozSeek(fdout, 0, SEEK_SET);
 
   uint8_t sectorData[256*16];
   for (int phystrack=0; phystrack<35; phystrack++) {
@@ -664,7 +685,29 @@ bool Woz::writeNibFile(int fdout)
   if (isSynchronized()) {
     wozMsg(WOZ_MSG_WARNING, "WARNING: disk image has synchronized tracks; it may not work as a DSK or NIB file.");
   }
-  wozSeek(fdout, 0, SEEK_SET);
+
+  // A 13-sector track doesn't fit the 16-sector layout below, so its
+  // nibbles go out as they are: copied from a .nib, or read off the
+  // track the way the disk controller would
+  if (isThirteenSectorDisk()) {
+    uint8_t nib[NIBTRACKSIZE];
+    for (int phystrack=0; phystrack<35; phystrack++) {
+      uint8_t dataTrack = quarterTrackMap[phystrack*4];
+      if (imageType == T_NIB && dataTrack != 0xFF && tracks[dataTrack].trackData) {
+        memcpy(nib, tracks[dataTrack].trackData, NIBTRACKSIZE);
+      } else if (!readRawNibStream(phystrack, nib)) {
+        wozMsg(WOZ_MSG_ERROR, "Failed to read track %d; aborting", phystrack);
+        return false;
+      }
+      if (wozWrite(fdout, nib, NIBTRACKSIZE) != NIBTRACKSIZE) {
+        wozMsg(WOZ_MSG_ERROR, "Failed[1] to write track %d; aborting", phystrack);
+        return false;
+      }
+    }
+    for (int i=0; i<160; i++)
+      tracks[i].dirty = false;
+    return true;
+  }
 
   nibSector nibData[16];
   for (int phystrack=0; phystrack<35; phystrack++) {
@@ -683,6 +726,37 @@ bool Woz::writeNibFile(int fdout)
   }
 
   return true;
+}
+
+bool Woz::writeD13File(const char *filename)
+{
+  if (!isThirteenSectorDisk()) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: a .d13 holds a 13-sector (DOS 3.2) disk, and this one "
+           "is 16-sector; save it as .dsk, .po, .woz, .nib or .2mg");
+    return false;
+  }
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
+  if (fdout == -1) {
+    wozMsg(WOZ_MSG_ERROR, "Failed to open output file: %s", strerror(errno));
+    return false;
+  }
+  bool ok = true;
+  uint8_t sectorData[256*13];
+  for (int phystrack=0; ok && phystrack<35; phystrack++) {
+    if (!decodeWozTrack13ToDsk(phystrack, sectorData)) {
+      wozMsg(WOZ_MSG_ERROR, "Failed to decode track %d; aborting", phystrack);
+      ok = false;
+    } else if (wozWrite(fdout, sectorData, sizeof(sectorData)) != (long)sizeof(sectorData)) {
+      wozMsg(WOZ_MSG_ERROR, "Failed to write track %d; aborting", phystrack);
+      ok = false;
+    }
+  }
+  ok = (wozClose(fdout) == 0) && ok;
+  if (ok) {
+    for (int i=0; i<160; i++)
+      tracks[i].dirty = false;
+  }
+  return ok;
 }
 
 void Woz::_initInfo()
@@ -736,7 +810,8 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     // If the source was WOZ, just load the datatrack directly
     return readWozDataTrack(datatrack);
   } else if (imageType == T_PO ||
-	     imageType == T_DSK) {
+	     imageType == T_DSK ||
+	     imageType == T_D13) {
     // If the source was a DSK file, then the datatrack was mapped directly
     // from the physical track
     if (datatrack >= 35) {
@@ -749,9 +824,10 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     
     static uint8_t sectorData[256*16];
 
-    wozSeek(fd, 256*16*phystrack, SEEK_SET);
+    const uint32_t trackBytes = 256 * (imageType == T_D13 ? 13 : 16);
+    wozSeek(fd, dataOffset + trackBytes*phystrack, SEEK_SET);
 
-    if (wozRead(fd, sectorData, 256*16) != 256*16) {
+    if (wozRead(fd, sectorData, trackBytes) != (long)trackBytes) {
       wozMsg(WOZ_MSG_ERROR, "Failed to read sector");
       return false;
     }
@@ -763,7 +839,9 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
     }
     tracks[datatrack].startingBlock = STARTBLOCK + 13*phystrack;
     tracks[datatrack].blockCount = 13;
-    uint32_t sizeInBits = nibblizeTrack(tracks[datatrack].trackData, sectorData, imageType, phystrack);
+    uint32_t sizeInBits = (imageType == T_D13) ?
+      nibblizeTrack13(tracks[datatrack].trackData, sectorData, phystrack, sectorVolume) :
+      nibblizeTrack(tracks[datatrack].trackData, sectorData, imageType, phystrack, sectorVolume);
     tracks[datatrack].bitCount = sizeInBits; // ... reality.
 
     return true;
@@ -783,7 +861,7 @@ bool Woz::loadMissingTrackFromImage(uint8_t datatrack)
       return false;
     }
 
-    wozSeek(fd, NIBTRACKSIZE * phystrack, SEEK_SET);
+    wozSeek(fd, dataOffset + NIBTRACKSIZE * phystrack, SEEK_SET);
     wozRead(fd, tracks[datatrack].trackData, NIBTRACKSIZE);
       // FIXME: no error checking
     
@@ -809,6 +887,7 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   bool retval = false;
   autoFlushTrackData = !preloadTracks;
   imageType = subtype;
+  const uint8_t sectors = (subtype == T_D13) ? 13 : 16;
 
   if (fd != -1) wozClose(fd);
   fd = wozOpen(filename, WOZ_OPEN_READWRITE);
@@ -818,14 +897,20 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   }
 
   _initInfo();
+  if (subtype == T_D13)
+    di.bootSectorFormat = 2;
 
   // Now read in the 35 tracks of data from the DSK file and convert them to NIB
   if (preloadTracks) {
+    if (wozSeek(fd, dataOffset, SEEK_SET) == -1) {
+      wozMsg(WOZ_MSG_ERROR, "Unable to seek in input file: %s", strerror(errno));
+      goto done;
+    }
     uint8_t sectorData[256*16];
     for (int phystrack=0; phystrack<35; phystrack++) {
-      uint32_t bytesRead = wozRead(fd, sectorData, 256*16);
-      if (bytesRead != 256*16) {
-	wozMsg(WOZ_MSG_ERROR, "Failed to read DSK data; got %lu bytes, wanted %d", (unsigned long)bytesRead, 256);
+      uint32_t bytesRead = wozRead(fd, sectorData, 256*sectors);
+      if (bytesRead != 256u*sectors) {
+	wozMsg(WOZ_MSG_ERROR, "Failed to read DSK data; got %lu bytes, wanted %d", (unsigned long)bytesRead, 256*sectors);
 	goto done;
       }
       uint8_t datatrack = quarterTrackMap[phystrack*4];
@@ -836,7 +921,9 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
       }
       tracks[datatrack].startingBlock = STARTBLOCK + 13*datatrack;
       tracks[datatrack].blockCount = 13;
-      uint32_t sizeInBits = nibblizeTrack(tracks[datatrack].trackData, sectorData, subtype, phystrack);
+      uint32_t sizeInBits = (subtype == T_D13) ?
+        nibblizeTrack13(tracks[datatrack].trackData, sectorData, phystrack, sectorVolume) :
+        nibblizeTrack(tracks[datatrack].trackData, sectorData, subtype, phystrack, sectorVolume);
       tracks[datatrack].bitCount = sizeInBits; // ... reality.
     }
   }
@@ -851,7 +938,7 @@ bool Woz::readDskFile(const char *filename, bool preloadTracks, uint8_t subtype)
   return retval;
 }
 
-bool Woz::readHdvFile(const char *filename)
+bool Woz::readHdvFile(const char *filename, uint32_t offset, uint32_t length)
 {
   // ProDOS hard-disk images are raw block-sequential ProDOS data, no
   // floppy-track structure. We slurp the whole file into a heap buffer
@@ -870,6 +957,16 @@ bool Woz::readHdvFile(const char *filename)
     wozMsg(WOZ_MSG_ERROR, "Unable to find the size of the input file: %s", strerror(errno));
     wozClose(fd); fd = -1;
     return false;
+  }
+  // A 2IMG file's blocks are a slice of it; otherwise it's the whole file
+  if (length) {
+    if ((uint64_t)offset + length > (uint64_t)fileSize ||
+        wozSeek(fd, offset, SEEK_SET) == -1) {
+      wozMsg(WOZ_MSG_ERROR, "Image '%s' is shorter than its header says", filename);
+      wozClose(fd); fd = -1;
+      return false;
+    }
+    fileSize = length;
   }
   if (fileSize == 0 || (fileSize % 512) != 0) {
     wozMsg(WOZ_MSG_ERROR, "HDV image '%s' has a bad size (%ld bytes)",
@@ -929,17 +1026,23 @@ bool Woz::truncateHdv(uint32_t newByteSize)
 
 bool Woz::writeHdvFile(const char *filename)
 {
-  if (!hdvData || !hdvByteSize) {
-    wozMsg(WOZ_MSG_ERROR, "No HDV buffer to write");
-    return false;
-  }
   int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
   if (fdout == -1) {
     wozMsg(WOZ_MSG_ERROR, "Unable to open output HDV file: %s", strerror(errno));
     return false;
   }
-  ssize_t wrote = wozWrite(fdout, hdvData, hdvByteSize);
+  bool retval = writeHdvFile(fdout);
   wozClose(fdout);
+  return retval;
+}
+
+bool Woz::writeHdvFile(int fdout)
+{
+  if (!hdvData || !hdvByteSize) {
+    wozMsg(WOZ_MSG_ERROR, "No HDV buffer to write");
+    return false;
+  }
+  ssize_t wrote = wozWrite(fdout, hdvData, hdvByteSize);
   if (wrote != (ssize_t)hdvByteSize) {
     wozMsg(WOZ_MSG_ERROR, "Short write on HDV (%zd of %u bytes)",
             wrote, (unsigned)hdvByteSize);
@@ -947,6 +1050,266 @@ bool Woz::writeHdvFile(const char *filename)
   }
   hdvDirty = false;
   return true;
+}
+
+// ---- 2IMG (.2mg) ----
+//
+// The header is 64 bytes, all little-endian:
+//
+//   +$00  "2IMG"            +$18  offset to the data
+//   +$04  creator code      +$1c  length of the data
+//   +$08  header length     +$20  offset to the comment
+//   +$0a  version (1)       +$24  length of the comment
+//   +$0c  data format       +$28  offset to the creator data
+//   +$10  flags             +$2c  length of the creator data
+//   +$14  block count       +$30  16 reserved bytes
+//
+// Format 0 is DOS order, 1 ProDOS order and 2 nibbles. In the flags, bit
+// 31 is write protect, and bit 8 says the low byte is the volume number
+// for the sector address fields.
+
+#define TWOIMG_HEADER_SIZE 64
+#define TWOIMG_LOCKED      0x80000000
+#define TWOIMG_HAS_VOLUME  0x00000100
+
+static uint32_t le32(const uint8_t *p)
+{
+  return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void putLe32(uint8_t *p, uint32_t v)
+{
+  p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
+}
+
+static void buildTwoImgHeader(uint8_t h[TWOIMG_HEADER_SIZE], const char creator[4],
+                              uint8_t format, uint32_t flags, uint32_t dataLen,
+                              uint32_t commentLen, uint32_t creatorDataLen)
+{
+  // The pieces go header, data, comment, creator data, with nothing
+  // between them
+  uint32_t commentOff = TWOIMG_HEADER_SIZE + dataLen;
+  uint32_t creatorOff = commentOff + commentLen;
+  memset(h, 0, TWOIMG_HEADER_SIZE);
+  memcpy(h, "2IMG", 4);
+  memcpy(h + 4, creator, 4);
+  h[8] = TWOIMG_HEADER_SIZE;
+  h[10] = 1;
+  putLe32(h + 0x0c, format);
+  putLe32(h + 0x10, flags);
+  // Only ProDOS order needs the block count, but other programs fill it
+  // in for the others too
+  putLe32(h + 0x14, format == 2 ? 280 : dataLen / 512);
+  putLe32(h + 0x18, TWOIMG_HEADER_SIZE);
+  putLe32(h + 0x1c, dataLen);
+  if (commentLen) {
+    putLe32(h + 0x20, commentOff);
+    putLe32(h + 0x24, commentLen);
+  }
+  if (creatorDataLen) {
+    putLe32(h + 0x28, creatorOff);
+    putLe32(h + 0x2c, creatorDataLen);
+  }
+}
+
+bool Woz::isTwoImgName(const char *filename)
+{
+  const char *p = strrchr(filename, '.');
+  return p && (strcasecmp(p, ".2mg") == 0 || strcasecmp(p, ".2img") == 0);
+}
+
+void Woz::clearTwoImg()
+{
+  if (twoImgComment) wozFree(twoImgComment);
+  if (twoImgCreatorData) wozFree(twoImgCreatorData);
+  twoImgComment = twoImgCreatorData = NULL;
+  twoImgCommentLen = twoImgCreatorDataLen = 0;
+  twoImg = false;
+  twoImgFormat = 0;
+  twoImgFlags = 0;
+  memset(twoImgCreator, 0, sizeof(twoImgCreator));
+  dataOffset = 0;
+  sectorVolume = 254;
+}
+
+// Read `len` bytes at `off` into a new buffer, for the comment and the
+// creator data. A range that runs off the end of the file is dropped with
+// a warning rather than refusing the image over it.
+static uint8_t *readTwoImgChunk(int fd, long fileSize, uint32_t off, uint32_t len,
+                                const char *what)
+{
+  if (!len)
+    return NULL;
+  if ((uint64_t)off + len > (uint64_t)fileSize) {
+    wozMsg(WOZ_MSG_WARNING, "WARNING: the 2IMG %s runs past the end of the file; ignoring it", what);
+    return NULL;
+  }
+  uint8_t *buf = (uint8_t *)wozMalloc(len);
+  if (!buf || wozSeek(fd, off, SEEK_SET) == -1 || wozRead(fd, buf, len) != (long)len) {
+    wozMsg(WOZ_MSG_WARNING, "WARNING: couldn't read the 2IMG %s; ignoring it", what);
+    if (buf) wozFree(buf);
+    return NULL;
+  }
+  return buf;
+}
+
+bool Woz::readTwoImgFile(const char *filename, bool preloadTracks)
+{
+  int hfd = wozOpen(filename, WOZ_OPEN_READ);
+  if (hfd == -1) {
+    wozMsg(WOZ_MSG_ERROR, "Unable to open input file: %s", strerror(errno));
+    return false;
+  }
+  uint8_t h[TWOIMG_HEADER_SIZE];
+  long fileSize = wozSeek(hfd, 0, SEEK_END);
+  if (fileSize < TWOIMG_HEADER_SIZE || wozSeek(hfd, 0, SEEK_SET) != 0 ||
+      wozRead(hfd, h, sizeof(h)) != (long)sizeof(h) || memcmp(h, "2IMG", 4)) {
+    wozMsg(WOZ_MSG_ERROR, "'%s' isn't a 2IMG image (it has no 2IMG header)", filename);
+    wozClose(hfd);
+    return false;
+  }
+  uint32_t format = le32(h + 0x0c);
+  uint32_t flags = le32(h + 0x10);
+  uint32_t blocks = le32(h + 0x14);
+  uint32_t off = le32(h + 0x18);
+  uint32_t len = le32(h + 0x1c);
+  // Some images have the block count but no data length
+  if (format == 1 && len == 0)
+    len = blocks * 512;
+  if (off < 48 || len == 0 || (uint64_t)off + len > (uint64_t)fileSize) {
+    wozMsg(WOZ_MSG_ERROR, "'%s' has a bad 2IMG header (data at %u, %u bytes, in a %ld-byte file)",
+           filename, (unsigned)off, (unsigned)len, fileSize);
+    wozClose(hfd);
+    return false;
+  }
+
+  uint8_t inner;
+  if (format == 0 && len == 35 * 16 * 256) {
+    inner = T_DSK;
+  } else if (format == 1 && len == 35 * 16 * 256) {
+    inner = T_PO;
+  } else if (format == 1 && (len % 512) == 0) {
+    inner = T_HDV;
+  } else if (format == 2 && len == 35 * NIBTRACKSIZE) {
+    inner = T_NIB;
+  } else {
+    wozMsg(WOZ_MSG_ERROR, "'%s' holds %u bytes in 2IMG format %u, which isn't a disk "
+           "we know (DOS order is 140K, ProDOS order whole blocks, nibbles 35 tracks)",
+           filename, (unsigned)len, (unsigned)format);
+    wozClose(hfd);
+    return false;
+  }
+
+  twoImgCommentLen = le32(h + 0x24);
+  twoImgComment = readTwoImgChunk(hfd, fileSize, le32(h + 0x20), twoImgCommentLen, "comment");
+  if (!twoImgComment) twoImgCommentLen = 0;
+  twoImgCreatorDataLen = le32(h + 0x2c);
+  twoImgCreatorData = readTwoImgChunk(hfd, fileSize, le32(h + 0x28), twoImgCreatorDataLen, "creator data");
+  if (!twoImgCreatorData) twoImgCreatorDataLen = 0;
+  wozClose(hfd);
+
+  // The usual loaders do the rest, starting dataOffset into the file
+  dataOffset = off;
+  if (flags & TWOIMG_HAS_VOLUME)
+    sectorVolume = flags & 0xFF;
+  bool ok;
+  if (inner == T_HDV)
+    ok = readHdvFile(filename, off, len);
+  else if (inner == T_NIB)
+    ok = readNibFile(filename, preloadTracks);
+  else
+    ok = readDskFile(filename, preloadTracks, inner);
+  if (!ok) {
+    clearTwoImg();
+    return false;
+  }
+
+  twoImg = true;
+  twoImgFormat = format;
+  twoImgFlags = flags;
+  memcpy(twoImgCreator, h + 4, 4);
+  // The loaders reset the disk info, so this has to come after them
+  if (flags & TWOIMG_LOCKED)
+    di.writeProtected = 1;
+  return true;
+}
+
+bool Woz::writeTwoImgFile(const char *filename)
+{
+  // What goes inside: the layout we read, if this came from a 2IMG, or
+  // else the closest one to the image. Anything that's blocks, or a .woz,
+  // is ProDOS order, which is what most programs expect.
+  uint8_t format;
+  if (imageType == T_HDV)
+    format = 1;
+  else if (twoImg)
+    format = twoImgFormat;
+  else if (imageType == T_DSK)
+    format = 0;
+  else if (imageType == T_NIB)
+    format = 2;
+  else
+    format = 1;
+  // There's no 13-sector sector layout, so a DOS 3.2 disk goes as nibbles
+  if (imageType != T_HDV && isThirteenSectorDisk())
+    format = 2;
+
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
+  if (fdout == -1) {
+    wozMsg(WOZ_MSG_ERROR, "Unable to open output file: %s", strerror(errno));
+    return false;
+  }
+  // Room for the header, which is filled in once we know the sizes
+  uint8_t h[TWOIMG_HEADER_SIZE];
+  memset(h, 0, sizeof(h));
+  bool ok = (wozWrite(fdout, h, sizeof(h)) == (long)sizeof(h));
+  if (ok) {
+    if (format == 0)
+      ok = writeDskFile(fdout, T_DSK);
+    else if (format == 2)
+      ok = writeNibFile(fdout);
+    else if (imageType == T_HDV)
+      ok = writeHdvFile(fdout);
+    else
+      ok = writeDskFile(fdout, T_PO);
+  }
+  long dataEnd = ok ? wozSeek(fdout, 0, SEEK_CUR) : -1;
+  ok = ok && dataEnd > TWOIMG_HEADER_SIZE;
+  if (ok && twoImgCommentLen)
+    ok = (wozWrite(fdout, twoImgComment, twoImgCommentLen) == (long)twoImgCommentLen);
+  if (ok && twoImgCreatorDataLen)
+    ok = (wozWrite(fdout, twoImgCreatorData, twoImgCreatorDataLen) == (long)twoImgCreatorDataLen);
+  if (ok) {
+    // Keep the creator code and its data from the image we read; a new
+    // file is ours. The volume number carries over too, and the write
+    // protect flag follows the disk's (so a locked .woz stays locked).
+    uint32_t flags = (twoImg ? twoImgFlags & (TWOIMG_HAS_VOLUME | 0xFF) : 0) |
+      (di.writeProtected ? TWOIMG_LOCKED : 0);
+    buildTwoImgHeader(h, twoImg ? twoImgCreator : "WOZZ", format, flags,
+                      (uint32_t)(dataEnd - TWOIMG_HEADER_SIZE),
+                      twoImgCommentLen, twoImgCreatorDataLen);
+    ok = wozSeek(fdout, 0, SEEK_SET) == 0 && wozWrite(fdout, h, sizeof(h)) == (long)sizeof(h);
+  }
+  ok = (wozClose(fdout) == 0) && ok;
+  if (!ok)
+    wozMsg(WOZ_MSG_ERROR, "Failed to write 2IMG file '%s'", filename);
+  return ok;
+}
+
+bool Woz::writeBlankImageFile(const char *filename, const uint8_t *data,
+                              uint32_t size, bool dosOrder)
+{
+  int fdout = wozOpen(filename, WOZ_OPEN_CREATE);
+  if (fdout == -1)
+    return false;
+  bool ok = true;
+  if (isTwoImgName(filename)) {
+    uint8_t h[TWOIMG_HEADER_SIZE];
+    buildTwoImgHeader(h, "WOZZ", dosOrder ? 0 : 1, 0, size, 0, 0);
+    ok = (wozWrite(fdout, h, sizeof(h)) == (long)sizeof(h));
+  }
+  ok = ok && (wozWrite(fdout, data, size) == (long)size);
+  return (wozClose(fdout) == 0) && ok;
 }
 
 bool Woz::readNibFile(const char *filename, bool preloadTracks)
@@ -965,6 +1328,10 @@ bool Woz::readNibFile(const char *filename, bool preloadTracks)
 
   // Now read in the 35 tracks of data from the nib file
   if (preloadTracks) {
+    if (wozSeek(fd, dataOffset, SEEK_SET) == -1) {
+      wozMsg(WOZ_MSG_ERROR, "Unable to seek in input file: %s", strerror(errno));
+      return false;
+    }
     nibSector nibData[16];
     for (int phystrack=0; phystrack<35; phystrack++) {
       uint32_t bytesRead = wozRead(fd, nibData, NIBTRACKSIZE);
@@ -1152,6 +1519,9 @@ bool Woz::readWozFile(const char *filename, bool preloadTracks)
 
 bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
 {
+  clearTwoImg();
+  thirteenSector = -1;
+
   if (forceType == T_AUTO) {
     // Try to determine type from the file extension
     const char *p = strrchr(filename, '.');
@@ -1169,9 +1539,12 @@ bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
     } else if (strcasecmp(p, ".nib") == 0) {
       forceType = T_NIB;
     } else if (strcasecmp(p, ".hdv") == 0 ||
-               strcasecmp(p, ".2mg") == 0 ||
                strcasecmp(p, ".img") == 0) {
       forceType = T_HDV;
+    } else if (isTwoImgName(filename)) {
+      forceType = T_2MG;
+    } else if (strcasecmp(p, ".d13") == 0) {
+      forceType = T_D13;
     } else {
       wozMsg(WOZ_MSG_ERROR, "Unable to determine file type of '%s'", filename);
       return false;
@@ -1204,6 +1577,10 @@ bool Woz::readFile(const char *filename, bool preloadTracks, uint8_t forceType)
     return readNibFile(filename, preloadTracks);
   case T_HDV:
     return readHdvFile(filename);
+  case T_2MG:
+    return readTwoImgFile(filename, preloadTracks);
+  case T_D13:
+    return readDskFile(filename, preloadTracks, T_D13);
   default:
     wozMsg(WOZ_MSG_ERROR, "Unknown disk type; unable to read");
     return false;
@@ -1839,7 +2216,51 @@ bool Woz::encodeWozTrackSector(uint8_t phystrack, uint8_t sector, uint8_t dataIn
 
 bool Woz::isThirteenSectorDisk()
 {
-  return di.bootSectorFormat == 2;
+  if (imageType == T_D13 || di.bootSectorFormat == 2)
+    return true;
+  if (imageType == T_DSK || imageType == T_PO || imageType == T_HDV ||
+      imageType == T_AUTO || di.bootSectorFormat == 1 || di.bootSectorFormat == 3)
+    return false;
+  if (thirteenSector < 0)
+    thirteenSector = sniffThirteenSector() ? 1 : 0;
+  return thirteenSector == 1;
+}
+
+bool Woz::sniffThirteenSector()
+{
+  // Count the 13-sector (D5 AA B5) and 16-sector (D5 AA 96) address
+  // prologues on track 0, or track 17 (where the catalog is) if track 0
+  // has neither, as a copy-protected boot track might
+  uint8_t *nib = (uint8_t *)wozMalloc(NIBTRACKSIZE);
+  if (!nib) return false;
+  // Reading a track moves the head's cursor, which an emulator may be in
+  // the middle of using, so it goes back where it was afterward
+  uint32_t savedPointer = trackPointer, savedBitCounter = trackBitCounter;
+  uint8_t savedByte = trackByte, savedFrom = trackByteFromDataTrack;
+  uint8_t savedBitIdx = trackBitIdx, savedLoop = trackLoopCounter;
+  uint8_t savedWindow = headWindow, savedRandData = randData, savedRandPtr = randPtr;
+  const uint8_t tryTracks[2] = { 0, 17 };
+  bool thirteen = false;
+  for (int t = 0; t < 2; t++) {
+    if (!readRawNibStream(tryTracks[t], nib)) continue;
+    uint32_t b5 = 0, n96 = 0;
+    for (uint32_t i = 0; i < NIBTRACKSIZE; i++) {
+      if (nib[i] != 0xD5 || nib[(i+1) % NIBTRACKSIZE] != 0xAA) continue;
+      uint8_t third = nib[(i+2) % NIBTRACKSIZE];
+      if (third == 0xB5) b5++;
+      else if (third == 0x96) n96++;
+    }
+    if (b5 || n96) {
+      thirteen = (b5 > n96);
+      break;
+    }
+  }
+  wozFree(nib);
+  trackPointer = savedPointer; trackBitCounter = savedBitCounter;
+  trackByte = savedByte; trackByteFromDataTrack = savedFrom;
+  trackBitIdx = savedBitIdx; trackLoopCounter = savedLoop;
+  headWindow = savedWindow; randData = savedRandData; randPtr = savedRandPtr;
+  return thirteen;
 }
 
 bool Woz::readRawNibStream(uint8_t phystrack, uint8_t out[])

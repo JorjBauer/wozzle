@@ -87,10 +87,10 @@ assert_match "volume 'BLANK'" "$out" "default volume name is BLANK"
 out=$(./wozit -P -c "format $TMP/w8m.po WORK 8m" 2>&1)
 assert_match "volume 'WORK', 16384 blocks" "$out" "a hard-disk size takes .po"
 out=$(./wozit -P -c "format $TMP/x.dsk WORK 140k" 2>&1)
-assert_match "must be named .po, .hdv or .img" "$out" \
+assert_match "must be named .po, .hdv, .img or .2mg" "$out" \
   ".dsk refused (it would force DOS sector order)"
 out=$(./wozit -P -c "format $TMP/x.po WORK 100" 2>&1)
-assert_match "must be named .hdv or .img" "$out" \
+assert_match "must be named .hdv, .img or .2mg" "$out" \
   "a sub-floppy size refuses .po (won't load through the floppy path)"
 
 # --- other refusals ------------------------------------------------------
