@@ -1,5 +1,5 @@
-Wozzle v2.0.0
-===========
+Wozzle
+======
 
 ©2019-2026 Jorj Bauer. MIT license.
 
