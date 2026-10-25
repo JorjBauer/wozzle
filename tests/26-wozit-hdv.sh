@@ -5,13 +5,16 @@
 
 skip_if_missing "./wozit"  "wozit not built"
 skip_if_missing "./wozzle" "wozzle not built"
-skip_if_missing "hd1.img"  "hd1.img fixture missing"
+# Here, or with the other reference material in reference/
+HD=hd1.img
+[ -f "$HD" ] || HD=reference/hd1.img
+skip_if_missing "$HD"  "hd1.img fixture missing"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # --- wozit: listing ---
-ls_out=$(./wozit -I hd1.img -p -c "ls" 2>&1)
+ls_out=$(./wozit -I "$HD" -p -c "ls" 2>&1)
 assert_match    "HD32"            "$ls_out" "HDV volume name 'HD32' visible"
 assert_match    "PRODOS"          "$ls_out" "PRODOS file present in catalog"
 assert_match    "MERLIN.SYSTEM"   "$ls_out" "MERLIN.SYSTEM present"
@@ -19,16 +22,16 @@ assert_no_match "Failed to read"  "$ls_out" "no decode errors on HDV load"
 assert_no_match "don't know how"  "$ls_out" "no unreachable-path errors"
 
 # --- wozit: extract a known small file and check size ---
-./wozit -I hd1.img -p -c "cpout PARMS $TMP/parms.bin" >/dev/null 2>&1
+./wozit -I "$HD" -p -c "cpout PARMS $TMP/parms.bin" >/dev/null 2>&1
 assert_file_size "$TMP/parms.bin" 44 "PARMS extracts at its EOF length (44 bytes)"
 
 # --- wozit: info/probe picks correct mode ---
-out=$(./wozit -I hd1.img -p -c "ls" 2>&1)
+out=$(./wozit -I "$HD" -p -c "ls" 2>&1)
 assert_no_match "WARNING" "$out" "HDV loads cleanly with -p (no mode-mismatch warning)"
 
 # --- wozzle: HDV → HDV round-trip is byte-identical ---
-./wozzle -i hd1.img -o "$TMP/hd-rt.img" >/dev/null 2>&1
-if cmp -s hd1.img "$TMP/hd-rt.img"; then
+./wozzle -i "$HD" -o "$TMP/hd-rt.img" >/dev/null 2>&1
+if cmp -s "$HD" "$TMP/hd-rt.img"; then
   printf "  PASS: HDV → HDV round-trip byte-identical\n"
   t_pass=$((t_pass + 1))
 else
@@ -38,7 +41,7 @@ fi
 
 # --- wozzle: refuses HDV → floppy-format conversion ---
 rm -f "$TMP/hd.dsk"
-out=$(./wozzle -i hd1.img -o "$TMP/hd.dsk" 2>&1)
+out=$(./wozzle -i "$HD" -o "$TMP/hd.dsk" 2>&1)
 assert_match "can't convert a hard-disk" "$out" "HDV → DSK is explicitly refused"
 [ ! -e "$TMP/hd.dsk" ]
 assert_eq 0 $? "refused conversion left no output file"
