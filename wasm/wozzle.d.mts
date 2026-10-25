@@ -46,7 +46,11 @@ export interface VolumeInfo {
   writeProtected: boolean;
   wozVersion: number;
   diskType: number;
+  // Who made the image, as its file records it: a WOZ creator string or a
+  // 2IMG creator code. Empty when the format doesn't record one.
   creator: string;
+  // DOS: 13 sectors a track (DOS 3.2) or 16 (DOS 3.3). Otherwise 0.
+  sectorsPerTrack: number;
 }
 
 export interface BlankOptions {

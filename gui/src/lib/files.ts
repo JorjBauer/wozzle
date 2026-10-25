@@ -3,9 +3,9 @@
 // from. In a plain browser it's a file picker and a download, which is
 // enough to use the app as a web page.
 
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { readFile } from '@tauri-apps/plugin-fs';
 
 export interface PickedFile {
   name: string;
@@ -89,11 +89,13 @@ export async function saveAs(suggestedName: string,
   });
   if (!path) return null;
   const bytes = await produce(baseName(path));
-  await writeFile(path, bytes);
+  await saveInPlace(path, bytes);
   return { name: baseName(path), path, bytes };
 }
 
-// Write back to a path we got from pickImage or saveAs (Tauri only)
+// Write to a path we got from pickImage or saveAs (Tauri only). The app
+// writes it beside the real file and renames it over, so a failed save
+// leaves the old one whole.
 export async function saveInPlace(path: string, bytes: Uint8Array): Promise<void> {
-  await writeFile(path, bytes);
+  await invoke('save_file', bytes, { headers: { 'x-wozzle-path': encodeURIComponent(path) } });
 }

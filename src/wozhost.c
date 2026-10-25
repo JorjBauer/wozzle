@@ -56,8 +56,26 @@ static time_t posixNow(void *ctx)
   return time(NULL);
 }
 
-#define DEFAULT_SEEK  posixSeek
-#define DEFAULT_NOW   posixNow
+static int posixRename(const char *from, const char *to, void *ctx)
+{
+  (void)ctx;
+#ifdef _WIN32
+  // Windows won't rename over a file that's there
+  remove(to);
+#endif
+  return rename(from, to);
+}
+
+static int posixRemove(const char *path, void *ctx)
+{
+  (void)ctx;
+  return remove(path);
+}
+
+#define DEFAULT_SEEK   posixSeek
+#define DEFAULT_NOW    posixNow
+#define DEFAULT_RENAME posixRename
+#define DEFAULT_REMOVE posixRemove
 
 #else
 
@@ -81,8 +99,10 @@ static long noSeek(int fd, long offset, int whence, void *ctx) { (void)fd; (void
 #define DEFAULT_WRITE noWrite
 static time_t noNow(void *ctx) { (void)ctx; return (time_t)-1; }
 
-#define DEFAULT_SEEK  noSeek
-#define DEFAULT_NOW   noNow
+#define DEFAULT_SEEK   noSeek
+#define DEFAULT_NOW    noNow
+#define DEFAULT_RENAME NULL
+#define DEFAULT_REMOVE NULL
 
 #endif
 
@@ -96,7 +116,8 @@ static wozHost current = {
   stdMalloc, stdCalloc, stdRealloc, stdFree,
   false, false,
   NULL,
-  DEFAULT_NOW
+  DEFAULT_NOW,
+  DEFAULT_RENAME, DEFAULT_REMOVE
 };
 
 void wozSetHost(const wozHost *host)
@@ -112,6 +133,7 @@ void wozSetHost(const wozHost *host)
     h.open = NULL; h.close = NULL; h.read = NULL; h.write = NULL; h.seek = NULL;
     h.malloc = NULL; h.calloc = NULL; h.realloc = NULL; h.free = NULL;
     h.now = NULL;
+    h.rename = NULL; h.remove = NULL;
   }
 
   if (!h.open)    h.open = DEFAULT_OPEN;
@@ -124,6 +146,8 @@ void wozSetHost(const wozHost *host)
   if (!h.realloc) h.realloc = stdRealloc;
   if (!h.free)    h.free = stdFree;
   if (!h.now)     h.now = DEFAULT_NOW;
+  if (!h.rename)  h.rename = DEFAULT_RENAME;
+  if (!h.remove)  h.remove = DEFAULT_REMOVE;
 
   current = h;
 }
@@ -182,4 +206,19 @@ void wozFree(void *ptr)
 time_t wozNow(void)
 {
   return current.now(current.ctx);
+}
+
+int wozRename(const char *from, const char *to)
+{
+  return current.rename ? current.rename(from, to, current.ctx) : -1;
+}
+
+int wozRemove(const char *path)
+{
+  return current.remove ? current.remove(path, current.ctx) : -1;
+}
+
+bool wozCanRename(void)
+{
+  return current.rename != NULL;
 }

@@ -134,6 +134,55 @@ mod mac_quit {
   }
 }
 
+// The path for save_file comes percent-encoded in a header, since a
+// header can only carry ASCII
+fn percent_decode(s: &str) -> Option<String> {
+  let b = s.as_bytes();
+  let mut out = Vec::with_capacity(b.len());
+  let mut i = 0;
+  while i < b.len() {
+    if b[i] == b'%' {
+      let hex = s.get(i + 1..i + 3)?;
+      out.push(u8::from_str_radix(hex, 16).ok()?);
+      i += 3;
+    } else {
+      out.push(b[i]);
+      i += 1;
+    }
+  }
+  String::from_utf8(out).ok()
+}
+
+// Save an image to a path the user picked (in the save dialog, or the
+// open one when saving back). We write it next to the real file and
+// rename it over, so a save that fails partway leaves the old file as it
+// was. Only paths the file scope already allows can be written, the same
+// as the fs plugin's writeFile.
+#[tauri::command]
+fn save_file(webview: tauri::Webview, request: Request<'_>) -> Result<(), String> {
+  let InvokeBody::Raw(bytes) = request.body() else {
+    return Err("save_file wants raw bytes".into());
+  };
+  let path = request
+    .headers()
+    .get("x-wozzle-path")
+    .and_then(|v| v.to_str().ok())
+    .and_then(percent_decode)
+    .ok_or("save_file needs a path")?;
+  let path = PathBuf::from(path);
+  if !webview.fs_scope().is_allowed(&path) {
+    return Err(format!("not allowed to write {}", path.display()));
+  }
+  let mut tmp = path.clone().into_os_string();
+  tmp.push(".wozsave");
+  let tmp = PathBuf::from(tmp);
+  if let Err(e) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)) {
+    let _ = std::fs::remove_file(&tmp);
+    return Err(e.to_string());
+  }
+  Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let app = tauri::Builder::default()
@@ -142,7 +191,7 @@ pub fn run() {
     .plugin(tauri_plugin_fs::init())
     // Dragging files out of the window
     .plugin(tauri_plugin_drag::init())
-    .invoke_handler(tauri::generate_handler![stage_drag_file])
+    .invoke_handler(tauri::generate_handler![stage_drag_file, save_file])
     // A file dropped on the window may be read, just as one picked in the
     // open dialog may. Nothing else outside the app is reachable.
     .on_webview_event(|webview, event| {

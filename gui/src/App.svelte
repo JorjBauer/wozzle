@@ -53,6 +53,9 @@
 
   const selectedEntry = $derived(entries.find((e) => e.name === selected) ?? null);
   const fsLabel: Record<string, string> = { dos33: 'DOS 3.3', prodos: 'ProDOS', pascal: 'Pascal' };
+  // A DOS disk with 13 sectors a track is DOS 3.2
+  const fsName = (v: VolumeInfo | null) =>
+    v?.fsType === 'dos33' && v.sectorsPerTrack === 13 ? 'DOS 3.2' : fsLabel[v?.fsType ?? ''] ?? 'unknown';
 
   // The detail drawer on the right: the volume, and the selected file.
   // Whether it's open is remembered, where the webview lets us.
@@ -120,7 +123,7 @@
     selected = null;
     await old?.close();
     await refresh();
-    say(`Opened ${name} (${fsLabel[opened.fsType ?? ''] ?? 'unknown'})`);
+    say(`Opened ${name} (${fsName(info)})`);
   }
 
   // ---- unsaved changes ----
@@ -585,7 +588,7 @@
           <h2>{info.volumeName || `Volume ${info.dosVolume}`}{dirty ? ' •' : ''}</h2>
           <dl>
             <dt>Image</dt><dd>{imageName}</dd>
-            <dt>Filesystem</dt><dd>{fsLabel[info.fsType ?? ''] ?? 'unknown'}</dd>
+            <dt>Filesystem</dt><dd>{fsName(info)}</dd>
             <dt>Size</dt><dd>{info.totalUnits} {info.unitSize === 256 ? 'sectors' : 'blocks'}</dd>
             <dt>Free</dt><dd>{info.freeUnits}</dd>
             {#if info.creator}<dt>Creator</dt><dd>{info.creator}</dd>{/if}

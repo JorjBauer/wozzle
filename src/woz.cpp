@@ -436,10 +436,6 @@ bool Woz::writeFile(const char *filename, uint8_t forceType)
     }
   }
 
-  if (forceType == T_2MG)
-    return writeTwoImgFile(filename);
-  if (forceType == T_D13)
-    return writeD13File(filename);
   if ((forceType == T_DSK || forceType == T_PO) && isThirteenSectorDisk()) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: this is a 13-sector disk, and a .dsk or .po holds 16 "
            "sectors a track; save it as .d13, .woz, .nib or .2mg");
@@ -466,21 +462,64 @@ bool Woz::writeFile(const char *filename, uint8_t forceType)
 
   // Anything genuinely floppy-oriented (.woz, .nib) still can't represent
   // a hard-disk image. Say so rather than write truncated garbage.
-  if (imageType == T_HDV && forceType != T_HDV) {
+  if (imageType == T_HDV && forceType != T_HDV && forceType != T_2MG) {
     wozMsg(WOZ_MSG_ERROR, "ERROR: can't convert a hard-disk image to a floppy format");
     return false;
   }
 
-  switch (forceType) {
+  // We write to a file next to the real one and rename it into place once
+  // it's all there, so a save that fails partway (a full disk, a track
+  // that won't decode) leaves the old file as it was. A host with no
+  // rename gets the file written in place; if that fails, we only remove
+  // what we wrote when there was no file there before, since otherwise
+  // the partial one is all that's left of it.
+  bool inPlace = !wozCanRename();
+  char *tmp = NULL;
+  if (!inPlace) {
+    size_t n = strlen(filename) + sizeof(".wozsave");
+    tmp = (char *)wozMalloc(n);
+    if (tmp)
+      snprintf(tmp, n, "%s.wozsave", filename);
+    else
+      inPlace = true;
+  }
+  bool existed = false;
+  if (inPlace) {
+    int efd = wozOpen(filename, WOZ_OPEN_READ);
+    existed = (efd != -1);
+    if (existed) wozClose(efd);
+  }
+  const char *out = inPlace ? filename : tmp;
+
+  bool ok = writeFileAs(out, forceType);
+  if (ok && !inPlace && wozRename(tmp, filename) != 0) {
+    wozMsg(WOZ_MSG_ERROR, "ERROR: couldn't move the saved image into place as '%s': %s",
+           filename, strerror(errno));
+    ok = false;
+  }
+  if (!ok && !(inPlace && existed))
+    wozRemove(out);
+  if (tmp)
+    wozFree(tmp);
+  return ok;
+}
+
+bool Woz::writeFileAs(const char *filename, uint8_t type)
+{
+  switch (type) {
   case T_WOZ:
-    return writeWozFile(filename, forceType);
+    return writeWozFile(filename, type);
   case T_DSK:
   case T_PO:
-    return writeDskFile(filename, forceType);
+    return writeDskFile(filename, type);
   case T_NIB:
     return writeNibFile(filename);
   case T_HDV:
     return writeHdvFile(filename);
+  case T_2MG:
+    return writeTwoImgFile(filename);
+  case T_D13:
+    return writeD13File(filename);
   default:
     wozMsg(WOZ_MSG_ERROR, "Unknown disk type; unable to write");
     return false;
@@ -1112,6 +1151,23 @@ static void buildTwoImgHeader(uint8_t h[TWOIMG_HEADER_SIZE], const char creator[
   }
 }
 
+void Woz::getImageCreator(char *out, size_t len) const
+{
+  if (!len) return;
+  out[0] = '\0';
+  if (imageType == T_WOZ) {
+    snprintf(out, len, "%.32s", di.creator);
+  } else if (twoImg) {
+    snprintf(out, len, "%.4s", twoImgCreator);
+  } else {
+    return;
+  }
+  // Both are padded with spaces
+  size_t n = strlen(out);
+  while (n && out[n-1] == ' ')
+    out[--n] = '\0';
+}
+
 bool Woz::isTwoImgName(const char *filename)
 {
   const char *p = strrchr(filename, '.');
@@ -1309,7 +1365,11 @@ bool Woz::writeBlankImageFile(const char *filename, const uint8_t *data,
     ok = (wozWrite(fdout, h, sizeof(h)) == (long)sizeof(h));
   }
   ok = ok && (wozWrite(fdout, data, size) == (long)size);
-  return (wozClose(fdout) == 0) && ok;
+  ok = (wozClose(fdout) == 0) && ok;
+  // The callers made sure nothing was there, so a failure leaves nothing
+  if (!ok)
+    wozRemove(filename);
+  return ok;
 }
 
 bool Woz::readNibFile(const char *filename, bool preloadTracks)

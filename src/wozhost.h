@@ -60,11 +60,21 @@ typedef struct {
   void *ctx;
 
   // The current time, for dating new files and volumes. (time_t)-1 means
-  // the program doesn't know, and things get no date. This is last in the
-  // struct so a host written before it existed still lines up; the
+  // the program doesn't know, and things get no date. This comes after the
+  // older hooks so a host written before it existed still lines up; the
   // default is time() on POSIX and "don't know" on Arduino, which may
   // have no clock.
   time_t (*now)(void *ctx);
+
+  // Replace `to` with `from`, and delete a file; 0 on success. Saving an
+  // image writes it to a file next to the real one and renames it into
+  // place once it's all written, so a failed save leaves the old file as
+  // it was. With no rename hook, a save writes straight to the file (and
+  // removes what it wrote if that fails, given a remove hook). The
+  // defaults are rename() and remove() on POSIX, and none on Arduino.
+  // These come last for the same reason.
+  int (*rename)(const char *from, const char *to, void *ctx);
+  int (*remove)(const char *path, void *ctx);
 } wozHost;
 
 // Install a host. Any hook left NULL gets the default; the struct is
@@ -84,6 +94,10 @@ void *wozCalloc(size_t count, size_t size);
 void *wozRealloc(void *ptr, size_t size);
 void  wozFree(void *ptr);
 time_t wozNow(void);
+// -1 if the host has no hook for it
+int   wozRename(const char *from, const char *to);
+int   wozRemove(const char *path);
+bool  wozCanRename(void);
 
 #ifdef __cplusplus
 };

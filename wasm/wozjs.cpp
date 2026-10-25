@@ -123,6 +123,8 @@ EMSCRIPTEN_KEEPALIVE char *wozJsVolumeInfo(wozImage *img)
   appendNumber(out, vi.diskType);
   out += ",\"creator\":";
   appendString(out, vi.creator);
+  out += ",\"sectorsPerTrack\":";
+  appendNumber(out, vi.sectorsPerTrack);
   out += '}';
   return handBack(out);
 }

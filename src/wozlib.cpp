@@ -77,8 +77,7 @@ bool wozImageGetVolumeInfo(wozImage *img, wozVolumeInfo *out)
   out->writeProtected = fs->isWriteProtected();
   out->wozVersion = di->version;
   out->diskType = di->diskType;
-  memcpy(out->creator, di->creator, sizeof(out->creator));
-  out->creator[sizeof(out->creator) - 1] = '\0';
+  fs->getImageCreator(out->creator, sizeof(out->creator));
 
   switch (out->fsType) {
   case WOZ_FS_DOS33: {
@@ -87,10 +86,11 @@ bool wozImageGetVolumeInfo(wozImage *img, wozVolumeInfo *out)
     if (!d->getSectorUsage(used))
       return false;
     out->dosVolume = d->volumeNumber();
+    out->sectorsPerTrack = d->isThirteenSectorDisk() ? 13 : 16;
     out->unitSize = 256;
-    out->totalUnits = 35 * 16;
+    out->totalUnits = 35 * out->sectorsPerTrack;
     for (int t = 0; t < 35; t++)
-      for (int s = 0; s < 16; s++)
+      for (int s = 0; s < out->sectorsPerTrack; s++)
         if (!used[t][s]) out->freeUnits++;
     return true;
   }

@@ -130,6 +130,10 @@ class Woz {
   // writeFile() to a .2mg name writes the header back, along with the
   // comment and creator data from the image it read, if any.
   static bool isTwoImgName(const char *filename);
+  // Who made the image, as its file records it: a WOZ INFO chunk's
+  // creator, or a 2IMG header's four-letter creator code. Empty for the
+  // formats that don't record one (.dsk, .po, .nib, .hdv, .d13).
+  void getImageCreator(char *out, size_t len) const;
   bool isTwoImg() const { return twoImg; }
   // Write a freshly built blank image (DOS order for DOS 3.3, ProDOS
   // order otherwise) to a new file: as it is, or inside a 2IMG header if
@@ -138,6 +142,8 @@ class Woz {
                                   uint32_t size, bool dosOrder);
 
  protected:
+  // writeFile's last step: write the image as `type` to exactly this name
+  bool writeFileAs(const char *filename, uint8_t type);
   bool writeWozFile(const char *filename, uint8_t subtype);
   bool writeWozFile(int fdout, uint8_t subtype);
   bool writeDskFile(const char *filename, uint8_t subtype);

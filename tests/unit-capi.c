@@ -81,6 +81,8 @@ int main(void)
   check(!strcmp(vi.volumeName, "CAPI"), "the volume name was upper-cased");
   check(vi.unitSize == 512 && vi.totalUnits == 280, "280 blocks of 512");
   check(vi.freeUnits == 273, "a blank floppy has 273 blocks free");
+  check(vi.creator[0] == '\0', "a .po records no creator, so there isn't one");
+  check(vi.sectorsPerTrack == 0, "and sectors a track is only for DOS");
 
   check(wozImageList(img, NULL, NULL, 0) == 0, "a blank root is empty");
   check(wozImageMakeDirectory(img, "SUB"), "mkdir works");
@@ -192,8 +194,8 @@ int main(void)
   check(img && wozImageFsType(img) == WOZ_FS_DOS33, "the DOS image opens");
   if (!img) return 1;
   check(wozImageGetVolumeInfo(img, &vi) && vi.dosVolume == 7 &&
-        vi.unitSize == 256 && vi.totalUnits == 560,
-        "volume 7, 560 sectors of 256");
+        vi.unitSize == 256 && vi.totalUnits == 560 && vi.sectorsPerTrack == 16,
+        "volume 7, 560 sectors of 256, 16 a track");
   check(wozImageWriteFile(img, "THING", bin, 300, 0x06, 0x0300, false),
         "a binary goes in");
   n = wozImageList(img, NULL, ents, 8);

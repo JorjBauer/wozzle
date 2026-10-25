@@ -71,7 +71,11 @@ typedef struct {
   bool writeProtected;    // the WOZ INFO chunk's flag
   uint8_t wozVersion;     // WOZ version, as read or as it would be written
   uint8_t diskType;       // 1 = 5.25", 2 = 3.5"
-  char creator[33];       // WOZ creator string
+  // Who made the image, as its file records it: a WOZ creator string or
+  // a 2IMG creator code. Empty when the format doesn't record one.
+  char creator[33];
+  // DOS: 13 sectors a track (DOS 3.2) or 16 (DOS 3.3). Otherwise 0.
+  uint8_t sectorsPerTrack;
 } wozVolumeInfo;
 
 bool wozImageGetVolumeInfo(wozImage *img, wozVolumeInfo *out);
