@@ -46,7 +46,7 @@
   }
 
   // Which dialog is up, if any
-  type DialogKind = 'new' | 'saveAs' | 'add' | 'extract' | 'view' | 'mkdir' | 'delete' | null;
+  type DialogKind = 'new' | 'saveAs' | 'convert' | 'add' | 'extract' | 'view' | 'mkdir' | 'delete' | null;
   let dialog: DialogKind = $state(null);
 
   getWozzle().then((w) => (woz = w)).catch((e) => fail(e));
@@ -126,6 +126,20 @@
     say(`Opened ${name} (${fsName(info)})`);
   }
 
+  // Open a picked or dropped image. One whose filesystem we don't know
+  // (a disk with its own format, say) can't be listed, but the disk
+  // itself can still go out in another format, so that's offered instead.
+  async function showOrConvert(f: PickedFile) {
+    try {
+      await show(f.bytes, f.name, f.path);
+    } catch (e) {
+      if (!woz || (await woz.detect(f.bytes, f.name)) !== null) throw e;
+      convertSource = f;
+      convertExt = 'woz';
+      dialog = 'convert';
+    }
+  }
+
   // ---- unsaved changes ----
   // The question, while it's up: what's about to happen, and where the
   // answer goes
@@ -203,7 +217,7 @@
   const openImage = () => run(async () => {
     if (!(await okToLeave('opening another image'))) return;
     const f = await fromUser(pickImage());
-    if (f) await show(f.bytes, f.name, f.path);
+    if (f) await showOrConvert(f);
   });
 
   const enter = (e: WozEntry) => run(async () => {
@@ -250,6 +264,24 @@
     // What was saved is what's open now, whatever format it went out in
     await show(f.bytes, f.name, f.path);
     say(`Saved ${f.name}`);
+  });
+
+  // ---- Convert ----
+  // An image that couldn't be opened, converted below the filesystem the
+  // way the command line does it, so copy-protected and custom-format
+  // disks come through too. We can't make a .d13.
+  let convertSource: PickedFile | null = $state(null);
+  let convertExt = $state('woz');
+  const convertFormats = formats.filter((f) => f.ext !== 'd13');
+
+  const doConvert = () => run(async () => {
+    const src = convertSource;
+    if (!woz || !src) return;
+    dialog = null;
+    const stem = src.name.replace(/\.[^.]*$/, '') || 'image';
+    const f = await fromUser(saveAs(`${stem}.${convertExt}`,
+                                    (name) => woz!.convert(src.bytes, src.name, name), true));
+    if (f) say(`Converted ${src.name} to ${f.name}`);
   });
 
   // ---- New image ----
@@ -449,7 +481,7 @@
       run(async () => {
         if (files.length > 1) say(`Opening ${files[0].name}; drop one image at a time to open it`);
         if (!(await okToLeave('opening another image'))) return;
-        await show(files[0].bytes, files[0].name, files[0].path);
+        await showOrConvert(files[0]);
       });
       return;
     }
@@ -665,6 +697,20 @@
     {#snippet actions()}
       <button onclick={() => (dialog = null)}>Cancel</button>
       <button class="primary" onclick={doSaveAs}>Save…</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if dialog === 'convert' && convertSource}
+  <Modal title={`Convert ${convertSource.name}`} onclose={() => (dialog = null)}>
+    <p>It doesn't look like a DOS 3.3, ProDOS or Pascal volume, so its files can't be listed.
+      The disk itself can still be converted to another format.</p>
+    {#each convertFormats as f}
+      <label class="check"><input type="radio" bind:group={convertExt} value={f.ext} /> {f.label}</label>
+    {/each}
+    {#snippet actions()}
+      <button onclick={() => (dialog = null)}>Cancel</button>
+      <button class="primary" onclick={doConvert} disabled={busy}>Convert…</button>
     {/snippet}
   </Modal>
 {/if}
