@@ -13,6 +13,10 @@
 #
 #   tools/release.sh add     upload this computer's files to the existing
 #                            release for this version
+#
+# That's what .github/workflows/build.yml does for Linux and Windows once
+# a release is published. It sets RELEASE_YES=1, since there's nobody
+# there to answer "Publish?".
 
 set -e
 
@@ -103,9 +107,13 @@ else
     echo "Which file:"
     echo
     echo "- \`Wozzle-$VERSION-<system>-<chip>\`: the app"
-    echo "- \`wozzle-tools-$VERSION-<system>-<chip>.tar.gz\`: the command line tools (wozzle, wozit, wozmosis, wozfuse)"
+    echo "- \`wozzle-tools-$VERSION-<system>-<chip>\`: the command line tools (wozzle, wozit, wozmosis, and wozfuse where there's FUSE)"
     echo
     echo "darwin is macOS. A Mac file marked arm64 is for Apple Silicon; universal runs on Apple Silicon and Intel."
+    echo
+    echo "win32 is Windows, where the app is a \`-setup.exe\` installer and the tools are a .zip. linux is Linux, where the app is an .AppImage or a .deb."
+    echo
+    echo "GitHub builds the Linux and Windows files after the release is made, so they show up a few minutes after the Mac ones."
     echo
     # From that paragraph to the next heading. The README's headings are
     # underlined, so a line is only known not to be one by the line after.
@@ -127,8 +135,12 @@ for f in $FILES; do
   echo "  $f ($(du -h "$f" | cut -f1 | tr -d ' '))"
 done
 [ "$MODE" = add ] || echo "Notes: $NOTES"
-printf 'Publish? [y/N] '
-read -r answer
+if [ "$RELEASE_YES" = 1 ]; then
+  answer=y
+else
+  printf 'Publish? [y/N] '
+  read -r answer
+fi
 case "$answer" in
   y|Y|yes) ;;
   *) die "not published" ;;

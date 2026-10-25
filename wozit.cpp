@@ -300,7 +300,7 @@ void cpoutHandler(const Args &args)
   if (wantBasicListing) {
     listBasicToHostFile(fp, dat, s, p);
   } else {
-    FILE *out = fopen(p, "w");
+    FILE *out = fopen(p, "wb");
     if (!out) {
       printf("ERROR: failed to open '%s' for write\n", p);
     } else {
@@ -365,7 +365,7 @@ void cpinHandler(const Args &args)
 
   // stat the file so we get a length
   struct stat s;
-  if (lstat(fn, &s)) {
+  if (stat(fn, &s)) {
     printf("Unable to stat source file '%s'\n", fn);
     return;
   }
@@ -380,7 +380,7 @@ void cpinHandler(const Args &args)
 
   // Read the file contents to a buffer
   uint8_t *fileContents = (uint8_t *)malloc(fileSize ? fileSize : 1);
-  FILE *in = fopen(fn, "r");
+  FILE *in = fopen(fn, "rb");
   if (!in) {
     printf("ERROR: Failed to read file\n");
     free(fileContents);
@@ -638,7 +638,7 @@ void formatHandler(const Args &args)
   // Don't clobber an existing file - the user may be formatting next to
   // the currently-loaded image and a typo shouldn't destroy work.
   struct stat st;
-  if (lstat(fname, &st) == 0) {
+  if (stat(fname, &st) == 0) {
     printf("ERROR: '%s' already exists; refusing to overwrite\n", fname);
     wozFree(img);
     return;

@@ -11,6 +11,11 @@
 #include "pascalspector.h"
 #include "wozops.h"
 
+// Windows writes text unless it's told otherwise
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 // "    0x0010 : XX XX ..." rows, 16 bytes to a row
 static void hexRows(const char *indent, const uint8_t *p, uint32_t len)
 {
@@ -143,7 +148,7 @@ void printWozInfo(Woz *w, uint8_t dumpflags)
         for (int j=0; j<16; j++) {
           char buf[25];
           snprintf(buf, sizeof(buf), "t%ds%d", i, j);
-          int fdout = open(buf, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR);
+          int fdout = open(buf, O_CREAT|O_TRUNC|O_WRONLY|O_BINARY, S_IRUSR|S_IWUSR);
           write(fdout, &sectorData[256*j], 256);
           close(fdout);
         }

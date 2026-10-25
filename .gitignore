@@ -16,3 +16,4 @@ dist/
 !/tests/unit-*.c
 !/tests/unit-*.cpp
 /reference/
+*.exe

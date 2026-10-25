@@ -89,7 +89,7 @@ wozfuse: $(FUSEOBJS) $(LIBWOZCORE)
 	$(CXX) $(CFLAGS) -o wozfuse $(FUSEOBJS) $(LIBWOZCORE) $(FUSE_LIBS)
 
 wozit: $(WOZITOBJS) $(LIBWOZCORE)
-	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -o wozit $(WOZITOBJS) $(LIBWOZCORE) -lreadline -lncurses
+	$(CXX) $(CFLAGS) -L/opt/homebrew/opt/readline/lib -o wozit $(WOZITOBJS) $(LIBWOZCORE) $(READLINE_LIBS) $(if $(filter win32,$(HOST_OS)),,-lncurses)
 
 wozmosis: $(WOZMOSISOBJS) $(LIBWOZCORE)
 	$(CXX) $(CFLAGS) -o wozmosis $(WOZMOSISOBJS) $(LIBWOZCORE)
@@ -157,8 +157,11 @@ test: all unit-tests
 # The GUI's transient files (Vite's output, Rust's build) are in gui/build.
 #
 # Releases are built for the computer you're on: a Mac builds the Mac
-# files, and a Linux machine (or, one day, Windows) would add its own to
-# the same release with "sh tools/release.sh add".
+# files, and a Linux or Windows machine adds its own to the same release
+# with "sh tools/release.sh add". GitHub does that for both once a release
+# is published (.github/workflows/build.yml). Windows builds under MSYS2's
+# UCRT64 shell, with MinGW for the tools and Rust's MSVC toolchain for
+# the app.
 #
 # The version is set in one place, library.properties. Two copies of it
 # have to exist as files: src/wozversion.h, because the Arduino IDE and
@@ -170,7 +173,7 @@ test: all unit-tests
 
 NPM ?= npm
 VERSION   := $(shell sed -n 's/^version=//p' library.properties)
-HOST_OS   := $(shell uname -s | sed -e 's/Darwin/darwin/' -e 's/Linux/linux/' -e 's/MINGW.*/win32/' -e 's/MSYS.*/win32/')
+HOST_OS   := $(shell uname -s | sed -e 's/Darwin/darwin/' -e 's/Linux/linux/' -e 's/MINGW.*/win32/' -e 's/UCRT.*/win32/' -e 's/CLANG.*/win32/' -e 's/MSYS.*/win32/')
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')
 REL_BUILD := dist/build
 REL_OUT   := dist/release
@@ -184,6 +187,9 @@ GUI_OUT   := gui/dist
 # still needs macFUSE (or libfuse3) installed wherever it runs.
 # macOS 12 is the oldest macFUSE 5 (and so wozfuse) runs on; the current
 # SDK's C++ library won't go back past 11 anyway.
+#
+# On Windows the tools are linked statically, so they don't need MinGW's
+# DLLs next to them, and MinGW's readline wants termcap after it.
 ifeq ($(HOST_OS),darwin)
 REL_ARCHFLAGS := -arch arm64 -arch x86_64 -mmacosx-version-min=12.0
 TOOLS_ARCH    := universal
@@ -191,10 +197,19 @@ else
 REL_ARCHFLAGS :=
 TOOLS_ARCH    := $(HOST_ARCH)
 endif
+ifeq ($(HOST_OS),win32)
+EXE           := .exe
+REL_LDFLAGS   := -static
+READLINE_LIBS := -lreadline -ltermcap
+else
+EXE           :=
+REL_LDFLAGS   :=
+READLINE_LIBS := -lreadline
+endif
 REL_CFLAGS := -O2 -Wall $(WOZCORE_CFLAGS) -D_FILE_OFFSET_BITS=64 $(REL_ARCHFLAGS)
 REL_OBJ    := $(REL_BUILD)/obj
 REL_CORE   := $(addprefix $(REL_OBJ)/,$(notdir $(addsuffix .o,$(basename $(WOZCORE_SRCS)))))
-REL_TOOLS  := $(addprefix $(REL_BUILD)/bin/,wozzle wozit wozmosis $(if $(FUSE_LIBS),wozfuse))
+REL_TOOLS  := $(addprefix $(REL_BUILD)/bin/,$(addsuffix $(EXE),wozzle wozit wozmosis $(if $(FUSE_LIBS),wozfuse)))
 TOOLS_PKG  := wozzle-tools-$(VERSION)-$(HOST_OS)-$(TOOLS_ARCH)
 # Everything that goes in the tools tarball, and nothing else
 TOOLS_SHIP := $(REL_TOOLS) README.md LICENSE
@@ -211,19 +226,19 @@ $(REL_OBJ)/%.o: %.cpp src/*.h
 	@mkdir -p $(REL_OBJ)
 	$(CXX) $(REL_CFLAGS) $(if $(filter wozfuse.cpp,$<),$(FUSE_CFLAGS)) -c $< -o $@
 
-$(REL_BUILD)/bin/wozzle: $(REL_OBJ)/wozzle.o $(REL_CORE)
+$(REL_BUILD)/bin/wozzle$(EXE): $(REL_OBJ)/wozzle.o $(REL_CORE)
 	@mkdir -p $(dir $@)
-	$(CXX) $(REL_CFLAGS) -o $@ $^
+	$(CXX) $(REL_CFLAGS) $(REL_LDFLAGS) -o $@ $^
 
-$(REL_BUILD)/bin/wozit: $(REL_OBJ)/clireport.o $(REL_OBJ)/wozit.o $(REL_CORE)
+$(REL_BUILD)/bin/wozit$(EXE): $(REL_OBJ)/clireport.o $(REL_OBJ)/wozit.o $(REL_CORE)
 	@mkdir -p $(dir $@)
-	$(CXX) $(REL_CFLAGS) -o $@ $^ -lreadline
+	$(CXX) $(REL_CFLAGS) $(REL_LDFLAGS) -o $@ $^ $(READLINE_LIBS)
 
-$(REL_BUILD)/bin/wozmosis: $(REL_OBJ)/wozmosis.o $(REL_CORE)
+$(REL_BUILD)/bin/wozmosis$(EXE): $(REL_OBJ)/wozmosis.o $(REL_CORE)
 	@mkdir -p $(dir $@)
-	$(CXX) $(REL_CFLAGS) -o $@ $^
+	$(CXX) $(REL_CFLAGS) $(REL_LDFLAGS) -o $@ $^
 
-$(REL_BUILD)/bin/wozfuse: $(REL_OBJ)/wozfuse.o $(REL_CORE)
+$(REL_BUILD)/bin/wozfuse$(EXE): $(REL_OBJ)/wozfuse.o $(REL_CORE)
 	@mkdir -p $(dir $@)
 	$(CXX) $(REL_CFLAGS) -o $@ $^ $(FUSE_LIBS)
 
@@ -235,6 +250,10 @@ APP_ARCH   := $(if $(filter universal-apple-darwin,$(APP_TARGET)),universal,$(HO
 APP_TARGET_FLAG := $(if $(APP_TARGET),--target $(APP_TARGET))
 APP_BUNDLE_DIR  := $(GUI_BUILD)/target/$(if $(APP_TARGET),$(APP_TARGET)/)release/bundle
 APP_PKG    := Wozzle-$(VERSION)-$(HOST_OS)-$(APP_ARCH)
+# Which of Tauri's packages to make: the .app on a Mac (zipped by
+# rel-app), the NSIS installer on Windows, and an AppImage and a .deb on
+# Linux
+APP_BUNDLES := $(if $(filter darwin,$(HOST_OS)),app,$(if $(filter win32,$(HOST_OS)),nsis,appimage$(comma)deb))
 
 # The app gets the front end's index.html, its favicon, and Vite's assets/
 # (the code, styles and wasm it built from src/), and nothing else. Tauri
@@ -253,9 +272,12 @@ APP_CONTENTS := Contents/Info.plist Contents/MacOS/wozzle-gui \
 
 .PHONY: version tools app run dev dist release rel-tools rel-app gui-stage gui-ship-check
 
-# sed -i.bak works with both BSD and GNU sed. npm version sets
-# package-lock.json's copy along with package.json's.
-SET_H_VERSION   = sed -i.bak 's/"Wozzle v[^"]*"/"Wozzle v$(VERSION)"/' src/wozversion.h && rm -f src/wozversion.h.bak
+# The header is only replaced when the version in it changes, since
+# everything includes it and a newer copy would rebuild it all (and a
+# prebuilt wasm/build, which a Windows build can't remake). npm version
+# sets package-lock.json's copy along with package.json's.
+SET_H_VERSION   = sed 's/"Wozzle v[^"]*"/"Wozzle v$(VERSION)"/' src/wozversion.h > src/wozversion.h.new && \
+	{ cmp -s src/wozversion.h.new src/wozversion.h && rm -f src/wozversion.h.new || mv src/wozversion.h.new src/wozversion.h; }
 SET_GUI_VERSION = cd gui && $(NPM) version $(VERSION) --no-git-tag-version --allow-same-version >/dev/null
 
 src/wozversion.h: library.properties
@@ -276,8 +298,12 @@ version:
 
 tools: $(REL_TOOLS)
 
+# A CI build sets NPM_INSTALL=ci, which installs exactly what
+# package-lock.json says and never rewrites it
+NPM_INSTALL ?= install
+
 gui/node_modules: gui/package.json
-	cd gui && $(NPM) install
+	cd gui && $(NPM) $(NPM_INSTALL)
 	@touch $@
 
 # Tauri signs the program inside the app but not the bundle around it, so
@@ -303,10 +329,13 @@ gui-ship-check:
 
 # The front end's already built and staged, so Tauri is told not to build
 # it again and to embed the staged copy rather than all of $(GUI_WEB).
-APP_CONFIG := {"build":{"beforeBuildCommand":"","frontendDist":"$(CURDIR)/$(GUI_STAGE)"}}
+# Tauri on Windows is a Windows program, so it gets C:/... rather than
+# MSYS2's /c/...
+APP_ROOT   := $(if $(filter win32,$(HOST_OS)),$(shell cygpath -m "$(CURDIR)"),$(CURDIR))
+APP_CONFIG := {"build":{"beforeBuildCommand":"","frontendDist":"$(APP_ROOT)/$(GUI_STAGE)"}}
 
 app: gui-stage
-	cd gui && npx tauri build $(APP_TARGET_FLAG) $(if $(filter darwin,$(HOST_OS)),--bundles app) \
+	cd gui && npx tauri build $(APP_TARGET_FLAG) --bundles $(APP_BUNDLES) \
 	  --config '$(APP_CONFIG)'
 ifeq ($(HOST_OS),darwin)
 	codesign --force --deep --sign - "$(APP_BUNDLE_DIR)/macos/Wozzle.app"
@@ -343,15 +372,22 @@ rel-tools: tools
 	rm -rf "$(REL_BUILD)/$(TOOLS_PKG)"
 	mkdir -p "$(REL_BUILD)/$(TOOLS_PKG)"
 	cp $(TOOLS_SHIP) "$(REL_BUILD)/$(TOOLS_PKG)/"
+ifeq ($(HOST_OS),win32)
+	rm -f "$(CURDIR)/$(REL_OUT)/$(TOOLS_PKG).zip"
+	cd $(REL_BUILD) && zip -qr "$(CURDIR)/$(REL_OUT)/$(TOOLS_PKG).zip" "$(TOOLS_PKG)"
+else
 	tar -C $(REL_BUILD) -czf "$(REL_OUT)/$(TOOLS_PKG).tar.gz" "$(TOOLS_PKG)"
+endif
 
-# ditto keeps the Mac bundle's symlinks and signature intact. On Linux,
-# Tauri's own AppImage and .deb are already single files.
+# ditto keeps the Mac bundle's symlinks and signature intact. On Linux
+# and Windows, Tauri's own packages are already single files.
 rel-app: app
 	@mkdir -p $(GUI_OUT)
 ifeq ($(HOST_OS),darwin)
 	rm -f "$(GUI_OUT)/$(APP_PKG).zip"
 	ditto -c -k --keepParent "$(GUI_OUT)/Wozzle.app" "$(GUI_OUT)/$(APP_PKG).zip"
+else ifeq ($(HOST_OS),win32)
+	cp $(APP_BUNDLE_DIR)/nsis/*-setup.exe "$(GUI_OUT)/$(APP_PKG)-setup.exe"
 else
 	for f in $(APP_BUNDLE_DIR)/appimage/*.AppImage $(APP_BUNDLE_DIR)/deb/*.deb; do \
 	  [ -f "$$f" ] && cp "$$f" "$(GUI_OUT)/$(APP_PKG).$${f##*.}"; \

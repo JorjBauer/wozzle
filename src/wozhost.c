@@ -8,16 +8,22 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+// Windows opens files as text unless it's told otherwise, which would
+// turn every 0A byte in an image into 0D 0A
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 static int posixOpen(const char *path, wozOpenMode mode, void *ctx)
 {
   (void)ctx;
   switch (mode) {
   case WOZ_OPEN_READ:
-    return open(path, O_RDONLY);
+    return open(path, O_RDONLY|O_BINARY);
   case WOZ_OPEN_READWRITE:
-    return open(path, O_RDWR);
+    return open(path, O_RDWR|O_BINARY);
   case WOZ_OPEN_CREATE:
-    return open(path, O_RDWR|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR);
+    return open(path, O_RDWR|O_CREAT|O_TRUNC|O_BINARY, S_IRUSR|S_IWUSR);
   }
   return -1;
 }

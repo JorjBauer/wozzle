@@ -7,6 +7,8 @@ Wozzle is a Woz disk image swizzler - a utility to swish around the bits to make
 
 Wozzle converts between Woz 1.0/1.1, Woz 2.0, DSK, and NIB formats.
 
+Wozzle has command-line components (wozzle, wozit, wozmosis, wozfuse) and a cross-platform GUI application that does most of the same (wozzle.app, wozzle.exe).
+
 Building
 --------
 
@@ -17,30 +19,11 @@ Wozzle is written in C++, and expects to find g++ for compilation.
 Releases
 --------
 
-Each release on GitHub has the Wozzle app (see gui/) and the command line
-tools, built for whatever I made the release on. As of this writing that's
-a Mac: the app for Apple Silicon, and the tools as universal binaries for
-Apple Silicon and Intel, for macOS 12 or newer. wozfuse also needs
-[macFUSE](https://macfuse.github.io/) installed.
+There are github releases for each of the GUI versions, cross-platform: MacOS, Windows, Linux. The GUI app is only missing FUSE support to mount images as a local filesystem.
 
-*make dist* builds the same files, the tools into dist/release/ and the
-app into gui/dist/ (*make tools* and *make app* build the pieces), and *make release* runs the tests, builds
-them, and publishes them to GitHub after asking; tools/release.sh says
-what it checks first. The version is set in library.properties and
-nowhere else: make copies it into src/wozversion.h and gui/package.json,
-the two places that need it as a file of their own.
+The CLI utilities are built for MacOS, and have a release named "wozzle-tools-<version>-darwin-universal.tar.gz" and should work on MacOS 12 or newer. If you want to use FUSE mounts you have to install [macFUSE](https://macfuse.github.io/). Other platforms, you'll need to build yourself.
 
-None of these are signed with a developer certificate, so macOS won't open
-them the first time you try. For the app: unzip it, try to open it once,
-then go to System Settings, Privacy & Security, and click Open Anyway next
-to the message about Wozzle. (On macOS 14 or older, right-click the app,
-choose Open, and click Open in the dialog.) For the tools, which are run
-from a shell rather than opened, take the download mark off them instead:
-
-```
-tar xzf wozzle-tools-*.tar.gz
-xattr -dr com.apple.quarantine wozzle-tools-*/
-```
+None of the tools are signed with a developer certificate, so you will likely be told that it can't be opened (MacOS: unzip, open, System Settings, Privacy & Security, click "Open Anyway") the first time you try to launch each one.
 
 Using the library in another program
 ------------------------------------
@@ -147,24 +130,23 @@ Limitations
 * Only 5.25" WOZ images are supported.
 * No support for writing Woz 1.x images; all Woz writes are 2.0.
 * WRIT data is unsupported.
-* The code still suffers from early development messiness.
 * The -I flag has three different compilable behaviors with respect to raw track data, but there's no way built in for users to select one or another.
 * The tests are fairly fragile; they expect to find the woz project's test disks and perform conversions on the DOS 3.3 system master.
-* Only supports 16-sector disks.
 
 
-Wozit v1.0
-===========
+Wozit and Wozmosis
+==================
 
-©2021 Jorj Bauer. MIT license.
+©2021-2026 Jorj Bauer. MIT license.
 
 Wozit ("What's it?") is a disk inspection/modification tool. It's
-built from the same make command as Wozzle.
+built from the same make command as Wozzle. Wozmosis is a file copying
+tool used to move files between different images.
 
 Usage
 -----
 
-*$ wozzle -h*
+*$ wozit -h*
 ```
 Usage: ./wozit -I <input image> { -d | -p | -P }
 
@@ -201,7 +183,7 @@ directory. A ProDOS root holds a fixed 51 entries and cannot grow, so a
 copy that overflows it still fits under a subdirectory, which can. `-D`
 needs `-p`; neither DOS 3.3 nor Pascal has directories.
 
-Wozit is an interactive disk inspection tool. Once started, it expects one of these commands:
+Wozit is an interactive disk inspection tool.
 
 Arguments are split at spaces, the way a shell does it, so a name with a
 space in it (DOS 3.3 allows them) needs quoting: *cpout "BAS BIG" out.bin*.
@@ -209,6 +191,8 @@ Single quotes, double quotes and a backslash all work. A command's last
 argument is still the rest of the line if you don't quote any of it, so
 *cat BAS BIG* and *cpout FOO my file.bin* do what they look like. Inside a
 *-c*, that means quotes within quotes: *-c 'cpout "BAS BIG" out.bin'*.
+
+Wozmosis command list:
 
 *ls*
 
@@ -229,12 +213,10 @@ Copies a file from inside the image to a file outside the image. With
 data fork. With *-B*, it de-tokenizes an Applesoft or Integer BASIC
 program into a text listing instead of copying the raw bytes.
 
-What comes out is the file's contents, and that means the same thing on
-every filesystem: what *cpin* put in comes back out. DOS 3.3 stores a
-header in front of I, A and B files (the length, and for B the load
-address before it); that isn't part of the contents, so it's left off,
-and the header's length says where the file ends. A DOS 3.3 T file ends
-at its first $00, the way a sequential text file does.
+DOS 3.3 stores a header in front of I, A and B files (the length, and
+for B the load address before it); that isn't part of the contents, so
+it's left off during *cpout*. A DOS 3.3 T file ends at its first $00,
+the way a sequential text file does.
 
 Start wozit with *-A* and *cpout* copies everything the file has
 allocated instead, read as it lies on disk: DOS 3.3 headers included, and
@@ -269,11 +251,11 @@ carry comments that aren't part of the program.
 
 Tokenizing follows the ROM's own parser: whitespace outside quotes is
 discarded, the longest matching keyword wins (so `ONERR` beats `ON`),
-keywords may be split by spaces (which is the only reason `PR #3` works),
-and the text after *REM* - or after *DATA*, up to the next unquoted colon
-- is left alone rather than having keywords substituted into it. `?` is
+keywords may be split by spaces (which is why `PR #3` works), and the
+text after *REM* - or after *DATA*, up to the next unquoted colon - is
+left alone rather than having keywords substituted into it. `?` is
 accepted as shorthand for *PRINT*. Because whitespace is discarded,
-*cpout -B* followed by *cpin -B* is a fixed point: a program can make the
+*cpout -B* followed by *cpin -B* is reflexive: a program can make the
 round trip repeatedly without drifting.
 
 Integer BASIC can be listed with *cpout -B* but not yet tokenized with
@@ -287,11 +269,14 @@ De-tokenize and show the given Applesoft or Integer BASIC program.
 
 *resize [-n] <blocks>*
 
-Shrinks a ProDOS volume in place - the volume directory header, the volume
-bitmap, and the image file itself - so an oversized image can be cut down
-to the size a device or partition actually offers, without formatting a
-new volume and copying everything across. The size is a block count or one
-of the *format* presets (140k, 800k, 4m, 5m, 8m, 10m, 16m, 32m).
+Shrinks a ProDOS volume in place - the volume directory header, the
+volume bitmap, and the image file itself - so an oversized image can
+be cut down to the size a device or partition actually offers, without
+formatting a new volume and copying everything across. The size is a
+block count or one of the *format* presets (140k, 800k, 4m, 5m, 8m,
+10m, 16m, 32m). (I built this for my ProFile hard drive emulator
+hardware so that it could take a large volume and squeeze it down to a
+native size for the ProFile Apple ][ card expects.)
 
 Anything still allocated at or past the new end is moved down into free
 space below it: the blocks are copied and every pointer that named them is
@@ -305,10 +290,10 @@ released, with a warning. *-n* skips relocation entirely: the resize is
 then refused whenever the tail is occupied, which is the way to ask
 whether a volume can be shrunk without rewriting anything.
 
-Bitmap blocks the smaller volume no longer needs become free space. Raw
-block images only (.img/.hdv, or a .po or .2mg larger than a floppy), and it only
-shrinks: growing a volume still means formatting a bigger image and
-copying into it. Takes effect on *save*.
+Bitmap blocks the smaller volume no longer needs become free
+space. Raw block images only (.img/.hdv, or a .po or .2mg larger than
+a floppy), and it only shrinks: growing a volume still means
+formatting a bigger image and copying into it. Takes effect on *save*.
 
 
 Limitations
@@ -316,12 +301,12 @@ Limitations
 
 * All of the limitations of Wozzle
 * Only supports normal RWTS disks
-* There's no way to differentiate between files of different types with the same name
-* In ProDOS mode, it only references files by filename - not by directory. So two files
-  with the same name in different directories won't be readable (it will pick the first
-  one it finds).
+* There's no way to differentiate between files of different types with the
+  same name
+* In ProDOS mode, it only references files by filename - not by
+  directory. So two files with the same name in different directories
+  won't be readable (it will pick the first one it finds).
   
-
 
 Wozfuse
 =======
