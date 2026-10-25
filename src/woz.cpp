@@ -726,18 +726,28 @@ bool Woz::writeNibFile(int fdout)
   }
 
   // A 13-sector track doesn't fit the 16-sector layout below, so its
-  // nibbles go out as they are: copied from a .nib, or read off the
-  // track the way the disk controller would
+  // nibbles go out as they are: copied from a .nib, or one revolution
+  // read off the track the way the disk controller would, with sync
+  // bytes after it to fill out the .nib track
   if (isThirteenSectorDisk()) {
     uint8_t nib[NIBTRACKSIZE];
     for (int phystrack=0; phystrack<35; phystrack++) {
       uint8_t dataTrack = quarterTrackMap[phystrack*4];
-      if (imageType == T_NIB && dataTrack != 0xFF && tracks[dataTrack].trackData) {
-        memcpy(nib, tracks[dataTrack].trackData, NIBTRACKSIZE);
-      } else if (!readRawNibStream(phystrack, nib)) {
+      uint32_t got = 0;
+      if (dataTrack != 0xFF && !tracks[dataTrack].trackData &&
+          !loadMissingTrackFromImage(dataTrack)) {
         wozMsg(WOZ_MSG_ERROR, "Failed to read track %d; aborting", phystrack);
         return false;
       }
+      if (dataTrack == 0xFF || !tracks[dataTrack].trackData) {
+        // An unformatted track
+      } else if (imageType == T_NIB) {
+        memcpy(nib, tracks[dataTrack].trackData, NIBTRACKSIZE);
+        got = NIBTRACKSIZE;
+      } else {
+        got = readOneRevolution(dataTrack, nib, NIBTRACKSIZE);
+      }
+      memset(nib + got, 0xFF, NIBTRACKSIZE - got);
       if (wozWrite(fdout, nib, NIBTRACKSIZE) != NIBTRACKSIZE) {
         wozMsg(WOZ_MSG_ERROR, "Failed[1] to write track %d; aborting", phystrack);
         return false;
@@ -765,6 +775,29 @@ bool Woz::writeNibFile(int fdout)
   }
 
   return true;
+}
+
+uint32_t Woz::readOneRevolution(uint8_t datatrack, uint8_t *out, uint32_t max)
+{
+  // We go around twice and keep the bytes that finish on the second
+  // pass: by then the latch has lined up with the sync bytes, wherever
+  // bit 0 happened to fall. This reads the track's own bits, not through
+  // the head's cursor, so an emulator's place on the disk isn't moved.
+  const trackInfo *t = &tracks[datatrack];
+  if (!t->trackData || !t->bitCount)
+    return 0;
+  uint8_t latch = 0;
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < 2 * t->bitCount; i++) {
+    uint32_t b = i % t->bitCount;
+    latch = (uint8_t)((latch << 1) | ((t->trackData[b >> 3] >> (7 - (b & 7))) & 1));
+    if (latch & 0x80) {
+      if (i >= t->bitCount && n < max)
+        out[n++] = latch;
+      latch = 0;
+    }
+  }
+  return n;
 }
 
 bool Woz::writeD13File(const char *filename)

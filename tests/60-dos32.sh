@@ -64,6 +64,28 @@ for ext in woz nib 2mg; do
   assert_eq "$(hash_file "$D")" "$(hash_file "$TMP/back-$ext.d13")" \
     ".d13 to .$ext and back is the same"
 done
+# A track built from sectors is shorter than a .nib track, so each one
+# is a single revolution (every sector once) with sync bytes after it
+for src in d13 woz; do
+  in="$TMP/t.$src"
+  [ "$src" = d13 ] && in="$D"
+  ./wozzle -i "$in" -o "$TMP/one-$src.nib" >/dev/null 2>&1
+  out=$(python3 - "$TMP/one-$src.nib" <<'EOF'
+import sys
+d = open(sys.argv[1], "rb").read()
+good = 0
+for t in range(35):
+    tr = d[t * 6656:(t + 1) * 6656]
+    found = sorted(((tr[i + 7] << 1) | 1) & tr[i + 8]
+                   for i in range(len(tr) - 9) if tr[i:i + 3] == b"\xd5\xaa\xb5")
+    if found == list(range(13)) and tr.endswith(b"\xff" * 16):
+        good += 1
+print("%d tracks" % good)
+EOF
+)
+  assert_eq "35 tracks" "$out" "a .nib from the .$src has each sector once a track, then sync"
+done
+
 out=$(./wozit -d -I "$TMP/t.woz" -c info 2>&1)
 assert_match "Boot sector format: 13 sector" "$out" "the .woz says it's 13-sector"
 assert_eq "02000000" "$(hexat "$TMP/t.2mg" 12 4)" "the .2mg holds it as nibbles"

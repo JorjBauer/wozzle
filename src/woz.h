@@ -166,6 +166,9 @@ class Woz {
   bool writeHdvFile(const char *filename);
   bool writeHdvFile(int fdout);
   bool writeD13File(const char *filename);
+  // One revolution of a data track as the bytes the disk controller would
+  // latch, up to max of them. Returns how many.
+  uint32_t readOneRevolution(uint8_t datatrack, uint8_t *out, uint32_t max);
   bool sniffThirteenSector();
   bool readTwoImgFile(const char *filename, bool preloadTracks);
   bool writeTwoImgFile(const char *filename);
